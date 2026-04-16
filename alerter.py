@@ -1,0 +1,773 @@
+"""
+Alert System — Email Notifications
+=====================================
+Sends email alerts when:
+  - A stock hits its ATR stop-loss price     → 🔴 URGENT
+  - A stock reaches a profit target stage    → 🟡/🟢 ACTION
+  - Portfolio beta exceeds overheated level  → ⚠️  WARNING
+
+Email sent via Gmail SMTP using App Password.
+Only sends email when there's something actionable — no noise.
+
+Setup (one-time):
+  1. Enable 2FA on your Gmail account
+  2. Go to: Google Account → Security → App Passwords
+  3. Generate a password for "Mail"
+  4. Create a .env file with:
+       ALERT_EMAIL_FROM=your@gmail.com
+       ALERT_EMAIL_PASSWORD=your_app_password_here
+       ALERT_EMAIL_TO=your@gmail.com
+
+Usage:
+  python alerter.py --portfolio portfolio_202504.json
+  python alerter.py --portfolio portfolio_202504.json --test
+"""
+
+import smtplib
+import json
+import os
+import argparse
+import time
+import glob
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from datetime import datetime, date
+from typing import Optional
+from zoneinfo import ZoneInfo
+
+import yfinance as yf
+
+# ─────────────────────────────────────────────
+# MARKET HOURS GUARD
+# ─────────────────────────────────────────────
+
+IST = ZoneInfo("Asia/Kolkata")
+MARKET_OPEN_HOUR  = 9
+MARKET_OPEN_MIN   = 15
+MARKET_CLOSE_HOUR = 15
+MARKET_CLOSE_MIN  = 30
+
+def is_market_hours() -> bool:
+    """
+    Returns True if current IST time is within NSE market hours
+    on a weekday (Mon–Fri). Skips weekends automatically.
+    """
+    now = datetime.now(IST)
+    if now.weekday() >= 5:          # Saturday=5, Sunday=6
+        return False
+    market_open  = now.replace(hour=MARKET_OPEN_HOUR,  minute=MARKET_OPEN_MIN,  second=0)
+    market_close = now.replace(hour=MARKET_CLOSE_HOUR, minute=MARKET_CLOSE_MIN, second=0)
+    return market_open <= now <= market_close
+
+
+# ─────────────────────────────────────────────
+# ALERT DEDUPLICATION
+# ─────────────────────────────────────────────
+
+DEDUP_FILE = "/tmp/alerts_sent_today.json"
+
+def _load_dedup() -> dict:
+    """Load today's sent alert keys. Clears if file is from a previous day."""
+    try:
+        if not os.path.exists(DEDUP_FILE):
+            return {}
+        with open(DEDUP_FILE) as f:
+            data = json.load(f)
+        # Clear if stale (from a previous calendar day)
+        if data.get("date") != str(date.today()):
+            return {}
+        return data.get("keys", {})
+    except Exception:
+        return {}
+
+
+def _save_dedup(keys: dict):
+    """Save today's sent alert keys to disk."""
+    try:
+        with open(DEDUP_FILE, "w") as f:
+            json.dump({"date": str(date.today()), "keys": keys}, f)
+    except Exception:
+        pass
+
+
+def _make_dedup_key(ticker: str, alert_type: str) -> str:
+    """
+    Unique key per ticker + alert type per day.
+    e.g. 'HDFCBANK.NS_stop_loss' or 'SUZLON.NS_profit_stage_1'
+    """
+    return f"{ticker}_{alert_type}"
+
+
+def filter_new_alerts(alerts: dict) -> tuple[dict, int]:
+    """
+    Remove alerts already sent today.
+    Returns (filtered_alerts_dict, count_deduplicated).
+    """
+    sent_keys  = _load_dedup()
+    dedup_count = 0
+
+    filtered = {
+        "stop_loss": [],
+        "profit":    [],
+        "ok":        alerts["ok"],
+        "errors":    alerts["errors"],
+        "timestamp": alerts["timestamp"],
+        "any_alerts": False,
+    }
+
+    for s in alerts["stop_loss"]:
+        key = _make_dedup_key(s["ticker"], "stop_loss")
+        if key not in sent_keys:
+            filtered["stop_loss"].append(s)
+        else:
+            dedup_count += 1
+            print(f"  ⏭️  {s['ticker']} stop-loss already alerted today — skipping.")
+
+    for s in alerts["profit"]:
+        # Key includes stage so each stage only fires once per day
+        stage_key = s.get("alert_label", "profit").replace(" ", "_").replace("—", "").strip()
+        key = _make_dedup_key(s["ticker"], f"profit_{stage_key}")
+        if key not in sent_keys:
+            filtered["profit"].append(s)
+        else:
+            dedup_count += 1
+            print(f"  ⏭️  {s['ticker']} profit alert already sent today — skipping.")
+
+    filtered["any_alerts"] = bool(filtered["stop_loss"] or filtered["profit"])
+    return filtered, dedup_count
+
+
+def mark_alerts_sent(alerts: dict):
+    """Record which alerts were just sent so they're not repeated today."""
+    sent_keys = _load_dedup()
+
+    for s in alerts["stop_loss"]:
+        key = _make_dedup_key(s["ticker"], "stop_loss")
+        sent_keys[key] = alerts["timestamp"]
+
+    for s in alerts["profit"]:
+        stage_key = s.get("alert_label", "profit").replace(" ", "_").replace("—", "").strip()
+        key = _make_dedup_key(s["ticker"], f"profit_{stage_key}")
+        sent_keys[key] = alerts["timestamp"]
+
+    _save_dedup(sent_keys)
+
+# ─────────────────────────────────────────────
+# CONFIG — loaded from environment variables
+# ─────────────────────────────────────────────
+
+def _get_config() -> dict:
+    """Load email config from environment variables or .env file."""
+    # Try loading .env file if python-dotenv is available
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+    except ImportError:
+        pass  # dotenv optional — env vars can be set directly
+
+    return {
+        "from_email":   os.getenv("ALERT_EMAIL_FROM", ""),
+        "password":     os.getenv("ALERT_EMAIL_PASSWORD", ""),
+        "to_email":     os.getenv("ALERT_EMAIL_TO", ""),
+        "smtp_host":    "smtp.gmail.com",
+        "smtp_port":    587,
+    }
+
+
+# Profit target stages
+PROFIT_STAGES = [
+    (0.20, "Stage 1 — Sell 30%",  "🟡"),
+    (0.35, "Stage 2 — Sell 30%",  "🟡"),
+    (0.50, "Stage 3 — Sell 40%",  "🟢"),
+]
+
+# Portfolio beta overheated threshold (matches 3.4)
+BETA_OVERHEATED = 1.6
+
+
+# ─────────────────────────────────────────────
+# PRICE FETCHER
+# ─────────────────────────────────────────────
+
+def get_current_price(ticker: str) -> Optional[float]:
+    try:
+        hist = yf.Ticker(ticker).history(period="1d")
+        if hist.empty:
+            return None
+        return round(float(hist["Close"].iloc[-1]), 2)
+    except Exception:
+        return None
+
+
+# ─────────────────────────────────────────────
+# ALERT DETECTOR
+# ─────────────────────────────────────────────
+
+# ── Mid-month Macro Alert Thresholds ─────────
+MACRO_THRESHOLDS = {
+    "crude_high":        100.0,    # Brent > $100/bbl
+    "usdinr_stress":     88.0,     # USD/INR > 88
+    "fii_extreme_sell": -15_000,   # FII 10d net < -₹15,000 Cr
+    "sp500_crash":       -8.0,     # S&P 500 30d < -8%
+}
+
+# Files written by collector.py and macro signals
+FIIDII_HISTORY_FILE = os.path.join(os.path.dirname(__file__), "fiidii_history.json")
+NEWS_SIGNALS_FILE   = os.path.join(os.path.dirname(__file__), "news_signals.json")
+
+
+def detect_macro_alerts() -> list:
+    """
+    Check real-time macro indicators against critical thresholds.
+    Fires mid-month warnings independent of stop-loss/profit checks.
+
+    Returns list of macro alert dicts — empty if all clear.
+    """
+    macro_alerts = []
+
+    # ── 1. Brent Crude ────────────────────────────────────────
+    try:
+        import yfinance as yf
+        crude_hist = yf.Ticker("BZ=F").history(period="2d")
+        if not crude_hist.empty:
+            crude_price = round(float(crude_hist["Close"].iloc[-1]), 2)
+            if crude_price > MACRO_THRESHOLDS["crude_high"]:
+                macro_alerts.append({
+                    "type":    "macro",
+                    "emoji":   "🛢️",
+                    "title":   f"Crude Oil Alert — ${crude_price}/bbl",
+                    "message": (
+                        f"Brent Crude has crossed ${MACRO_THRESHOLDS['crude_high']}/bbl "
+                        f"(currently ${crude_price}). "
+                        f"Consider tightening stop-losses on FMCG and Infra positions. "
+                        f"Green Energy holdings may benefit — review at next rebalance."
+                    ),
+                    "urgency": "warning",
+                })
+    except Exception:
+        pass
+
+    # ── 2. USD/INR ────────────────────────────────────────────
+    try:
+        fx_hist = yf.Ticker("INR=X").history(period="2d")
+        if not fx_hist.empty:
+            usdinr = round(float(fx_hist["Close"].iloc[-1]), 2)
+            if usdinr > MACRO_THRESHOLDS["usdinr_stress"]:
+                macro_alerts.append({
+                    "type":    "macro",
+                    "emoji":   "💱",
+                    "title":   f"Rupee Stress Alert — ₹{usdinr}/USD",
+                    "message": (
+                        f"USD/INR has crossed {MACRO_THRESHOLDS['usdinr_stress']} "
+                        f"(currently ₹{usdinr}). "
+                        f"FII outflows may accelerate. "
+                        f"IT stocks may get short-term boost (export earnings). "
+                        f"Green Energy at risk (import costs). Review stop-losses."
+                    ),
+                    "urgency": "warning",
+                })
+    except Exception:
+        pass
+
+    # ── 3. FII Extreme Selling ────────────────────────────────
+    try:
+        if os.path.exists(FIIDII_HISTORY_FILE):
+            with open(FIIDII_HISTORY_FILE) as f:
+                history = json.load(f)
+            recent  = sorted(history, key=lambda r: r["date"], reverse=True)[:10]
+            fii_10d = sum(r["fii_net_cr"] for r in recent)
+            if fii_10d < MACRO_THRESHOLDS["fii_extreme_sell"]:
+                macro_alerts.append({
+                    "type":    "macro",
+                    "emoji":   "📊",
+                    "title":   f"FII Extreme Selling — ₹{fii_10d:,.0f}Cr (10d)",
+                    "message": (
+                        f"FII 10-day net flow: ₹{fii_10d:,.0f}Cr "
+                        f"(threshold: ₹{MACRO_THRESHOLDS['fii_extreme_sell']:,.0f}Cr). "
+                        f"Consider tightening stop-losses by 3% across all positions. "
+                        f"Defensive FMCG/Pharma holdings are best protected."
+                    ),
+                    "urgency": "warning",
+                })
+    except Exception:
+        pass
+
+    # ── 4. S&P 500 Crash ──────────────────────────────────────
+    try:
+        sp_hist = yf.Ticker("^GSPC").history(period="45d")
+        if not sp_hist.empty and len(sp_hist) >= 30:
+            sp_now   = float(sp_hist["Close"].iloc[-1])
+            sp_30d   = float(sp_hist["Close"].iloc[-30])
+            sp_chg   = round((sp_now / sp_30d - 1) * 100, 1)
+            if sp_chg < MACRO_THRESHOLDS["sp500_crash"]:
+                macro_alerts.append({
+                    "type":    "macro",
+                    "emoji":   "🌍",
+                    "title":   f"Global Risk-Off — S&P 500 {sp_chg:+.1f}% (30d)",
+                    "message": (
+                        f"S&P 500 has fallen {sp_chg:.1f}% over 30 days "
+                        f"(threshold: {MACRO_THRESHOLDS['sp500_crash']}%). "
+                        f"Indian markets likely to face continued FII pressure. "
+                        f"Avoid adding new positions until stabilisation. "
+                        f"Keep stop-losses tight."
+                    ),
+                    "urgency": "warning",
+                })
+    except Exception:
+        pass
+
+    # ── 5. News Sentiment — 2+ Buckets Negative ──────────────
+    try:
+        if os.path.exists(NEWS_SIGNALS_FILE):
+            with open(NEWS_SIGNALS_FILE) as f:
+                news_data = json.load(f)
+            signals = news_data.get("signals", {})
+            negative_buckets = [
+                b for b, s in signals.items()
+                if s.get("signal") in ("negative", "cautious")
+                and s.get("matches", 0) >= 3
+            ]
+            if len(negative_buckets) >= 2:
+                macro_alerts.append({
+                    "type":    "macro",
+                    "emoji":   "📰",
+                    "title":   f"News Sentiment Deteriorating — {len(negative_buckets)} buckets",
+                    "message": (
+                        f"Negative/cautious news sentiment detected in: "
+                        f"{', '.join(negative_buckets)}. "
+                        f"Consider reviewing positions in these sectors. "
+                        f"Monitor for continuation over next 2-3 days."
+                    ),
+                    "urgency": "info",
+                })
+    except Exception:
+        pass
+
+    return macro_alerts
+    """
+    Fetch live prices for all holdings and detect
+    stop-loss hits and profit target triggers.
+
+    Returns:
+      {
+        "stop_loss": [...],   # urgent — exit now
+        "profit":    [...],   # action — partial sell
+        "ok":        [...],   # no action needed
+        "errors":    [...],   # could not fetch price
+        "timestamp": str,
+        "any_alerts": bool,
+      }
+    """
+    alerts = {
+        "stop_loss": [],
+        "profit":    [],
+        "ok":        [],
+        "errors":    [],
+        "timestamp": datetime.now().strftime("%d %B %Y, %I:%M %p IST"),
+        "any_alerts": False,
+    }
+
+    for bucket_key, bucket in portfolio.items():
+        if not isinstance(bucket, dict):
+            continue
+
+        for s in bucket.get("stocks", []):
+            ticker    = s.get("ticker", "")
+            buy_price = s.get("price", 0)
+            name      = s.get("name", ticker)
+            sl_price  = s.get("stop_loss_price")
+            trail_dist = s.get("trailing_stop_dist")
+
+            if not ticker or not buy_price:
+                continue
+
+            current = get_current_price(ticker)
+            time.sleep(0.3)
+
+            if current is None:
+                alerts["errors"].append({
+                    "ticker": ticker,
+                    "name":   name,
+                    "reason": "Could not fetch price",
+                })
+                continue
+
+            change_pct = round((current / buy_price - 1) * 100, 2)
+
+            # Fallback stop-loss if ATR fields missing
+            if sl_price is None:
+                sl_price = round(buy_price * 0.85, 2)
+
+            suggested_trail = (
+                round(current - trail_dist, 2)
+                if trail_dist and current > buy_price
+                else None
+            )
+
+            record = {
+                "ticker":          ticker,
+                "name":            name,
+                "bucket":          bucket.get("label", bucket_key),
+                "buy_price":       buy_price,
+                "current":         current,
+                "change_pct":      change_pct,
+                "sl_price":        sl_price,
+                "sl_pct":          s.get("stop_loss_pct", 15.0),
+                "atr_14day":       s.get("atr_14day"),
+                "trail_dist":      trail_dist,
+                "suggested_trail": suggested_trail,
+                "allocation_inr":  s.get("allocation_inr", 0),
+                "approx_shares":   s.get("approx_shares", 0),
+            }
+
+            # ── Check stop-loss ───────────────────────────────
+            if current <= sl_price:
+                record["alert_type"]  = "stop_loss"
+                record["alert_emoji"] = "🔴"
+                record["alert_label"] = "STOP-LOSS HIT — EXIT NOW"
+                alerts["stop_loss"].append(record)
+
+            # ── Check profit stages ───────────────────────────
+            else:
+                triggered_stage = None
+                for threshold, label, emoji in reversed(PROFIT_STAGES):
+                    if change_pct >= threshold * 100:
+                        triggered_stage = (threshold, label, emoji)
+                        break
+
+                if triggered_stage:
+                    record["alert_type"]  = "profit"
+                    record["alert_emoji"] = triggered_stage[2]
+                    record["alert_label"] = triggered_stage[1]
+                    record["threshold"]   = triggered_stage[0] * 100
+                    alerts["profit"].append(record)
+                else:
+                    record["alert_type"]  = "ok"
+                    record["alert_emoji"] = "✅"
+                    record["alert_label"] = "OK"
+                    alerts["ok"].append(record)
+
+    alerts["any_alerts"] = bool(alerts["stop_loss"] or alerts["profit"])
+    return alerts
+
+
+# ─────────────────────────────────────────────
+# EMAIL FORMATTER
+# ─────────────────────────────────────────────
+
+def format_email_body(alerts: dict) -> tuple[str, str]:
+    """
+    Build plain text and HTML email body from alerts dict.
+    Returns (subject, html_body).
+    """
+    n_sl     = len(alerts["stop_loss"])
+    n_profit = len(alerts["profit"])
+    n_ok     = len(alerts["ok"])
+    n_macro  = len(alerts.get("macro", []))
+    ts       = alerts["timestamp"]
+
+    # Subject line
+    if n_sl > 0:
+        subject = f"🔴 URGENT: {n_sl} Stop-Loss Hit — Exit on Kite Now [{ts}]"
+    elif n_profit > 0:
+        subject = f"🟡 Action Required: {n_profit} Profit Target Reached [{ts}]"
+    elif n_macro > 0:
+        subject = f"⚠️ Macro Alert: {n_macro} Condition(s) Triggered [{ts}]"
+    else:
+        subject = f"✅ Portfolio Check: All Positions Healthy [{ts}]"
+
+    # ── HTML body ─────────────────────────────────────────────
+    macro_alerts = alerts.get("macro", [])
+    macro_section = ""
+    if macro_alerts:
+        macro_rows = ""
+        for m in macro_alerts:
+            urgency_color = "#f57f17" if m.get("urgency") == "warning" else "#1565c0"
+            macro_rows += f"""
+            <div style="border-left:4px solid {urgency_color};padding:12px;margin:10px 0;background:#fff8e1;">
+              <b>{m['emoji']} {m['title']}</b><br/>
+              {m['message']}
+            </div>"""
+        macro_section = f"""
+        <h2 style="color:#f57f17;">⚠️ Mid-Month Macro Alerts ({len(macro_alerts)})</h2>
+        <p>These are informational alerts — no immediate trade action required unless combined with stop-loss hits.</p>
+        {macro_rows}
+        """
+    rows_profit = _build_alert_rows(alerts["profit"],    urgent=False)
+    rows_ok     = _build_ok_rows(alerts["ok"])
+
+    sl_section = f"""
+    <h2 style="color:#d32f2f;">🔴 Stop-Loss Alerts ({n_sl})</h2>
+    <p style="color:#d32f2f;"><b>EXIT THESE POSITIONS ON KITE IMMEDIATELY.</b></p>
+    {rows_sl}
+    """ if n_sl > 0 else ""
+
+    profit_section = f"""
+    <h2 style="color:#f57f17;">🟡 Profit Target Alerts ({n_profit})</h2>
+    <p>Book partial profits on Kite as per your strategy.</p>
+    {rows_profit}
+    """ if n_profit > 0 else ""
+
+    ok_section = f"""
+    <h2 style="color:#388e3c;">✅ Healthy Positions ({n_ok})</h2>
+    {rows_ok}
+    """ if n_ok > 0 else ""
+
+    html = f"""
+    <html><body style="font-family:Arial,sans-serif;max-width:700px;margin:auto;">
+    <div style="background:#1a237e;color:white;padding:20px;border-radius:8px 8px 0 0;">
+      <h1 style="margin:0;">📈 Portfolio Alert</h1>
+      <p style="margin:5px 0 0 0;opacity:0.8;">{ts}</p>
+    </div>
+    <div style="padding:20px;background:#f5f5f5;">
+      <div style="background:white;padding:20px;border-radius:8px;">
+        {macro_section}
+        {sl_section}
+        {profit_section}
+        {ok_section}
+        <hr/>
+        <p style="color:#757575;font-size:12px;">
+          Summary: {n_sl} stop-loss | {n_profit} profit targets | {n_ok} healthy<br/>
+          This alert was generated automatically by your Indian Stock Screener.<br/>
+          Always verify prices on Kite before placing orders.
+        </p>
+      </div>
+    </div>
+    </body></html>
+    """
+
+    return subject, html
+
+
+def _build_alert_rows(stocks: list, urgent: bool) -> str:
+    if not stocks:
+        return "<p>None</p>"
+
+    border_color = "#d32f2f" if urgent else "#f57f17"
+    rows = ""
+    for s in stocks:
+        action = ""
+        if urgent:
+            action = f"<b style='color:#d32f2f;'>⚠️ EXIT on Kite at market price</b>"
+        else:
+            action = f"<b>Sell partial on Kite — {s.get('alert_label','')}</b>"
+            if s.get("suggested_trail"):
+                action += f"<br/>📈 Update GTT trailing stop to ₹{s['suggested_trail']:.2f}"
+
+        rows += f"""
+        <div style="border-left:4px solid {border_color};padding:12px;margin:10px 0;background:#fff8f8;">
+          <b>{s['alert_emoji']} {s['ticker']} — {s['name']}</b>
+          <span style="color:#757575;font-size:12px;"> ({s['bucket']})</span><br/>
+          Buy: ₹{s['buy_price']:.2f} &nbsp;|&nbsp;
+          Now: ₹{s['current']:.2f} &nbsp;|&nbsp;
+          Change: <b>{s['change_pct']:+.2f}%</b><br/>
+          Stop-Loss: ₹{s['sl_price']:.2f} ({s['sl_pct']}% below buy)<br/>
+          {action}
+        </div>
+        """
+    return rows
+
+
+def _build_ok_rows(stocks: list) -> str:
+    if not stocks:
+        return "<p>No positions to show.</p>"
+
+    rows = "<table style='width:100%;border-collapse:collapse;font-size:13px;'>"
+    rows += "<tr style='background:#e8f5e9;'><th>Ticker</th><th>Buy</th><th>Now</th><th>Change</th><th>GTT Trail</th></tr>"
+    for s in stocks:
+        color = "#388e3c" if s["change_pct"] >= 0 else "#d32f2f"
+        trail = f"₹{s['suggested_trail']:.2f}" if s.get("suggested_trail") else "—"
+        rows += f"""
+        <tr style='border-bottom:1px solid #eee;'>
+          <td><b>{s['ticker']}</b></td>
+          <td>₹{s['buy_price']:.2f}</td>
+          <td>₹{s['current']:.2f}</td>
+          <td style='color:{color};'><b>{s['change_pct']:+.2f}%</b></td>
+          <td>{trail}</td>
+        </tr>"""
+    rows += "</table>"
+    return rows
+
+
+# ─────────────────────────────────────────────
+# EMAIL SENDER
+# ─────────────────────────────────────────────
+
+def send_email_alert(subject: str, html_body: str) -> bool:
+    """
+    Send HTML email via Gmail SMTP.
+    Returns True if sent successfully, False otherwise.
+    """
+    cfg = _get_config()
+
+    if not cfg["from_email"] or not cfg["password"] or not cfg["to_email"]:
+        print("  ⚠️  Email config missing. Set ALERT_EMAIL_FROM, "
+              "ALERT_EMAIL_PASSWORD, ALERT_EMAIL_TO in .env file.")
+        return False
+
+    try:
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"]    = cfg["from_email"]
+        msg["To"]      = cfg["to_email"]
+        msg.attach(MIMEText(html_body, "html"))
+
+        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"]) as server:
+            server.ehlo()
+            server.starttls()
+            server.login(cfg["from_email"], cfg["password"])
+            server.sendmail(cfg["from_email"], cfg["to_email"], msg.as_string())
+
+        print(f"  ✅ Alert email sent to {cfg['to_email']}")
+        return True
+
+    except smtplib.SMTPAuthenticationError:
+        print("  ❌ Gmail authentication failed. Check your App Password in .env")
+        return False
+    except Exception as e:
+        print(f"  ❌ Failed to send email: {e}")
+        return False
+
+
+# ─────────────────────────────────────────────
+# AUTO-DETECT LATEST PORTFOLIO
+# ─────────────────────────────────────────────
+
+def find_latest_portfolio(search_dirs: list = None) -> Optional[str]:
+    """Find the most recent portfolio JSON file."""
+    if search_dirs is None:
+        search_dirs = ["./outputs", "/mnt/user-data/outputs", "."]
+
+    files = []
+    for d in search_dirs:
+        files.extend(glob.glob(os.path.join(d, "portfolio_*.json")))
+
+    if not files:
+        return None
+    return sorted(files)[-1]
+
+
+# ─────────────────────────────────────────────
+# MAIN ENTRY POINT
+# ─────────────────────────────────────────────
+
+def check_and_alert(
+    portfolio_path: str,
+    send_email:  bool = True,
+    test_mode:   bool = False,
+    force_run:   bool = False,
+) -> Optional[dict]:
+    """
+    Full alert cycle:
+    1. Market hours guard — skip if outside 9:15–15:30 IST weekdays
+    2. Load portfolio JSON
+    3. Fetch live prices
+    4. Detect alerts
+    5. Deduplicate — skip alerts already sent today
+    6. Print to terminal
+    7. Send email only for new alerts (max 1 email per alert per day)
+    8. Mark sent alerts so they don't repeat
+
+    Args:
+      force_run  : bypass market hours check (for testing)
+      test_mode  : send email even with no alerts
+    """
+    # ── Market hours guard ────────────────────────────────────
+    if not force_run and not test_mode and not is_market_hours():
+        now_ist = datetime.now(IST).strftime("%d %B %Y, %I:%M %p IST")
+        print(f"  ⏰ Outside market hours ({now_ist}) — skipping run.")
+        return None
+
+    print("\n" + "="*60)
+    print("  📡 ALERT SYSTEM — RUNNING PRICE CHECK")
+    print(f"  {datetime.now(IST).strftime('%d %B %Y, %I:%M %p IST')}")
+    print(f"  Portfolio: {portfolio_path}")
+    print("="*60)
+
+    with open(portfolio_path) as f:
+        portfolio = json.load(f)
+
+    # ── Detect all triggered alerts ───────────────────────────
+    all_alerts = detect_alerts(portfolio)
+
+    # ── Mid-month macro alerts ────────────────────────────────
+    macro_alerts = detect_macro_alerts()
+    if macro_alerts:
+        print(f"\n⚠️  MACRO ALERTS — {len(macro_alerts)} condition(s) triggered!")
+        for m in macro_alerts:
+            print(f"\n  {m['emoji']} {m['title']}")
+            print(f"  {m['message'][:120]}...")
+        all_alerts["macro"] = macro_alerts
+        all_alerts["any_alerts"] = True
+    else:
+        all_alerts["macro"] = []
+        print(f"\n  ✅ Macro conditions: all clear")
+
+    # ── Deduplicate — remove alerts sent earlier today ────────
+    if not test_mode:
+        new_alerts, dedup_count = filter_new_alerts(all_alerts)
+        if dedup_count > 0:
+            print(f"  ⏭️  {dedup_count} alert(s) already sent today — deduplicated.")
+    else:
+        new_alerts  = all_alerts
+        dedup_count = 0
+
+    # ── Terminal output ───────────────────────────────────────
+    if new_alerts["stop_loss"]:
+        print(f"\n🔴 STOP-LOSS ALERTS — {len(new_alerts['stop_loss'])} position(s)!")
+        for s in new_alerts["stop_loss"]:
+            print(f"\n  {s['ticker']} — {s['name']}")
+            print(f"  Buy: ₹{s['buy_price']:.2f} | Now: ₹{s['current']:.2f} | {s['change_pct']:+.2f}%")
+            print(f"  GTT Stop: ₹{s['sl_price']:.2f} | ⚠️  EXIT ON KITE NOW")
+
+    if new_alerts["profit"]:
+        print(f"\n🟡 PROFIT TARGET ALERTS — {len(new_alerts['profit'])} position(s)!")
+        for s in new_alerts["profit"]:
+            print(f"\n  {s['ticker']} — {s['name']}")
+            print(f"  Buy: ₹{s['buy_price']:.2f} | Now: ₹{s['current']:.2f} | {s['change_pct']:+.2f}%")
+            print(f"  {s['alert_emoji']} {s['alert_label']}")
+            if s.get("suggested_trail"):
+                print(f"  📈 Update GTT to: ₹{s['suggested_trail']:.2f}")
+
+    print(f"\n✅ Healthy: {len(all_alerts['ok'])} | "
+          f"⚠️  Errors: {len(all_alerts['errors'])} | "
+          f"⏭️  Deduplicated: {dedup_count}")
+    print("="*60)
+
+    # ── Email — only for new alerts ───────────────────────────
+    should_send = send_email and (new_alerts["any_alerts"] or test_mode)
+
+    if should_send:
+        subject, html_body = format_email_body(new_alerts)
+        print(f"\n  📧 Sending alert email...")
+        sent_ok = send_email_alert(subject, html_body)
+        if sent_ok and not test_mode:
+            mark_alerts_sent(new_alerts)
+    elif send_email and not new_alerts["any_alerts"]:
+        print(f"\n  📧 No new alerts — email suppressed.")
+
+    return new_alerts
+
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Portfolio alert system")
+    parser.add_argument("--portfolio", help="Path to portfolio JSON (auto-detected if omitted)")
+    parser.add_argument("--test",      action="store_true",
+                        help="Send test email even if no alerts triggered")
+    parser.add_argument("--no-email",  action="store_true",
+                        help="Print to terminal only — no email")
+    parser.add_argument("--force",     action="store_true",
+                        help="Bypass market hours check (for testing)")
+    args = parser.parse_args()
+
+    portfolio_path = args.portfolio or find_latest_portfolio()
+    if not portfolio_path:
+        print("❌ No portfolio file found. Run screener.py first.")
+        exit(1)
+
+    check_and_alert(
+        portfolio_path,
+        send_email = not args.no_email,
+        test_mode  = args.test,
+        force_run  = args.force,
+    )

@@ -1,0 +1,56 @@
+[
+  {
+    "date": "2026-04-15",
+    "fii_net_cr": 666.20,
+    "dii_net_cr": -569.00,
+    "source": "manual_seed"
+  },
+  {
+    "date": "2026-04-13",
+    "fii_net_cr": -1983.20,
+    "dii_net_cr": 2432.30,
+    "source": "manual_seed"
+  },
+  {
+    "date": "2026-04-10",
+    "fii_net_cr": 672.10,
+    "dii_net_cr": 410.00,
+    "source": "manual_seed"
+  },
+  {
+    "date": "2026-04-09",
+    "fii_net_cr": -1711.20,
+    "dii_net_cr": 955.90,
+    "source": "manual_seed"
+  },
+  {
+    "date": "2026-04-08",
+    "fii_net_cr": -2812.00,
+    "dii_net_cr": 4168.20,
+    "source": "manual_seed"
+  },
+  {
+    "date": "2026-04-07",
+    "fii_net_cr": -8692.10,
+    "dii_net_cr": 7979.50,
+    "source": "manual_seed"
+  },
+  {
+    "date": "2026-04-06",
+    "fii_net_cr": -8167.20,
+    "dii_net_cr": 8088.70,
+    "source": "manual_seed"
+  },
+  {
+    "date": "2026-04-02",
+    "fii_net_cr": -9931.10,
+    "dii_net_cr": 7208.40,
+    "source": "manual_seed"
+  },
+  {
+    "date": "2026-04-01",
+    "fii_net_cr": -8331.20,
+    "dii_net_cr": 7171.80,
+    "source": "manual_seed"
+  }
+]
