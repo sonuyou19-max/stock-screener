@@ -107,54 +107,56 @@ def fetch_from_nse() -> list:
     if not data or not isinstance(data, list):
         raise ValueError(f"Unexpected NSE response format: {type(data)}")
 
-    records = []
+    # NSE returns rows like:
+    # {"category": "FII/FPI", "date": "17-Apr-2026", "buyValue": "...", "sellValue": "...", "netValue": "..."}
+    # {"category": "DII",     "date": "17-Apr-2026", "buyValue": "...", "sellValue": "...", "netValue": "..."}
+    # Group by date, collect FII and DII netValue per date
+
+    from collections import defaultdict
+    date_data = defaultdict(lambda: {"fii": None, "dii": None, "date_str": None})
+
     for row in data:
-        # Parse date — NSE uses various formats
-        raw_date = (
-            row.get("date") or row.get("Date") or
-            row.get("tradeDate") or row.get("TRADE_DATE") or
-            row.get("TD_DATE")
-        )
+        category = str(row.get("category", "")).upper().strip()
+        raw_date  = row.get("date") or row.get("Date") or row.get("tradeDate") or row.get("TRADE_DATE")
+        net_raw   = row.get("netValue") or row.get("net") or row.get("NET") or row.get("netBuy") or 0
+
         if not raw_date:
             continue
 
-        # Normalise date to YYYY-MM-DD
         parsed_date = _parse_nse_date(str(raw_date))
         if not parsed_date:
             continue
 
-        # Parse FII net — try all known NSE field name variants
-        fii_raw = (
-            row.get("fiiNet") or row.get("FII_NET") or
-            row.get("netBuy_FII") or row.get("netsales_FII") or
-            row.get("FII") or row.get("fii") or
-            row.get("NET_FII") or row.get("NetFII") or
-            row.get("fiinet") or 0
-        )
-        dii_raw = (
-            row.get("diiNet") or row.get("DII_NET") or
-            row.get("netBuy_DII") or row.get("netsales_DII") or
-            row.get("DII") or row.get("dii") or
-            row.get("NET_DII") or row.get("NetDII") or
-            row.get("diinet") or 0
-        )
-
-        # Skip "Pending Release" or zero rows
         try:
-            fii_str = str(fii_raw).replace(",", "").replace("+", "").strip()
-            dii_str = str(dii_raw).replace(",", "").replace("+", "").strip()
-            if fii_str in ("", "-", "N/A", "NA", "nan", "None"):
-                continue
-            fii_net = float(fii_str)
-            dii_net = float(dii_str)
+            net_val = float(str(net_raw).replace(",", "").replace("+", "").strip())
         except (ValueError, AttributeError):
-            continue  # skip pending rows
+            continue
 
-        # Skip rows where both are exactly 0 (likely pending/unavailable)
+        date_data[parsed_date]["date_str"] = parsed_date
+
+        if "FII" in category or "FPI" in category:
+            date_data[parsed_date]["fii"] = net_val
+        elif "DII" in category:
+            date_data[parsed_date]["dii"] = net_val
+
+    records = []
+    for parsed_date, vals in date_data.items():
+        fii_net = vals["fii"]
+        dii_net = vals["dii"]
+
+        # Skip if both missing
+        if fii_net is None and dii_net is None:
+            continue
+
+        fii_net = fii_net if fii_net is not None else 0.0
+        dii_net = dii_net if dii_net is not None else 0.0
+
+        # Skip rows where both are exactly 0 (data pending)
         if fii_net == 0.0 and dii_net == 0.0:
             print(f"  ⚠️  Skipping {parsed_date} — both FII and DII are 0 (data pending)")
             continue
 
+        print(f"  📊 {parsed_date}: FII ₹{fii_net:+,.2f}Cr | DII ₹{dii_net:+,.2f}Cr")
         records.append({
             "date":       parsed_date,
             "fii_net_cr": round(fii_net, 2),
