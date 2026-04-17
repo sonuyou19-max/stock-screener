@@ -241,6 +241,25 @@ def save_synthesis(verdict: dict, macro: dict):
     with open(SYNTHESIS_FILE, "w") as f:
         json.dump(output, f, indent=2)
     print(f"  ✅ Synthesis saved to {SYNTHESIS_FILE}")
+    _post_signal_to_api("llm_synthesis", output)
+
+
+def _post_signal_to_api(signal_type: str, payload: dict):
+    """POST signal data to the web API so the dashboard can read it."""
+    import urllib.request as _urllib
+    import os as _os
+    api_url = _os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+    url = f"{api_url}/signals/upload"
+    try:
+        import json as _json
+        body = _json.dumps({"type": signal_type, "payload": payload}).encode("utf-8")
+        req = _urllib.Request(url, data=body,
+                              headers={"Content-Type": "application/json"},
+                              method="POST")
+        with _urllib.urlopen(req, timeout=10) as resp:
+            print(f"  ✅ {signal_type} POSTed to API: {resp.read().decode()}")
+    except Exception as e:
+        print(f"  ⚠️  Could not POST {signal_type} to API (non-fatal): {e}")
 
 
 def load_synthesis() -> dict | None:
