@@ -35,6 +35,20 @@ def _load_json(path: str):
         return None
 
 
+def _sanitise(obj):
+    """Recursively replace NaN/Infinity with None so JSON is valid for browsers."""
+    import math
+    if isinstance(obj, float):
+        if math.isnan(obj) or math.isinf(obj):
+            return None
+        return obj
+    if isinstance(obj, dict):
+        return {k: _sanitise(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitise(v) for v in obj]
+    return obj
+
+
 def _save_json(path: str, data):
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
@@ -69,14 +83,14 @@ def add_cors(response):
 def latest_portfolio():
     # 1. Try in-memory cache first (most recent run)
     if _portfolio_cache:
-        return jsonify(_portfolio_cache)
+        return jsonify(_sanitise(_portfolio_cache))
 
     # 2. Try reading from disk
     path = _find_latest_portfolio()
     if path:
         data = _load_json(path)
         if data:
-            return jsonify(data)
+            return jsonify(_sanitise(data))
 
     return jsonify({"error": "No portfolio found. Run screener.py first."}), 404
 
@@ -93,8 +107,8 @@ def upload_portfolio():
         if not data:
             return jsonify({"error": "Empty payload"}), 400
 
-        # Cache in memory
-        _portfolio_cache = data
+        # Cache in memory (sanitised)
+        _portfolio_cache = _sanitise(data)
 
         # Also persist to disk (best-effort)
         from datetime import datetime
