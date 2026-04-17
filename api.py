@@ -1,34 +1,31 @@
 """
 API Server — Serves portfolio data to the Netlify dashboard
 ============================================================
-A lightweight Flask API that exposes portfolio JSON files
-and signal data so the static Netlify dashboard can read them.
-
-Deploy this as a 7th Railway service (always-on, not a cron job).
-Railway will give it a public HTTPS URL automatically.
-
 Routes:
-  GET /portfolio/latest  → latest portfolio_YYYYMM.json
-  GET /fiidii            → fiidii_history.json
-  GET /signals           → policy + news + llm signals combined
-  GET /health            → health check
-
-Usage:
-  python api.py
+  GET  /portfolio/latest  → latest portfolio JSON
+  POST /portfolio/upload  → screener posts results here
+  GET  /fiidii            → FII/DII history
+  GET  /signals           → policy + news + llm signals
+  GET  /health            → health check
 """
 
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 import glob
 import json
 import os
 
 app = Flask(__name__)
 
-DATA_DIR = os.getenv("DATA_DIR", os.path.dirname(__file__))
+DATA_DIR = os.getenv("DATA_DIR", "/data")
+os.makedirs(DATA_DIR, exist_ok=True)
+
+# In-memory cache — survives between requests within same container
+_portfolio_cache: dict = {}
+_signals_cache:   dict = {}
+_fiidii_cache:    list = []
 
 
 def _load_json(path: str):
-    """Load a JSON file safely. Returns None if missing."""
     if not os.path.exists(path):
         return None
     try:
@@ -38,73 +35,134 @@ def _load_json(path: str):
         return None
 
 
-def _find_latest_portfolio() -> str | None:
-    """Find the most recent portfolio JSON file."""
+def _save_json(path: str, data):
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "w") as f:
+            json.dump(data, f, indent=2, default=str)
+        return True
+    except Exception as e:
+        print(f"⚠️  Could not save {path}: {e}")
+        return False
+
+
+def _find_latest_portfolio():
     patterns = [
         os.path.join(DATA_DIR, "portfolio_*.json"),
-        os.path.join(os.path.dirname(__file__), "portfolio_*.json"),
         "portfolio_*.json",
     ]
     files = []
     for p in patterns:
         files.extend(glob.glob(p))
-    if not files:
-        return None
-    return sorted(set(files))[-1]
+    return sorted(set(files))[-1] if files else None
 
 
 @app.after_request
 def add_cors(response):
-    """Allow Netlify dashboard to call this API."""
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return response
 
 
-@app.route("/portfolio/latest")
+@app.route("/portfolio/latest", methods=["GET", "OPTIONS"])
 def latest_portfolio():
+    # 1. Try in-memory cache first (most recent run)
+    if _portfolio_cache:
+        return jsonify(_portfolio_cache)
+
+    # 2. Try reading from disk
     path = _find_latest_portfolio()
-    if not path:
-        return jsonify({"error": "No portfolio found. Run screener.py first."}), 404
-    data = _load_json(path)
-    if not data:
-        return jsonify({"error": "Portfolio file is empty or corrupt."}), 500
-    return jsonify(data)
+    if path:
+        data = _load_json(path)
+        if data:
+            return jsonify(data)
+
+    return jsonify({"error": "No portfolio found. Run screener.py first."}), 404
 
 
-@app.route("/fiidii")
+@app.route("/portfolio/upload", methods=["POST", "OPTIONS"])
+def upload_portfolio():
+    """Screener POSTs its results here after every run."""
+    global _portfolio_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+
+    try:
+        data = request.get_json(force=True)
+        if not data:
+            return jsonify({"error": "Empty payload"}), 400
+
+        # Cache in memory
+        _portfolio_cache = data
+
+        # Also persist to disk (best-effort)
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m")
+        path = os.path.join(DATA_DIR, f"portfolio_{timestamp}.json")
+        _save_json(path, data)
+
+        print(f"✅ Portfolio received and cached ({len(str(data))} bytes)")
+        return jsonify({"status": "ok", "saved_to": path}), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/fiidii", methods=["GET"])
 def fiidii():
+    global _fiidii_cache
+    # Try disk first, then cache
     path = os.path.join(DATA_DIR, "fiidii_history.json")
-    data = _load_json(path) or []
-    return jsonify(data)
+    data = _load_json(path)
+    if data:
+        _fiidii_cache = data
+        return jsonify(data)
+    # Fallback: try app directory
+    path2 = "fiidii_history.json"
+    data2 = _load_json(path2)
+    if data2:
+        return jsonify(data2)
+    return jsonify(_fiidii_cache or [])
 
 
-@app.route("/signals")
+@app.route("/signals", methods=["GET"])
 def signals():
     result = {}
     for name in ["policy_signals", "news_signals", "llm_synthesis"]:
-        path = os.path.join(DATA_DIR, f"{name}.json")
-        data = _load_json(path)
+        # Try DATA_DIR first
+        data = _load_json(os.path.join(DATA_DIR, f"{name}.json"))
+        # Fallback to app dir
+        if not data:
+            data = _load_json(f"{name}.json")
         if data:
             result[name] = data
     return jsonify(result)
 
 
-@app.route("/health")
+@app.route("/health", methods=["GET"])
 def health():
     portfolio_path = _find_latest_portfolio()
     return jsonify({
-        "status":    "ok",
-        "portfolio": os.path.basename(portfolio_path) if portfolio_path else None,
-        "data_dir":  DATA_DIR,
+        "status":        "ok",
+        "portfolio":     os.path.basename(portfolio_path) if portfolio_path else None,
+        "cached":        bool(_portfolio_cache),
+        "data_dir":      DATA_DIR,
+        "data_dir_exists": os.path.exists(DATA_DIR),
     })
 
 
-@app.route("/")
+@app.route("/", methods=["GET"])
 def index():
     return jsonify({
         "name":      "Indian Stock Screener API",
-        "endpoints": ["/portfolio/latest", "/fiidii", "/signals", "/health"],
+        "endpoints": [
+            "GET  /portfolio/latest",
+            "POST /portfolio/upload",
+            "GET  /fiidii",
+            "GET  /signals",
+            "GET  /health",
+        ],
     })
 
 
