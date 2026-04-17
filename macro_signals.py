@@ -19,6 +19,8 @@ Data source: Yahoo Finance (free, no API key)
   Nasdaq      : ^IXIC
 """
 
+import os
+import json
 import yfinance as yf
 import pandas as pd
 import time
