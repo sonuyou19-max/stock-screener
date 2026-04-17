@@ -224,6 +224,23 @@ def add_manual_entry(
 # MAIN COLLECTION RUN
 # ─────────────────────────────────────────────
 
+def _post_to_api(history: list):
+    """POST FII/DII history to the web API so it can serve fresh data."""
+    import urllib.request as _urllib
+    import urllib.error as _urlerr
+    api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+    url = f"{api_url}/fiidii/upload"
+    try:
+        payload = json.dumps(history).encode("utf-8")
+        req = _urllib.Request(url, data=payload,
+                              headers={"Content-Type": "application/json"},
+                              method="POST")
+        with _urllib.urlopen(req, timeout=10) as resp:
+            print(f"  ✅ FII/DII POSTed to API: {resp.read().decode()}")
+    except Exception as e:
+        print(f"  ⚠️  Could not POST to API (non-fatal): {e}")
+
+
 def collect(target_date: str = None, force: bool = False):
     """
     Fetch today's (or a specific date's) FII/DII data
@@ -282,6 +299,8 @@ def collect(target_date: str = None, force: bool = False):
     else:
         save_history(history)
         print(f"\n  ✅ Added {added} record(s). History now has {len(history)} days.")
+        # POST updated history to API so web service can serve it
+        _post_to_api(history)
 
     _print_summary(load_history())
 
