@@ -21,6 +21,8 @@ Data source: Yahoo Finance (free, no API key)
 
 import yfinance as yf
 import pandas as pd
+import os
+import json
 import time
 from datetime import datetime
 from typing import Optional
@@ -592,8 +594,6 @@ FIIDII_HISTORY_FILE = os.path.join(os.path.dirname(__file__), "fiidii_history.js
 POLICY_SIGNALS_FILE = os.path.join(os.path.dirname(__file__), "policy_signals.json")
 NEWS_SIGNALS_FILE   = os.path.join(os.path.dirname(__file__), "news_signals.json")
 
-import os
-import json
 import requests as _requests
 
 
