@@ -2122,18 +2122,21 @@ def print_bucket_full_ranking(all_results: dict):
 
 def save_results(portfolio: dict, all_results: dict):
     """Save portfolio to JSON and full rankings to CSV."""
+    import os as _os
     timestamp = datetime.now().strftime("%Y%m")
+    data_dir = _os.getenv("DATA_DIR", ".")
+    _os.makedirs(data_dir, exist_ok=True)
 
     # Save portfolio JSON
-    portfolio_path = f"/mnt/user-data/outputs/portfolio_{timestamp}.json"
+    portfolio_path = _os.path.join(data_dir, f"portfolio_{timestamp}.json")
     with open(portfolio_path, "w") as f:
         json.dump(portfolio, f, indent=2, default=str)
-    print(f"\n  ✅ Portfolio saved: portfolio_{timestamp}.json")
+    print(f"\n  ✅ Portfolio saved: {portfolio_path}")
 
     # Save full rankings CSV per bucket
     for bucket_key, df in all_results.items():
         if not df.empty:
-            path = f"/mnt/user-data/outputs/ranking_{bucket_key}_{timestamp}.csv"
+            path = _os.path.join(data_dir, f"ranking_{bucket_key}_{timestamp}.csv")
             df.to_csv(path, index=False)
     print(f"  ✅ Full rankings saved as CSV files")
 
