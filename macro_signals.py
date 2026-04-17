@@ -21,8 +21,6 @@ Data source: Yahoo Finance (free, no API key)
 
 import yfinance as yf
 import pandas as pd
-import os
-import json
 import time
 from datetime import datetime
 from typing import Optional
@@ -590,9 +588,16 @@ def fetch_global_market_signal() -> dict:
 # FII / DII FLOW TRACKER (4.1)
 # ─────────────────────────────────────────────
 
-FIIDII_HISTORY_FILE = os.path.join(os.path.dirname(__file__), "fiidii_history.json")
-POLICY_SIGNALS_FILE = os.path.join(os.path.dirname(__file__), "policy_signals.json")
-NEWS_SIGNALS_FILE   = os.path.join(os.path.dirname(__file__), "news_signals.json")
+# FII signal thresholds (₹ Crore, 10-day rolling)
+FII_STRONG_BUY  =  5_000   # 10d net > ₹5000 Cr = strong buying
+FII_MILD_BUY    =  1_000   # 10d net > ₹1000 Cr = mild buying
+FII_MILD_SELL   = -1_000   # 10d net < -₹1000 Cr = mild selling
+FII_STRONG_SELL = -5_000   # 10d net < -₹5000 Cr = strong selling
+
+_DATA_DIR = os.getenv("DATA_DIR", os.path.dirname(__file__))
+FIIDII_HISTORY_FILE = os.path.join(_DATA_DIR, "fiidii_history.json")
+POLICY_SIGNALS_FILE = os.path.join(_DATA_DIR, "policy_signals.json")
+NEWS_SIGNALS_FILE   = os.path.join(_DATA_DIR, "news_signals.json")
 
 import requests as _requests
 
@@ -617,13 +622,25 @@ def fetch_fiidii_signal() -> dict:
     }
 
     try:
-        if not os.path.exists(FIIDII_HISTORY_FILE):
+        history = None
+        # Try local file first
+        if os.path.exists(FIIDII_HISTORY_FILE):
+            with open(FIIDII_HISTORY_FILE) as f:
+                history = json.load(f)
+        # Fallback: fetch from API
+        if not history:
+            api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+            try:
+                import urllib.request as _ur
+                with _ur.urlopen(f"{api_url}/fiidii", timeout=8) as r:
+                    history = json.loads(r.read().decode())
+                    print("  📡 FII/DII loaded from API")
+            except Exception as _e:
+                print(f"  ⚠️  Could not fetch FII/DII from API: {_e}")
+        if not history:
             result["notes"] = "⚠️  FII/DII history file missing — run collector.py first."
             result["error"] = True
             return result
-
-        with open(FIIDII_HISTORY_FILE) as f:
-            history = json.load(f)
 
         if not history:
             result["notes"] = "⚠️  FII/DII history empty — neutral used."
