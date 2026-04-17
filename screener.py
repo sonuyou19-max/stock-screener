@@ -2121,13 +2121,16 @@ def print_bucket_full_ranking(all_results: dict):
 
 
 def save_results(portfolio: dict, all_results: dict):
-    """Save portfolio to JSON and full rankings to CSV."""
+    """Save portfolio to JSON, CSV, and POST to API for dashboard."""
     import os as _os
+    import urllib.request as _urllib
+    import urllib.error as _urlerr
+
     timestamp = datetime.now().strftime("%Y%m")
     data_dir = _os.getenv("DATA_DIR", ".")
     _os.makedirs(data_dir, exist_ok=True)
 
-    # Save portfolio JSON
+    # Save portfolio JSON locally
     portfolio_path = _os.path.join(data_dir, f"portfolio_{timestamp}.json")
     with open(portfolio_path, "w") as f:
         json.dump(portfolio, f, indent=2, default=str)
@@ -2139,6 +2142,25 @@ def save_results(portfolio: dict, all_results: dict):
             path = _os.path.join(data_dir, f"ranking_{bucket_key}_{timestamp}.csv")
             df.to_csv(path, index=False)
     print(f"  ✅ Full rankings saved as CSV files")
+
+    # POST portfolio to API so dashboard can read it immediately
+    api_url = _os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+    upload_url = f"{api_url}/portfolio/upload"
+    try:
+        payload = json.dumps(portfolio, default=str).encode("utf-8")
+        req = _urllib.Request(
+            upload_url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _urllib.urlopen(req, timeout=15) as resp:
+            body = resp.read().decode()
+            print(f"  ✅ Portfolio POSTed to API: {body}")
+    except _urlerr.URLError as e:
+        print(f"  ⚠️  Could not POST to API (non-fatal): {e}")
+    except Exception as e:
+        print(f"  ⚠️  API upload error (non-fatal): {e}")
 
     return portfolio_path
 
