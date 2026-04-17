@@ -95,6 +95,50 @@ def latest_portfolio():
     return jsonify({"error": "No portfolio found. Run screener.py first."}), 404
 
 
+@app.route("/fiidii/upload", methods=["POST", "OPTIONS"])
+def upload_fiidii():
+    """fii-collector POSTs its history here after every run."""
+    global _fiidii_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        data = request.get_json(force=True)
+        if not data:
+            return jsonify({"error": "Empty payload"}), 400
+        _fiidii_cache = data
+        # Persist to disk best-effort
+        path = os.path.join(DATA_DIR, "fiidii_history.json")
+        _save_json(path, data)
+        print(f"✅ FII/DII data received: {len(data)} records")
+        return jsonify({"status": "ok", "records": len(data)}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/signals/upload", methods=["POST", "OPTIONS"])
+def upload_signals():
+    """news-scanner / policy-scraper / llm-synth POST their signals here."""
+    global _signals_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        data = request.get_json(force=True)
+        if not data:
+            return jsonify({"error": "Empty payload"}), 400
+        # data should be like {"type": "news_signals", "payload": {...}}
+        sig_type = data.get("type")
+        payload  = data.get("payload")
+        if not sig_type or payload is None:
+            return jsonify({"error": "Need 'type' and 'payload' fields"}), 400
+        _signals_cache[sig_type] = payload
+        path = os.path.join(DATA_DIR, f"{sig_type}.json")
+        _save_json(path, payload)
+        print(f"✅ Signal received: {sig_type}")
+        return jsonify({"status": "ok", "type": sig_type}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/portfolio/upload", methods=["POST", "OPTIONS"])
 def upload_portfolio():
     """Screener POSTs its results here after every run."""
@@ -126,31 +170,40 @@ def upload_portfolio():
 @app.route("/fiidii", methods=["GET"])
 def fiidii():
     global _fiidii_cache
-    # Try disk first, then cache
-    path = os.path.join(DATA_DIR, "fiidii_history.json")
-    data = _load_json(path)
-    if data:
-        _fiidii_cache = data
-        return jsonify(data)
-    # Fallback: try app directory
-    path2 = "fiidii_history.json"
-    data2 = _load_json(path2)
-    if data2:
-        return jsonify(data2)
-    return jsonify(_fiidii_cache or [])
+    # 1. Try in-memory cache first (most recent from collector POST)
+    if _fiidii_cache:
+        return jsonify(_fiidii_cache)
+    # 2. Try disk
+    for path in [
+        os.path.join(DATA_DIR, "fiidii_history.json"),
+        "fiidii_history.json",
+        os.path.join(os.path.dirname(__file__), "fiidii_history.json"),
+    ]:
+        data = _load_json(path)
+        if data:
+            _fiidii_cache = data
+            return jsonify(data)
+    return jsonify([])
 
 
 @app.route("/signals", methods=["GET"])
 def signals():
     result = {}
     for name in ["policy_signals", "news_signals", "llm_synthesis"]:
-        # Try DATA_DIR first
-        data = _load_json(os.path.join(DATA_DIR, f"{name}.json"))
-        # Fallback to app dir
-        if not data:
-            data = _load_json(f"{name}.json")
-        if data:
-            result[name] = data
+        # Try in-memory cache first
+        if name in _signals_cache:
+            result[name] = _signals_cache[name]
+            continue
+        # Try disk locations
+        for path in [
+            os.path.join(DATA_DIR, f"{name}.json"),
+            f"{name}.json",
+            os.path.join(os.path.dirname(__file__), f"{name}.json"),
+        ]:
+            data = _load_json(path)
+            if data:
+                result[name] = data
+                break
     return jsonify(result)
 
 
