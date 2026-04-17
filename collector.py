@@ -29,7 +29,7 @@ from zoneinfo import ZoneInfo
 # ─────────────────────────────────────────────
 
 IST              = ZoneInfo("Asia/Kolkata")
-HISTORY_FILE     = os.path.join(os.path.dirname(__file__), "fiidii_history.json")
+HISTORY_FILE     = os.path.join(os.getenv("DATA_DIR", os.path.dirname(__file__)), "fiidii_history.json")
 MAX_HISTORY_DAYS = 90      # keep last 90 trading days
 NSE_FIIDII_URL   = "https://www.nseindia.com/api/fiidiiTradeReact"
 
@@ -99,6 +99,11 @@ def fetch_from_nse() -> list:
     resp.raise_for_status()
     data = resp.json()
 
+    # Debug: print first row keys so we can see the actual field names
+    if data and isinstance(data, list) and len(data) > 0:
+        print(f"  🔍 NSE API sample keys: {list(data[0].keys())}")
+        print(f"  🔍 NSE API first row: {data[0]}")
+    
     if not data or not isinstance(data, list):
         raise ValueError(f"Unexpected NSE response format: {type(data)}")
 
@@ -106,10 +111,9 @@ def fetch_from_nse() -> list:
     for row in data:
         # Parse date — NSE uses various formats
         raw_date = (
-            row.get("date") or
-            row.get("Date") or
-            row.get("tradeDate") or
-            row.get("TRADE_DATE")
+            row.get("date") or row.get("Date") or
+            row.get("tradeDate") or row.get("TRADE_DATE") or
+            row.get("TD_DATE")
         )
         if not raw_date:
             continue
@@ -119,24 +123,37 @@ def fetch_from_nse() -> list:
         if not parsed_date:
             continue
 
-        # Parse FII net
+        # Parse FII net — try all known NSE field name variants
         fii_raw = (
             row.get("fiiNet") or row.get("FII_NET") or
             row.get("netBuy_FII") or row.get("netsales_FII") or
-            row.get("FII") or 0
+            row.get("FII") or row.get("fii") or
+            row.get("NET_FII") or row.get("NetFII") or
+            row.get("fiinet") or 0
         )
         dii_raw = (
             row.get("diiNet") or row.get("DII_NET") or
             row.get("netBuy_DII") or row.get("netsales_DII") or
-            row.get("DII") or 0
+            row.get("DII") or row.get("dii") or
+            row.get("NET_DII") or row.get("NetDII") or
+            row.get("diinet") or 0
         )
 
-        # Skip "Pending Release" rows
+        # Skip "Pending Release" or zero rows
         try:
-            fii_net = float(str(fii_raw).replace(",", "").replace("+", ""))
-            dii_net = float(str(dii_raw).replace(",", "").replace("+", ""))
+            fii_str = str(fii_raw).replace(",", "").replace("+", "").strip()
+            dii_str = str(dii_raw).replace(",", "").replace("+", "").strip()
+            if fii_str in ("", "-", "N/A", "NA", "nan", "None"):
+                continue
+            fii_net = float(fii_str)
+            dii_net = float(dii_str)
         except (ValueError, AttributeError):
             continue  # skip pending rows
+
+        # Skip rows where both are exactly 0 (likely pending/unavailable)
+        if fii_net == 0.0 and dii_net == 0.0:
+            print(f"  ⚠️  Skipping {parsed_date} — both FII and DII are 0 (data pending)")
+            continue
 
         records.append({
             "date":       parsed_date,
