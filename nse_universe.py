@@ -100,14 +100,14 @@ BUCKET_FILTERS = {
     },
     "FMCG_PHARMA": {
         "min_market_cap_cr":    10_000,
-        "max_pe":               55,
-        "max_pb":               12.0,     # 1.4: FMCG brands justify high PB
-        "max_52w_proximity":    0.90,     # 1.4
-        "min_roe":              20,
-        "min_revenue_growth":   8,
-        "max_debt_equity":      0.5,
-        "max_peg":              3.0,
-        "min_profit_growth":    10,
+        "max_pe":               65,       # Revised: FMCG/Pharma 5yr avg PE is 52x; 65 allows premium without buying junk
+        "max_pb":               12.0,     # Unchanged: FMCG brands justify high PB
+        "max_52w_proximity":    0.90,     # Unchanged: don't buy near peaks
+        "min_roe":              18,       # Revised from 20: still screens weak businesses; 20 was too tight
+        "min_revenue_growth":   8,        # Unchanged: only growing businesses
+        "max_debt_equity":      1.5,      # Revised from 0.5: pharma D/E 0.04–0.58 operationally; 1.5 excludes truly leveraged
+        "max_peg":              3.0,      # Unchanged
+        "min_profit_growth":    10,       # Unchanged: profit discipline non-negotiable
     },
 }
 
