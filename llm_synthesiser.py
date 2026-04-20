@@ -176,10 +176,19 @@ Respond with ONLY a JSON object in this exact format:
   "overall_market": "one sentence on overall Indian market outlook"
 }}"""
 
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        print("  ❌ ANTHROPIC_API_KEY not set — skipping LLM synthesis.")
+        return None
+
     try:
         resp = requests.post(
             ANTHROPIC_API,
-            headers={"Content-Type": "application/json"},
+            headers={
+                "Content-Type":    "application/json",
+                "x-api-key":       api_key,
+                "anthropic-version": "2023-06-01",
+            },
             json={
                 "model":      MODEL,
                 "max_tokens": MAX_TOKENS,
