@@ -24,7 +24,7 @@ import json
 import yfinance as yf
 import pandas as pd
 import time
-from datetime import datetime
+from datetime import datetime, date as _date, date
 from typing import Optional
 
 # ─────────────────────────────────────────────
