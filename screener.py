@@ -100,7 +100,7 @@ MIN_ADV = {
     "BFSI_IT":        500_000,   # 5 lakh shares/day
     "DEFENCE_INFRA":  200_000,   # 2 lakh shares/day
     "GREEN_ENERGY_EV":150_000,   # 1.5 lakh shares/day
-    "FMCG_PHARMA":    200_000,   # 2 lakh shares/day
+    "FMCG_PHARMA":    100_000,   # Revised from 2L: high-priced pharma naturally trades fewer shares; value liquidity matters more
 }
 # Minimum Average Daily Traded Value in ₹ crore (applies to ALL buckets)
 MIN_ADTV_CR = 5.0               # ₹5 crore/day minimum
