@@ -591,10 +591,22 @@ def fetch_global_market_signal() -> dict:
 # ─────────────────────────────────────────────
 
 # FII signal thresholds (₹ Crore, 10-day rolling)
-FII_STRONG_BUY  =  5_000   # 10d net > ₹5000 Cr = strong buying
-FII_MILD_BUY    =  1_000   # 10d net > ₹1000 Cr = mild buying
-FII_MILD_SELL   = -1_000   # 10d net < -₹1000 Cr = mild selling
-FII_STRONG_SELL = -5_000   # 10d net < -₹5000 Cr = strong selling
+FII_STRONG_BUY  =  5_000
+FII_MILD_BUY    =  1_000
+FII_MILD_SELL   = -1_000
+FII_STRONG_SELL = -5_000
+
+# Allocation multipliers per combined FII+DII signal
+_N = {"BFSI_IT":1.0,"DEFENCE_INFRA":1.0,"GREEN_ENERGY_EV":1.0,"FMCG_PHARMA":1.0}
+FIIDII_ADJUSTMENTS = {
+    "both_buying":           {"BFSI_IT":1.06,"DEFENCE_INFRA":1.05,"GREEN_ENERGY_EV":1.04,"FMCG_PHARMA":1.03},
+    "fii_buying":            {"BFSI_IT":1.04,"DEFENCE_INFRA":1.03,"GREEN_ENERGY_EV":1.03,"FMCG_PHARMA":1.02},
+    "neutral":               _N,
+    "fii_selling_dii_buying":{"BFSI_IT":0.97,"DEFENCE_INFRA":0.97,"GREEN_ENERGY_EV":0.98,"FMCG_PHARMA":1.00},
+    "fii_strong_selling":    {"BFSI_IT":0.94,"DEFENCE_INFRA":0.95,"GREEN_ENERGY_EV":0.96,"FMCG_PHARMA":0.98},
+    "both_selling":          {"BFSI_IT":0.92,"DEFENCE_INFRA":0.93,"GREEN_ENERGY_EV":0.94,"FMCG_PHARMA":0.96},
+    "mild_sell":             {"BFSI_IT":0.96,"DEFENCE_INFRA":0.96,"GREEN_ENERGY_EV":0.97,"FMCG_PHARMA":0.98},
+}
 
 _DATA_DIR = os.getenv("DATA_DIR", os.path.dirname(__file__))
 FIIDII_HISTORY_FILE = os.path.join(_DATA_DIR, "fiidii_history.json")
@@ -744,13 +756,26 @@ def fetch_policy_signal() -> dict:
     }
 
     try:
-        if not os.path.exists(POLICY_SIGNALS_FILE):
+        data = None
+        if os.path.exists(POLICY_SIGNALS_FILE):
+            with open(POLICY_SIGNALS_FILE) as f:
+                data = json.load(f)
+        if not data:
+            # Try fetching from API
+            api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+            try:
+                import urllib.request as _ur
+                with _ur.urlopen(f"{api_url}/signals", timeout=8) as r:
+                    all_signals = json.loads(r.read().decode())
+                    data = all_signals.get("policy_signals")
+                    if data:
+                        print("  📡 Policy signals loaded from API")
+            except Exception as _e:
+                print(f"  ⚠️  Could not fetch policy signals from API: {_e}")
+        if not data:
             result["notes"] = "⚠️  Policy signals missing — run policy_scraper.py first."
             result["error"] = True
             return result
-
-        with open(POLICY_SIGNALS_FILE) as f:
-            data = json.load(f)
 
         # Check staleness — policy scan should run weekly
         generated_str = data.get("generated_at", "")
@@ -833,13 +858,25 @@ def fetch_news_signal() -> dict:
     }
 
     try:
-        if not os.path.exists(NEWS_SIGNALS_FILE):
+        data = None
+        if os.path.exists(NEWS_SIGNALS_FILE):
+            with open(NEWS_SIGNALS_FILE) as f:
+                data = json.load(f)
+        if not data:
+            api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+            try:
+                import urllib.request as _ur
+                with _ur.urlopen(f"{api_url}/signals", timeout=8) as r:
+                    all_signals = json.loads(r.read().decode())
+                    data = all_signals.get("news_signals")
+                    if data:
+                        print("  📡 News signals loaded from API")
+            except Exception as _e:
+                print(f"  ⚠️  Could not fetch news signals from API: {_e}")
+        if not data:
             result["notes"] = "⚠️  News signals missing — run news_sentiment.py first."
             result["error"] = True
             return result
-
-        with open(NEWS_SIGNALS_FILE) as f:
-            data = json.load(f)
 
         # Staleness check — news signals expire after 2 days
         generated_str = data.get("generated_at", "")
