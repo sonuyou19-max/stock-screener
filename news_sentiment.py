@@ -58,15 +58,10 @@ HEADERS = {
 
 # RSS Feed URLs
 RSS_FEEDS = {
-    "Economic Times Markets": (
-        "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"
-    ),
-    "Economic Times Economy": (
-        "https://economictimes.indiatimes.com/economy/rssfeeds/1373380680.cms"
-    ),
-    # Moneycontrol fetched with XML sanitisation below
-    "Moneycontrol":           "https://www.moneycontrol.com/rss/MCtopnews.xml",
-    "LiveMint":               "https://www.livemint.com/rss/markets",
+    "Economic Times Markets": "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
+    "Economic Times Economy": "https://economictimes.indiatimes.com/economy/rssfeeds/1373380680.cms",
+    "Economic Times Industry":"https://economictimes.indiatimes.com/industry/rssfeeds/13352306.cms",
+    "LiveMint Markets":       "https://www.livemint.com/rss/markets",
     "LiveMint Economy":       "https://www.livemint.com/rss/economy",
 }
 
@@ -129,7 +124,7 @@ def fetch_rss_feed(source_name: str, url: str) -> list:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
 
-        # Sanitise XML before parsing (fixes Moneycontrol invalid token errors)
+        # Sanitise XML before parsing (some feeds have malformed XML)
         try:
             xml_str = resp.content.decode("utf-8", errors="replace")
         except Exception:
