@@ -634,17 +634,43 @@ def send_email_alert(subject: str, html_body: str) -> bool:
 # ─────────────────────────────────────────────
 
 def find_latest_portfolio(search_dirs: list = None) -> Optional[str]:
-    """Find the most recent portfolio JSON file."""
+    """Find the most recent portfolio JSON file, or fetch from API."""
+    import os as _os
+    data_dir = _os.getenv("DATA_DIR", ".")
     if search_dirs is None:
-        search_dirs = ["./outputs", "/mnt/user-data/outputs", "."]
+        search_dirs = [data_dir, "./outputs", "/mnt/user-data/outputs", "."]
 
     files = []
     for d in search_dirs:
-        files.extend(glob.glob(os.path.join(d, "portfolio_*.json")))
+        files.extend(glob.glob(_os.path.join(d, "portfolio_*.json")))
 
-    if not files:
+    if files:
+        return sorted(files)[-1]
+
+    # Fallback: fetch from API and save to temp file
+    api_url = _os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+    try:
+        import urllib.request as _ur
+        import json as _json
+        import tempfile as _tmp
+        print(f"  📡 No local portfolio found — fetching from API...")
+        with _ur.urlopen(f"{api_url}/portfolio/latest", timeout=15) as r:
+            text = r.read().decode()
+            # Strip NaN values
+            text = text.replace(":NaN", ":null").replace(":Infinity", ":null")
+            data = _json.loads(text)
+        # Save to temp file
+        tmp = _tmp.NamedTemporaryFile(
+            mode="w", suffix=".json",
+            prefix="portfolio_api_", delete=False
+        )
+        _json.dump(data, tmp)
+        tmp.close()
+        print(f"  ✅ Portfolio loaded from API → {tmp.name}")
+        return tmp.name
+    except Exception as e:
+        print(f"  ⚠️  Could not fetch portfolio from API: {e}")
         return None
-    return sorted(files)[-1]
 
 
 # ─────────────────────────────────────────────
