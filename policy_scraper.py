@@ -53,14 +53,19 @@ HEADERS = {
 BUCKET_KEYWORDS = {
     "BFSI_IT": {
         "positive": [
-            # RBI rate / liquidity signals
             "rate cut", "repo rate cut", "reduces repo", "rate reduction",
             "accommodative", "liquidity infusion", "credit growth",
             "npa reduction", "npa declined", "bad loan recovery",
             "digital banking", "upi", "fintech", "insurance fdi",
-            # IT sector
             "it exports", "software exports", "digital india",
             "semiconductor", "electronics manufacturing",
+            "bank profit", "banking sector", "rbi policy", "monetary policy",
+            "credit offtake", "loan growth", "deposit growth",
+            "it hiring", "tech deal", "software deal", "it order",
+            "rupee strengthens", "inr strengthens",
+            "sbi profit", "hdfc profit", "icici profit",
+            "infosys revenue", "tcs revenue", "wipro revenue",
+            "market rally", "sensex gains", "nifty gains",
         ],
         "negative": [
             "rate hike", "repo rate hike", "raises repo", "tightening",
@@ -69,11 +74,11 @@ BUCKET_KEYWORDS = {
             "bank fraud", "penalty on bank", "rbi penalty",
             "it slowdown", "visa restriction", "h1b",
             "cybersecurity breach", "data breach",
+            "banking crisis", "bank collapse", "credit crunch",
+            "rupee falls", "rupee weakens", "inr depreciates",
+            "it layoffs", "tech layoffs",
         ],
-        "neutral_override": [
-            # If these appear near negative words, suppress false positives
-            "rate manipulation", "rate rigging",
-        ],
+        "neutral_override": ["rate manipulation", "rate rigging"],
     },
 
     "DEFENCE_INFRA": {
@@ -86,13 +91,19 @@ BUCKET_KEYWORDS = {
             "road construction", "railway capex", "smart city",
             "port development", "airport development",
             "construction boost", "cement demand",
+            "defence order", "defence contract", "ministry of defence",
+            "armed forces", "military", "fighter jet", "warship",
+            "infrastructure spending", "capex boost", "government spending",
+            "nhai", "railway expansion", "metro rail", "bullet train",
+            "power grid", "transmission line",
+            "l&t order", "engineers india", "rvnl order",
         ],
         "negative": [
             "defence budget cut", "defence cut", "capex reduction",
             "infrastructure delay", "project cancellation",
             "import defence", "defence import increase",
             "fiscal consolidation", "spending cut",
-            "infra project stalled",
+            "infra project stalled", "construction slowdown",
         ],
         "neutral_override": [],
     },
@@ -107,6 +118,11 @@ BUCKET_KEYWORDS = {
             "solar park", "offshore wind",
             "pm kusum", "pm surya ghar", "rooftop solar",
             "ireda", "ntpc green", "adani green",
+            "oil price falls", "crude falls", "brent falls",
+            "oil crash", "crude crash", "oil slumps",
+            "eicher motors", "ev sales", "charging station",
+            "renewable energy capacity", "solar installation",
+            "wind power", "ev infrastructure",
         ],
         "negative": [
             "solar duty", "import duty solar", "bcd on solar",
@@ -115,6 +131,8 @@ BUCKET_KEYWORDS = {
             "ev subsidy cut", "fame scheme cut",
             "grid curtailment", "power sector stress",
             "coal import", "fossil fuel expansion",
+            "oil price surge", "crude surge", "brent surge",
+            "ev demand falls", "ev slowdown",
         ],
         "neutral_override": [],
     },
@@ -129,6 +147,12 @@ BUCKET_KEYWORDS = {
             "api production", "medical device",
             "fmcg volume", "consumer demand",
             "direct benefit transfer", "dbt",
+            "hindustan unilever", "nestle india", "dabur", "marico",
+            "britannia", "itc profit", "sun pharma", "dr reddy",
+            "cipla", "lupin", "drug launch", "new drug",
+            "fmcg sales", "consumer spending", "retail demand",
+            "food inflation eases", "vegetable prices fall",
+            "rural recovery", "wage growth", "export opportunity",
         ],
         "negative": [
             "drug price control", "price cap pharma",
@@ -138,6 +162,8 @@ BUCKET_KEYWORDS = {
             "palm oil duty", "edible oil price",
             "drought", "below normal monsoon", "deficit monsoon",
             "rural distress", "consumer slowdown",
+            "fmcg volume decline", "input cost pressure",
+            "raw material cost",
         ],
         "neutral_override": [],
     },
