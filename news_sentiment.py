@@ -44,7 +44,7 @@ from policy_scraper import (
 IST              = ZoneInfo("Asia/Kolkata")
 NEWS_SIGNALS_FILE = os.path.join(os.path.dirname(__file__), "news_signals.json")
 SCAN_DAYS        = 2      # only last 2 days — news is short-lived
-MIN_MATCHES      = 3      # minimum headline matches before applying adjustment
+MIN_MATCHES      = 2      # minimum headline matches before applying adjustment (lowered from 3 — RSS has fewer articles than policy DB)
 MAX_ITEMS        = 50     # max items per feed
 
 HEADERS = {
@@ -61,9 +61,13 @@ RSS_FEEDS = {
     "Economic Times Markets": (
         "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms"
     ),
+    "Economic Times Economy": (
+        "https://economictimes.indiatimes.com/economy/rssfeeds/1373380680.cms"
+    ),
+    # Moneycontrol fetched with XML sanitisation below
     "Moneycontrol":           "https://www.moneycontrol.com/rss/MCtopnews.xml",
-    "Business Standard":      "https://www.business-standard.com/rss/markets-106.rss",
     "LiveMint":               "https://www.livemint.com/rss/markets",
+    "LiveMint Economy":       "https://www.livemint.com/rss/economy",
 }
 
 # Smaller multipliers than policy scraper — news is noisier
@@ -125,10 +129,21 @@ def fetch_rss_feed(source_name: str, url: str) -> list:
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.raise_for_status()
 
-        # Parse XML
-        root = ET.fromstring(resp.content)
+        # Sanitise XML before parsing (fixes Moneycontrol invalid token errors)
+        try:
+            xml_str = resp.content.decode("utf-8", errors="replace")
+        except Exception:
+            xml_str = resp.text
+        xml_str = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", xml_str)
+        try:
+            root = ET.fromstring(xml_str.encode("utf-8"))
+        except ET.ParseError:
+            xml_str = "".join(
+                c for c in xml_str if ord(c) >= 0x20 or c in "\t\n\r"
+            )
+            root = ET.fromstring(xml_str.encode("utf-8"))
 
-        # Handle both RSS 2.0 and Atom formats
+                # Handle both RSS 2.0 and Atom formats
         # RSS 2.0: <channel><item>...
         # Atom: <feed><entry>...
         ns = {
@@ -156,21 +171,22 @@ def fetch_rss_feed(source_name: str, url: str) -> list:
                 continue
 
             # Description / summary
-            desc_el = (
-                entry.find("description") or
-                entry.find("atom:summary", ns) or
-                entry.find("summary")
-            )
+            desc_el = entry.find("description")
+            if desc_el is None:
+                desc_el = entry.find("atom:summary", ns)
+            if desc_el is None:
+                desc_el = entry.find("summary")
             desc = (desc_el.text or "").strip() if desc_el is not None else ""
             desc = re.sub(r'<[^>]+>', '', desc).strip()[:300]
 
             # Date
-            date_el = (
-                entry.find("pubDate") or
-                entry.find("published") or
-                entry.find("atom:published", ns) or
-                entry.find("updated")
-            )
+            date_el = entry.find("pubDate")
+            if date_el is None:
+                date_el = entry.find("published")
+            if date_el is None:
+                date_el = entry.find("atom:published", ns)
+            if date_el is None:
+                date_el = entry.find("updated")
             pub_date = None
             if date_el is not None and date_el.text:
                 pub_date = _parse_rss_date(date_el.text)
