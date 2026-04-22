@@ -1,24 +1,43 @@
 # “””
-NSE Universe — Nifty 500 Fetcher & Bucket Mapper
+News Sentiment — Financial RSS Feed Analyser (4.3)
 
-Fetches the live Nifty 500 constituent list from niftyindices.com
-and maps each stock to one of the 4 strategy buckets based on
-NSE’s Industry classification.
+Fetches headlines from 4 Indian financial RSS feeds,
+classifies them using the same keyword engine as policy_scraper.py,
+and saves sentiment signals to news_signals.json.
 
-No login required. No hardcoded tickers.
-Universe refreshes every time the screener runs.
+Scheduled on Railway: every weekday at 8:00 AM IST
 
-Columns in ind_nifty500list.csv:
-Company Name | Industry | Symbol | Series | ISIN Code
+Key differences from policy_scraper.py:
+
+- 2-day window (vs 14 days for policy)
+- Smaller multipliers (max ±4% vs ±6%)
+- Requires 3+ headline matches before applying adjustment
+- Faster — RSS is lightweight vs full page scraping
+
+Usage:
+python news_sentiment.py           # run scan
+python news_sentiment.py –status  # show current signals
+python news_sentiment.py –test    # scan without saving
 “””
 
-import requests
-import pandas as pd
-import os
 import json
+import os
+import re
 import time
-from datetime import datetime
-from typing import Optional
+import argparse
+import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, date
+from zoneinfo import ZoneInfo
+
+import requests
+
+# Reuse keyword engine from policy_scraper
+
+from policy_scraper import (
+BUCKET_KEYWORDS,
+score_release,
+HEADLINE_WEIGHT,
+)
 
 # ─────────────────────────────────────────────
 
@@ -26,372 +45,406 @@ from typing import Optional
 
 # ─────────────────────────────────────────────
 
-NIFTY500_URL  = “https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv”
-CACHE_PATH    = “/tmp/nifty500_cache.csv”
-CACHE_MAX_AGE = 7  # days — refresh universe weekly
+IST              = ZoneInfo(“Asia/Kolkata”)
+NEWS_SIGNALS_FILE = os.path.join(os.path.dirname(**file**), “news_signals.json”)
+SCAN_DAYS        = 2      # only last 2 days — news is short-lived
+MIN_MATCHES      = 2      # minimum headline matches before applying adjustment (lowered from 3 — RSS has fewer articles than policy DB)
+MAX_ITEMS        = 50     # max items per feed
 
-# ── Sector → Bucket Mapping ───────────────────
-
-# Maps NSE Industry labels to our 4 bucket keys.
-
-# NSE uses these exact strings in their CSV.
-
-SECTOR_BUCKET_MAP = {
-# BFSI + IT
-“Financial Services”:               “BFSI_IT”,
-“Information Technology”:           “BFSI_IT”,
-“IT”:                               “BFSI_IT”,
-
-```
-# Defence + Infra
-"Capital Goods":                    "DEFENCE_INFRA",
-"Construction":                     "DEFENCE_INFRA",
-"Construction Materials":           "DEFENCE_INFRA",
-"Industrial Manufacturing":         "DEFENCE_INFRA",
-"Defence":                          "DEFENCE_INFRA",
-"Aerospace & Defence":              "DEFENCE_INFRA",
-
-# Green Energy + EV
-"Power":                            "GREEN_ENERGY_EV",
-"Automobile and Auto Components":   "GREEN_ENERGY_EV",
-"Automobiles":                      "GREEN_ENERGY_EV",
-"Consumer Durables":                "GREEN_ENERGY_EV",
-"Electrical Equipment":             "GREEN_ENERGY_EV",
-
-# FMCG + Pharma
-"Fast Moving Consumer Goods":       "FMCG_PHARMA",
-"FMCG":                             "FMCG_PHARMA",
-"Pharmaceuticals & Biotechnology":  "FMCG_PHARMA",
-"Pharmaceuticals":                  "FMCG_PHARMA",
-"Healthcare Services":              "FMCG_PHARMA",
-"Healthcare":                       "FMCG_PHARMA",
-```
-
+HEADERS = {
+“User-Agent”: (
+“Mozilla/5.0 (Windows NT 10.0; Win64; x64) “
+“AppleWebKit/537.36 (KHTML, like Gecko) “
+“Chrome/120.0.0.0 Safari/537.36”
+),
+“Accept”: “application/rss+xml, application/xml, text/xml, */*”,
 }
 
-# ── Fundamental Filters Per Bucket ───────────
+# RSS Feed URLs
 
-# Stocks must pass ALL filters to enter scoring.
+RSS_FEEDS = {
+“Economic Times Markets”: “https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms”,
+“Economic Times Economy”: “https://economictimes.indiatimes.com/economy/rssfeeds/1373380680.cms”,
+“Economic Times Industry”:“https://economictimes.indiatimes.com/industry/rssfeeds/13352306.cms”,
+“LiveMint Markets”:       “https://www.livemint.com/rss/markets”,
+“LiveMint Economy”:       “https://www.livemint.com/rss/economy”,
+}
 
-# These mirror the criteria we agreed on.
+# Smaller multipliers than policy scraper — news is noisier
 
-BUCKET_FILTERS = {
-“BFSI_IT”: {
-“min_market_cap_cr”:    20_000,
-“max_pe”:               35,
-“max_pb”:               5.0,      # 1.4: PB ceiling
-“max_52w_proximity”:    0.90,     # 1.4: exclude if >90% of 52w high
-“min_roe”:              15,
-“min_revenue_growth”:   10,
-“max_debt_equity”:      2.0,
-“max_peg”:              2.5,
-“min_profit_growth”:    8,
-},
-“DEFENCE_INFRA”: {
-“min_market_cap_cr”:    5_000,
-“max_market_cap_cr”:    40_000,
-“max_pe”:               50,
-“max_pb”:               8.0,      # 1.4
-“max_52w_proximity”:    0.90,     # 1.4
-“min_roe”:              12,
-“min_revenue_growth”:   15,
-“max_debt_equity”:      1.5,
-“max_peg”:              3.0,
-“min_profit_growth”:    12,
-},
-“GREEN_ENERGY_EV”: {
-“min_market_cap_cr”:    2_000,
-“max_pe”:               80,
-“max_pb”:               10.0,     # 1.4
-“max_52w_proximity”:    0.92,     # 1.4: slightly relaxed — sector is volatile
-“min_revenue_growth”:   20,
-“max_debt_equity”:      6.0,      # Raised from 3.0: solar developers use project-level
-# debt in ring-fenced SPVs — Yahoo Finance reports
-# consolidated D/E which inflates the parent metric
-“max_peg”:              4.0,
-“min_profit_growth”:    10,
-},
-“FMCG_PHARMA”: {
-“min_market_cap_cr”:    10_000,
-“max_pe”:               65,       # Revised: FMCG/Pharma 5yr avg PE is 52x; 65 allows premium without buying junk
-“max_pb”:               12.0,     # Unchanged: FMCG brands justify high PB
-“max_52w_proximity”:    0.90,     # Unchanged: don’t buy near peaks
-“min_roe”:              18,       # Revised from 20: still screens weak businesses; 20 was too tight
-“min_revenue_growth”:   8,        # Unchanged: only growing businesses
-“max_debt_equity”:      1.5,      # Revised from 0.5: pharma D/E 0.04–0.58 operationally; 1.5 excludes truly leveraged
-“max_peg”:              3.0,      # Unchanged
-“min_profit_growth”:    10,       # Unchanged: profit discipline non-negotiable
-},
+NEWS_MULTIPLIERS = {
+“positive”:     1.04,
+“mild_positive”:1.02,
+“neutral”:      1.00,
+“cautious”:     0.98,
+“negative”:     0.96,
 }
 
 # ─────────────────────────────────────────────
 
-# CACHE HELPERS
+# RSS PARSER
 
 # ─────────────────────────────────────────────
 
-def _cache_is_fresh() -> bool:
-“”“Return True if cached CSV exists and is less than CACHE_MAX_AGE days old.”””
-if not os.path.exists(CACHE_PATH):
-return False
-age_days = (time.time() - os.path.getmtime(CACHE_PATH)) / 86400
-return age_days < CACHE_MAX_AGE
+def _parse_rss_date(date_str: str) -> date | None:
+“””
+Parse RSS date formats:
+RFC 2822: “Thu, 16 Apr 2026 10:30:00 +0530”
+ISO 8601: “2026-04-16T10:30:00+05:30”
+“””
+if not date_str:
+return None
 
-def _load_cache() -> Optional[pd.DataFrame]:
+```
+formats = [
+    "%a, %d %b %Y %H:%M:%S %z",    # RFC 2822
+    "%a, %d %b %Y %H:%M:%S %Z",    # RFC 2822 with timezone name
+    "%Y-%m-%dT%H:%M:%S%z",         # ISO 8601
+    "%Y-%m-%d %H:%M:%S",           # Simple datetime
+    "%d %b %Y",                     # 16 Apr 2026
+]
+for fmt in formats:
+    try:
+        return datetime.strptime(date_str.strip(), fmt).date()
+    except ValueError:
+        continue
+
+# Try stripping timezone offset and retrying
+clean = re.sub(r'\s+[+-]\d{4}$', '', date_str.strip())
+for fmt in formats:
+    try:
+        return datetime.strptime(clean, fmt).date()
+    except ValueError:
+        continue
+
+return None
+```
+
+def fetch_rss_feed(source_name: str, url: str) -> list:
+“””
+Fetch and parse a single RSS feed.
+Returns list of {title, description, date, source} dicts.
+“””
+items   = []
+cutoff  = date.today() - timedelta(days=SCAN_DAYS)
+
+```
 try:
-return pd.read_csv(CACHE_PATH)
+    resp = requests.get(url, headers=HEADERS, timeout=15)
+    resp.raise_for_status()
+
+    # Sanitise XML before parsing (some feeds have malformed XML)
+    try:
+        xml_str = resp.content.decode("utf-8", errors="replace")
+    except Exception:
+        xml_str = resp.text
+    xml_str = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f]", "", xml_str)
+    try:
+        root = ET.fromstring(xml_str.encode("utf-8"))
+    except ET.ParseError:
+        xml_str = "".join(
+            c for c in xml_str if ord(c) >= 0x20 or c in "\t\n\r"
+        )
+        root = ET.fromstring(xml_str.encode("utf-8"))
+
+            # Handle both RSS 2.0 and Atom formats
+    # RSS 2.0: <channel><item>...
+    # Atom: <feed><entry>...
+    ns = {
+        "atom":    "http://www.w3.org/2005/Atom",
+        "content": "http://purl.org/rss/1.0/modules/content/",
+    }
+
+    # Try RSS 2.0 first
+    entries = root.findall(".//item")
+    if not entries:
+        # Try Atom
+        entries = root.findall(".//atom:entry", ns) or root.findall(".//entry")
+
+    for entry in entries[:MAX_ITEMS]:
+        # Title
+        title_el = entry.find("title")
+        if title_el is None:
+            title_el = entry.find("atom:title", ns)
+        title = (title_el.text or "").strip() if title_el is not None else ""
+
+        # Clean CDATA and HTML tags from title
+        title = re.sub(r'<[^>]+>', '', title).strip()
+
+        if not title or len(title) < 10:
+            continue
+
+        # Description / summary
+        desc_el = entry.find("description")
+        if desc_el is None:
+            desc_el = entry.find("atom:summary", ns)
+        if desc_el is None:
+            desc_el = entry.find("summary")
+        desc = (desc_el.text or "").strip() if desc_el is not None else ""
+        desc = re.sub(r'<[^>]+>', '', desc).strip()[:300]
+
+        # Date
+        date_el = entry.find("pubDate")
+        if date_el is None:
+            date_el = entry.find("published")
+        if date_el is None:
+            date_el = entry.find("atom:published", ns)
+        if date_el is None:
+            date_el = entry.find("updated")
+        pub_date = None
+        if date_el is not None and date_el.text:
+            pub_date = _parse_rss_date(date_el.text)
+
+        # Skip if too old
+        if pub_date and pub_date < cutoff:
+            continue
+
+        items.append({
+            "title":  title,
+            "body":   desc,
+            "date":   str(pub_date or date.today()),
+            "source": source_name,
+        })
+
+    print(f"    📰 {source_name}: {len(items)} items (last {SCAN_DAYS} days)")
+
+except ET.ParseError as e:
+    print(f"    ⚠️  {source_name}: XML parse error — {e}")
+except Exception as e:
+    print(f"    ⚠️  {source_name}: fetch failed — {e}")
+
+return items
+```
+
+def fetch_all_feeds() -> list:
+“”“Fetch all RSS feeds and return combined item list.”””
+all_items = []
+for source, url in RSS_FEEDS.items():
+items = fetch_rss_feed(source, url)
+all_items.extend(items)
+time.sleep(0.5)
+return all_items
+
+# ─────────────────────────────────────────────
+
+# SENTIMENT AGGREGATOR
+
+# ─────────────────────────────────────────────
+
+def aggregate_news_sentiment(items: list) -> dict:
+“””
+Aggregate keyword scores from news items.
+Applies MIN_MATCHES threshold — signal stays neutral
+if fewer than 3 headlines match for a bucket.
+
+```
+Returns {bucket_key: {score, signal, reason, matches}}
+"""
+bucket_totals  = {k: 0.0 for k in BUCKET_KEYWORDS}
+bucket_reasons = {k: [] for k in BUCKET_KEYWORDS}
+bucket_counts  = {k: 0  for k in BUCKET_KEYWORDS}
+
+for item in items:
+    scores = score_release(item["title"], item.get("body", ""))
+    for bucket, score in scores.items():
+        if abs(score) > 0:
+            bucket_totals[bucket]  += score
+            bucket_counts[bucket] += 1
+            # Only store headline-level matches as reasons
+            if abs(score) >= HEADLINE_WEIGHT:
+                direction = "↑" if score > 0 else "↓"
+                src       = item.get("source", "")
+                bucket_reasons[bucket].append(
+                    f"{direction} [{src}] {item['title'][:70]}"
+                )
+
+result = {}
+for bucket in BUCKET_KEYWORDS:
+    total   = round(bucket_totals[bucket], 2)
+    matches = bucket_counts[bucket]
+
+    # Apply minimum matches threshold
+    if matches < MIN_MATCHES:
+        signal = "neutral"
+        reason = (
+            f"Only {matches} headline match(es) — "
+            f"below minimum {MIN_MATCHES} threshold. No adjustment."
+        )
+    else:
+        # Signal thresholds (tighter than policy scraper — news is noisier)
+        if total >= 5.0:
+            signal = "positive"
+        elif total >= 2.0:
+            signal = "mild_positive"
+        elif total <= -5.0:
+            signal = "negative"
+        elif total <= -2.0:
+            signal = "cautious"
+        else:
+            signal = "neutral"
+
+        top = bucket_reasons[bucket][:3]
+        reason = "; ".join(top) if top else "Matched but no headline-level signals."
+
+    result[bucket] = {
+        "score":   total,
+        "signal":  signal,
+        "reason":  reason,
+        "matches": matches,
+    }
+
+return result
+```
+
+# ─────────────────────────────────────────────
+
+# SIGNAL PERSISTENCE
+
+# ─────────────────────────────────────────────
+
+def save_news_signals(signals: dict, items: list):
+output = {
+“generated_at”:   datetime.now(IST).strftime(”%Y-%m-%d %H:%M IST”),
+“scan_days”:      SCAN_DAYS,
+“total_headlines”:len(items),
+“min_matches”:    MIN_MATCHES,
+“signals”:        signals,
+“sample_headlines”: [
+{“title”: i[“title”], “date”: i[“date”], “source”: i[“source”]}
+for i in items[:15]
+],
+}
+with open(NEWS_SIGNALS_FILE, “w”) as f:
+json.dump(output, f, indent=2)
+print(f”\n  ✅ News signals saved to {NEWS_SIGNALS_FILE}”)
+_post_signal_to_api(“news_signals”, output)
+
+def _post_signal_to_api(signal_type: str, payload: dict):
+“”“POST signal data to the web API so the dashboard can read it.”””
+import urllib.request as _urllib
+import os as _os
+api_url = _os.getenv(“API_URL”, “https://web-production-2d832.up.railway.app”)
+url = f”{api_url}/signals/upload”
+try:
+import json as _json
+body = _json.dumps({“type”: signal_type, “payload”: payload}).encode(“utf-8”)
+req = _urllib.Request(url, data=body,
+headers={“Content-Type”: “application/json”},
+method=“POST”)
+with _urllib.urlopen(req, timeout=10) as resp:
+print(f”  ✅ {signal_type} POSTed to API: {resp.read().decode()}”)
+except Exception as e:
+print(f”  ⚠️  Could not POST {signal_type} to API (non-fatal): {e}”)
+
+def load_news_signals() -> dict | None:
+if not os.path.exists(NEWS_SIGNALS_FILE):
+return None
+try:
+with open(NEWS_SIGNALS_FILE) as f:
+return json.load(f)
 except Exception:
 return None
 
-def _save_cache(df: pd.DataFrame):
-try:
-df.to_csv(CACHE_PATH, index=False)
-except Exception:
-pass
+# ─────────────────────────────────────────────
+
+# MAIN SCAN
 
 # ─────────────────────────────────────────────
 
-# NIFTY 500 FETCHER
-
-# ─────────────────────────────────────────────
-
-def fetch_nifty500() -> pd.DataFrame:
-“””
-Download Nifty 500 constituent list from niftyindices.com.
-Falls back to cached version if download fails.
+def run_news_scan(test_mode: bool = False):
+“”“Fetch RSS feeds, classify, save signals.”””
+print(f”\n{’=’*55}”)
+print(f”  📰 NEWS SENTIMENT — RSS SCAN”)
+print(f”  {datetime.now(IST).strftime(’%d %B %Y, %I:%M %p IST’)}”)
+print(f”  Window: last {SCAN_DAYS} days | Min matches: {MIN_MATCHES}”)
+print(f”{’=’*55}\n”)
 
 ```
-Returns DataFrame with columns:
-  company_name | industry | symbol | nse_ticker
-"""
-# Use cache if fresh
-if _cache_is_fresh():
-    cached = _load_cache()
-    if cached is not None:
-        print(f"  📋 Nifty 500 loaded from cache ({len(cached)} stocks)")
-        return cached
+items = fetch_all_feeds()
+print(f"\n  Total headlines: {len(items)}")
 
-print(f"  🌐 Fetching Nifty 500 from niftyindices.com...")
+if not items:
+    print("  ⚠️  No headlines fetched — check RSS connectivity.")
+    return None
 
-headers = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/csv,application/csv,*/*",
-    "Referer": "https://www.niftyindices.com/",
+print(f"\n  🔍 Classifying {len(items)} headlines...")
+signals = aggregate_news_sentiment(items)
+
+# Print results
+signal_emoji = {
+    "positive":     "🟢",
+    "mild_positive":"🟡",
+    "neutral":      "⚪",
+    "cautious":     "🟠",
+    "negative":     "🔴",
 }
+print(f"\n  📊 NEWS SENTIMENT SIGNALS:")
+for bucket, sig in signals.items():
+    emoji = signal_emoji.get(sig["signal"], "⚪")
+    print(f"\n  {bucket}")
+    print(f"    Signal:  {emoji} {sig['signal'].replace('_',' ').title()}  "
+          f"(score: {sig['score']:+.1f}, {sig['matches']} matches)")
+    if sig["matches"] >= MIN_MATCHES and "↑" in sig["reason"] or "↓" in sig["reason"]:
+        for line in sig["reason"].split(";")[:2]:
+            if line.strip():
+                print(f"    {line.strip()[:80]}")
 
-try:
-    response = requests.get(NIFTY500_URL, headers=headers, timeout=20)
-    response.raise_for_status()
+if not test_mode:
+    save_news_signals(signals, items)
 
-    from io import StringIO
-    df = pd.read_csv(StringIO(response.text))
-
-    # Normalise column names
-    df.columns = [c.strip() for c in df.columns]
-
-    # Expected: Company Name, Industry, Symbol, Series, ISIN Code
-    df = df.rename(columns={
-        "Company Name": "company_name",
-        "Industry":     "industry",
-        "Symbol":       "symbol",
-        "Series":       "series",
-        "ISIN Code":    "isin",
-    })
-
-    # Keep only equity series
-    if "series" in df.columns:
-        df = df[df["series"] == "EQ"].copy()
-
-    # Add yfinance-compatible ticker (append .NS)
-    df["nse_ticker"] = df["symbol"].str.strip() + ".NS"
-    df["industry"]   = df["industry"].str.strip()
-
-    df = df[["company_name", "industry", "symbol", "nse_ticker"]].copy()
-    df = df.dropna(subset=["symbol", "industry"])
-
-    print(f"  ✅ Fetched {len(df)} stocks from Nifty 500")
-    _save_cache(df)
-    return df
-
-except Exception as e:
-    print(f"  ⚠️  Failed to fetch Nifty 500: {e}")
-    print(f"  ⚠️  Attempting to use cached version...")
-
-    cached = _load_cache()
-    if cached is not None:
-        print(f"  ✅ Loaded {len(cached)} stocks from cache (stale)")
-        return cached
-
-    print(f"  ❌ No cache available. Returning empty universe.")
-    return pd.DataFrame(columns=["company_name", "industry", "symbol", "nse_ticker"])
+return signals
 ```
 
 # ─────────────────────────────────────────────
 
-# BUCKET MAPPER
+# STATUS
 
 # ─────────────────────────────────────────────
 
-def map_to_buckets(df: pd.DataFrame) -> dict[str, list[str]]:
-“””
-Map Nifty 500 stocks to buckets based on Industry.
-Returns {bucket_key: [list of nse_tickers]}
-“””
-buckets: dict[str, list[str]] = {
-“BFSI_IT”:        [],
-“DEFENCE_INFRA”:  [],
-“GREEN_ENERGY_EV”:[],
-“FMCG_PHARMA”:    [],
+def show_status():
+data = load_news_signals()
+if not data:
+print(”  No news signals. Run: python news_sentiment.py”)
+return
+
+```
+signal_emoji = {
+    "positive":"🟢", "mild_positive":"🟡",
+    "neutral":"⚪",  "cautious":"🟠", "negative":"🔴",
 }
+print(f"\n{'='*55}")
+print(f"  📰 CURRENT NEWS SENTIMENT")
+print(f"  Generated: {data.get('generated_at')}")
+print(f"  Headlines scanned: {data.get('total_headlines',0)}")
+print(f"{'='*55}")
 
-```
-unmapped = []
+for bucket, sig in data.get("signals", {}).items():
+    emoji = signal_emoji.get(sig["signal"], "⚪")
+    print(f"\n  {bucket}")
+    print(f"    {emoji} {sig['signal'].replace('_',' ').title()}  "
+          f"(score: {sig['score']:+.1f}, {sig['matches']} matches)")
 
-for _, row in df.iterrows():
-    industry = row["industry"]
-    ticker   = row["nse_ticker"]
-    bucket   = SECTOR_BUCKET_MAP.get(industry)
-
-    if bucket:
-        buckets[bucket].append(ticker)
-    else:
-        unmapped.append(industry)
-
-# Summary
-print(f"\n  📊 Bucket Universe Sizes:")
-for key, tickers in buckets.items():
-    print(f"    {key:<20} {len(tickers):>3} stocks")
-
-unique_unmapped = set(unmapped)
-if unique_unmapped:
-    print(f"\n  ℹ️  Unmapped industries ({len(unique_unmapped)}):")
-    for ind in sorted(unique_unmapped):
-        print(f"    - {ind}")
-
-return buckets
+print(f"\n  Sample headlines:")
+for h in data.get("sample_headlines", [])[:6]:
+    print(f"  [{h['date']}] [{h['source'][:12]:<12}] {h['title'][:65]}")
+print(f"{'='*55}")
 ```
 
 # ─────────────────────────────────────────────
 
-# FILTER CHECKER (pre-scoring gate)
-
-# ─────────────────────────────────────────────
-
-def passes_fundamental_filters(data: dict, bucket_key: str) -> tuple[bool, str]:
-“””
-Check if a stock’s yfinance data passes the bucket’s
-fundamental filters. Returns (True, “”) or (False, reason).
-
-```
-Checks (in order):
-  - Market cap (min/max)
-  - PE ceiling
-  - PB ceiling          (1.4)
-  - 52w high proximity  (1.4)
-  - ROE floor
-  - Revenue growth floor
-  - Debt/Equity ceiling
-  - PEG ceiling
-  - Profit growth floor
-"""
-f = BUCKET_FILTERS.get(bucket_key, {})
-
-mkt_cap_cr = data.get("market_cap_cr", 0) or 0
-
-# ── Market cap ────────────────────────────────────────────
-if "min_market_cap_cr" in f and mkt_cap_cr < f["min_market_cap_cr"]:
-    return False, f"Mkt cap ₹{mkt_cap_cr:.0f}Cr < min ₹{f['min_market_cap_cr']}Cr"
-
-if "max_market_cap_cr" in f and mkt_cap_cr > f["max_market_cap_cr"]:
-    return False, f"Mkt cap ₹{mkt_cap_cr:.0f}Cr > max ₹{f['max_market_cap_cr']}Cr"
-
-# ── PE ceiling ────────────────────────────────────────────
-pe = data.get("pe_ratio")
-if pe and "max_pe" in f and pe > f["max_pe"]:
-    return False, f"PE {pe:.1f} > max {f['max_pe']}"
-
-# ── PB ceiling (1.4) ──────────────────────────────────────
-pb = data.get("pb_ratio")
-if pb is not None and pb > 0 and "max_pb" in f and pb > f["max_pb"]:
-    return False, f"PB {pb:.1f} > max {f['max_pb']} — overvalued on assets"
-
-# ── 52-week high proximity (1.4) ──────────────────────────
-# Exclude stocks trading too close to their 52w high —
-# buying near peak means limited upside and high reversal risk
-price_pos = data.get("price_position_52w")
-if price_pos is not None and "max_52w_proximity" in f:
-    if price_pos > f["max_52w_proximity"]:
-        return False, (
-            f"Price at {price_pos*100:.0f}% of 52w high "
-            f"> max {f['max_52w_proximity']*100:.0f}% — near peak"
-        )
-
-# ── ROE floor ─────────────────────────────────────────────
-roe = data.get("roe_pct")
-if roe is not None and "min_roe" in f and roe < f["min_roe"]:
-    return False, f"ROE {roe:.1f}% < min {f['min_roe']}%"
-
-# ── Revenue growth floor ──────────────────────────────────
-rev_g = data.get("revenue_growth_pct")
-if rev_g is not None and "min_revenue_growth" in f and rev_g < f["min_revenue_growth"]:
-    return False, f"Rev growth {rev_g:.1f}% < min {f['min_revenue_growth']}%"
-
-# ── Debt/Equity ceiling ───────────────────────────────────
-de = data.get("debt_to_equity")
-if de is not None and "max_debt_equity" in f and de > f["max_debt_equity"]:
-    return False, f"D/E {de:.2f} > max {f['max_debt_equity']}"
-
-# ── Data quality gate — growth data required ─────────────
-# If NEITHER earningsGrowth NOR revenueGrowth is available from Yahoo Finance,
-# we cannot verify the stock's growth trajectory or compute PEG.
-# Such stocks are excluded to prevent data-blind picks (e.g. GALLANTT).
-# Exception: banks/insurers where revenue_growth may appear as NaN due to
-# Yahoo Finance quirks — they are already handled by the ROE/PE filters.
-earn_g = data.get("earnings_growth_pct")
-rev_g_check = data.get("revenue_growth_pct")
-industry_for_gate = (data.get("industry") or "").lower()
-is_financial = any(k in industry_for_gate for k in ("bank", "insurance", "financial"))
-if not is_financial and earn_g is None and rev_g_check is None:
-    return False, "No growth data available — cannot verify fundamentals (earningsGrowth + revenueGrowth both None)"
-
-# ── PEG ceiling ───────────────────────────────────────────
-# Primary: use computed PEG (PE / earningsGrowth)
-# Fallback: compute PEG from PE / revenueGrowth when earnings data missing
-# This prevents stocks with missing earningsGrowth from bypassing the cap
-peg = data.get("peg_ratio")
-if peg is None and "max_peg" in f:
-    pe_val  = data.get("pe_ratio")
-    rev_g   = data.get("revenue_growth_pct")
-    if pe_val and pe_val > 0 and rev_g and rev_g > 0:
-        peg = round(pe_val / rev_g, 2)  # fallback PEG
-if peg is not None and peg > 0 and "max_peg" in f and peg > f["max_peg"]:
-    return False, f"PEG {peg:.2f} > max {f['max_peg']}"
-
-# ── Profit growth floor ───────────────────────────────────
-profit_g = data.get("earnings_growth_pct")
-if profit_g is not None and "min_profit_growth" in f and profit_g < f["min_profit_growth"]:
-    return False, f"Profit growth {profit_g:.1f}% < min {f['min_profit_growth']}%"
-
-return True, ""
-```
-
-# ─────────────────────────────────────────────
-
-# MAIN — for standalone testing
+# MAIN
 
 # ─────────────────────────────────────────────
 
 if **name** == “**main**”:
-df = fetch_nifty500()
-print(df.head(10).to_string())
-print(f”\nTotal: {len(df)} stocks”)
+parser = argparse.ArgumentParser(description=“Financial news RSS sentiment scanner”)
+parser.add_argument(”–status”, action=“store_true”, help=“Show current signals”)
+parser.add_argument(”–test”,   action=“store_true”, help=“Scan without saving”)
+args = parser.parse_args()
 
 ```
-buckets = map_to_buckets(df)
-for k, v in buckets.items():
-    print(f"\n{k}: {v[:5]}...")  # show first 5 tickers per bucket
+if args.status:
+    show_status()
+else:
+    run_news_scan(test_mode=args.test)
 ```
