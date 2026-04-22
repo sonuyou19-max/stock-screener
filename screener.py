@@ -268,7 +268,33 @@ def fetch_stock_data(ticker: str, bucket_key: str = "") -> Optional[dict]:
         if hist.empty or len(hist) < 20:
             return None
 
-        current_price = hist["Close"].iloc[-1]
+        # Get current price — try multiple sources to handle after-hours/stale data
+        import math as _math
+        current_price = None
+
+        # Source 1: fast_info (most reliable for live/recent price)
+        try:
+            fi = stock.fast_info
+            fp = getattr(fi, 'last_price', None) or getattr(fi, 'regularMarketPrice', None)
+            if fp and not _math.isnan(float(fp)) and float(fp) > 0:
+                current_price = float(fp)
+        except Exception:
+            pass
+
+        # Source 2: info dict regularMarketPrice
+        if not current_price:
+            rmp = info.get("regularMarketPrice") or info.get("currentPrice")
+            if rmp and not _math.isnan(float(rmp)) and float(rmp) > 0:
+                current_price = float(rmp)
+
+        # Source 3: last close from history (always non-zero for traded stocks)
+        if not current_price:
+            close_val = hist["Close"].dropna().iloc[-1] if not hist["Close"].dropna().empty else None
+            if close_val and not _math.isnan(float(close_val)) and float(close_val) > 0:
+                current_price = float(close_val)
+
+        if not current_price:
+            return None  # Cannot determine price — skip stock
 
         # ── LIQUIDITY FILTER (1.2) ────────────────────────────────
         # Check 1: Minimum Average Daily Volume (30-day)
