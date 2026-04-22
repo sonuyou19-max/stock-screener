@@ -94,7 +94,9 @@ BUCKET_FILTERS = {
         "max_pb":               10.0,     # 1.4
         "max_52w_proximity":    0.92,     # 1.4: slightly relaxed — sector is volatile
         "min_revenue_growth":   20,
-        "max_debt_equity":      3.0,
+        "max_debt_equity":      6.0,      # Raised from 3.0: solar developers use project-level
+                                          # debt in ring-fenced SPVs — Yahoo Finance reports
+                                          # consolidated D/E which inflates the parent metric
         "max_peg":              4.0,
         "min_profit_growth":    10,
     },
@@ -326,7 +328,15 @@ def passes_fundamental_filters(data: dict, bucket_key: str) -> tuple[bool, str]:
         return False, f"D/E {de:.2f} > max {f['max_debt_equity']}"
 
     # ── PEG ceiling ───────────────────────────────────────────
+    # Primary: use computed PEG (PE / earningsGrowth)
+    # Fallback: compute PEG from PE / revenueGrowth when earnings data missing
+    # This prevents stocks with missing earningsGrowth from bypassing the cap
     peg = data.get("peg_ratio")
+    if peg is None and "max_peg" in f:
+        pe_val  = data.get("pe_ratio")
+        rev_g   = data.get("revenue_growth_pct")
+        if pe_val and pe_val > 0 and rev_g and rev_g > 0:
+            peg = round(pe_val / rev_g, 2)  # fallback PEG
     if peg is not None and peg > 0 and "max_peg" in f and peg > f["max_peg"]:
         return False, f"PEG {peg:.2f} > max {f['max_peg']}"
 
