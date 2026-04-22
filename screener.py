@@ -581,8 +581,43 @@ def select_low_correlation_picks(
         print(f"    ⚠️  Still short — falling back to top-{n_picks} by score")
         picks = df["ticker"].head(n_picks).tolist()
 
+    # ── Sub-sector cap for BFSI_IT: max 2 banks ─────────────────
+    # If 3+ picks are all banks, swap the lowest-scoring bank
+    # for the best available non-bank (NBFC, Insurance, IT, Software)
+    # This prevents 100% bank concentration when IT/NBFC options exist.
+    #
+    # Why: Banks share the same macro driver (RBI rate decisions).
+    # A mix of bank + NBFC/Insurance reduces correlated downside risk.
+    BANK_KEYWORDS = ("bank", "Bank")
+    final_df = df[df["ticker"].isin(picks)].copy()
+
+    bank_mask = final_df["industry"].str.lower().str.contains("bank", na=False)
+    n_banks   = bank_mask.sum()
+
+    if n_banks > 2 and len(picks) >= 3:
+        # Find non-bank candidates not already selected
+        non_bank_candidates = df[
+            ~df["ticker"].isin(picks) &
+            ~df["industry"].str.lower().str.contains("bank", na=False)
+        ].head(5)  # top 5 non-banks by score
+
+        if not non_bank_candidates.empty:
+            # Remove the lowest-scoring bank from picks
+            banks_in_picks = final_df[bank_mask].sort_values("final_score")
+            weakest_bank   = banks_in_picks.iloc[0]["ticker"]
+            best_nonbank   = non_bank_candidates.iloc[0]["ticker"]
+
+            picks = [t for t in picks if t != weakest_bank] + [best_nonbank]
+            final_df = df[df["ticker"].isin(picks)].copy()
+            print(
+                f"    🔄 Sub-sector cap: swapped bank {weakest_bank} "
+                f"→ {best_nonbank} (max 2 banks rule)"
+            )
+        else:
+            print(f"    ℹ️  All 3 picks are banks — no non-bank alternative passed filters")
+
     print(f"    ✅ Selected {len(picks)} diversified picks: {picks}")
-    return df[df["ticker"].isin(picks)].copy()
+    return final_df
 
 
 # ─────────────────────────────────────────────
