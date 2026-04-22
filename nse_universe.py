@@ -81,7 +81,7 @@ BUCKET_FILTERS = {
         "max_market_cap_cr":    40_000,
         "max_pe":               50,
         "max_pb":               8.0,      # 1.4
-        "max_52w_proximity":    0.90,     # 1.4
+        "max_52w_proximity":    0.80,     # 1.4
         "min_roe":              12,
         "min_revenue_growth":   15,
         "max_debt_equity":      1.5,
