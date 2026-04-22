@@ -344,6 +344,9 @@ def detect_macro_alerts() -> list:
         pass
 
     return macro_alerts
+
+
+def detect_alerts(portfolio: dict) -> dict:
     """
     Fetch live prices for all holdings and detect
     stop-loss hits and profit target triggers.
