@@ -899,8 +899,21 @@ def check_promoter_signal(data: dict) -> dict:
     instit  = data.get("institutional_pct")
 
     # ── Signal 1: Promoter Holding Level ──────────────────────
+    # Special exemption: Banks and Insurance companies are professionally
+    # managed institutions — 0% promoter is structurally normal (e.g. Karur Vysya,
+    # Federal Bank, LIC). We treat 0% promoter as neutral for these, not a red flag.
+    industry_str = (data.get("industry") or "").lower()
+    is_bank_or_insurance = any(k in industry_str for k in ("bank", "insurance", "life insurance"))
+
     if insider is not None:
-        if insider >= PROMOTER_HIGH:
+        if is_bank_or_insurance and insider < PROMOTER_LOW:
+            # Exempt: professionally managed bank/insurer with 0% promoter is normal
+            result["promoter_signal"] = "normal"
+            result["promoter_notes"] += (
+                f"Professionally managed institution — 0% promoter normal "
+                f"({insider:.1f}%). "
+            )
+        elif insider >= PROMOTER_HIGH:
             result["promoter_signal"] = "strong"
             result["promoter_bonus"]  = 5
             result["promoter_notes"] += f"✅ Strong promoter holding ({insider:.1f}%). "
