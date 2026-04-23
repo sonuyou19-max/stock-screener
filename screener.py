@@ -1564,6 +1564,26 @@ def build_portfolio(budget: int = BUDGET) -> dict:
             df, n_picks, corr_matrix, max_corr=0.75
         )
 
+        # ── Minimum share count guard ─────────────────────────
+        # For a ₹1L portfolio, buying fewer than 3 shares of any stock
+        # is impractical (too concentrated, rounding risk).
+        # Flag stocks where allocation buys < 3 shares.
+        MIN_SHARES = 3
+        flagged_low_shares = []
+        for _, row in top_picks.iterrows():
+            price = row.get("current_price", 0)
+            if price > 0:
+                approx_qty = int(per_stock // price)
+                if approx_qty < MIN_SHARES:
+                    flagged_low_shares.append(
+                        f"{row['ticker']} (~{approx_qty} share{'s' if approx_qty != 1 else ''} "
+                        f"@ ₹{price:,.0f} — consider skipping or increasing allocation)"
+                    )
+        if flagged_low_shares:
+            print(f"  ⚠️  Low share count warning ({bucket_key}):")
+            for msg in flagged_low_shares:
+                print(f"      {msg}")
+
         portfolio[bucket_key] = {
             "label":                bucket_config["label"],
             "total_allocation":     allocation,
@@ -1885,6 +1905,14 @@ def assess_portfolio_volatility(portfolio: dict) -> dict:
     weighted_beta    = 0.0
     all_betas        = []
 
+    # Bucket-level median beta — used as fallback when a stock has no beta data
+    BUCKET_DEFAULT_BETA = {
+        "BFSI_IT":        0.85,
+        "DEFENCE_INFRA":  0.80,
+        "GREEN_ENERGY_EV":0.75,
+        "FMCG_PHARMA":    0.50,
+    }
+
     for bucket_key, bucket in portfolio.items():
         bucket_betas = []
 
@@ -1892,7 +1920,13 @@ def assess_portfolio_volatility(portfolio: dict) -> dict:
             beta      = s.get("beta")
             alloc_inr = s.get("allocation_inr", 0)
 
-            if beta is not None and alloc_inr > 0:
+            # Substitute NaN/None beta with bucket default to prevent NaN propagation
+            import math
+            if beta is None or (isinstance(beta, float) and math.isnan(beta)):
+                beta = BUCKET_DEFAULT_BETA.get(bucket_key, 0.80)
+                s["beta"] = beta  # patch in-place so display also shows a value
+
+            if alloc_inr > 0:
                 weighted_beta    += beta * alloc_inr
                 total_allocation += alloc_inr
                 all_betas.append(beta)
