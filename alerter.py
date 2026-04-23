@@ -602,58 +602,74 @@ def _build_ok_rows(stocks: list) -> str:
 
 def send_email_alert(subject: str, html_body: str) -> bool:
     """
-    Send HTML email via Resend HTTP API (HTTPS — works on Railway).
-    Railway blocks outbound SMTP (ports 465/587) on non-Pro plans.
-    Resend provides 100 free emails/day via a simple HTTPS API.
+    Send alert via Telegram Bot API (HTTPS — works on Railway, zero setup).
+    Railway blocks outbound SMTP. Telegram uses port 443 which is always open.
 
     Required env vars:
-      RESEND_API_KEY   → your Resend API key (from resend.com)
-      ALERT_EMAIL_TO   → recipient email address
-      ALERT_EMAIL_FROM → sender address (must be verified in Resend)
+      TELEGRAM_BOT_TOKEN  → get from @BotFather on Telegram
+      TELEGRAM_CHAT_ID    → your personal chat ID
+
+    Setup (5 min):
+      1. Message @BotFather on Telegram → /newbot → follow prompts → copy token
+      2. Message your new bot once (say "hi")
+      3. Visit https://api.telegram.org/bot<TOKEN>/getUpdates → copy "id" from result
+      4. Add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to Railway env vars
     """
     import urllib.request as _ur
-    import urllib.error  as _ure
+    import urllib.error   as _ure
+    import html as _html
+    import re as _re
 
-    api_key  = os.getenv("RESEND_API_KEY", "")
-    to_email = os.getenv("ALERT_EMAIL_TO", "")
-    from_email = os.getenv("ALERT_EMAIL_FROM", "alerts@resend.dev")
+    token   = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
 
-    if not api_key:
-        print("  ⚠️  RESEND_API_KEY not set. Add it to Railway environment variables.")
-        print("      Get a free key at https://resend.com (100 emails/day free)")
+    if not token or not chat_id:
+        print("  ⚠️  Telegram not configured.")
+        print("      Add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to Railway env vars.")
+        print("      Setup: Message @BotFather on Telegram to create a free bot.")
         return False
-    if not to_email:
-        print("  ⚠️  ALERT_EMAIL_TO not set.")
-        return False
+
+    # Convert HTML alert to clean Telegram markdown
+    # Strip HTML tags and format as readable text
+    text = _re.sub(r'<br\s*/?>', '\n', html_body)
+    text = _re.sub(r'<h[1-6][^>]*>(.*?)</h[1-6]>', r'*\1*\n', text, flags=_re.DOTALL)
+    text = _re.sub(r'<b>(.*?)</b>', r'*\1*', text, flags=_re.DOTALL)
+    text = _re.sub(r'<strong>(.*?)</strong>', r'*\1*', text, flags=_re.DOTALL)
+    text = _re.sub(r'<[^>]+>', '', text)
+    text = _html.unescape(text)
+    # Collapse excessive blank lines
+    text = _re.sub(r'\n{3,}', '\n\n', text).strip()
+
+    # Prepend subject as bold header
+    message = f"*{subject}*\n\n{text}"
+
+    # Telegram message limit is 4096 chars
+    if len(message) > 4096:
+        message = message[:4000] + "\n\n... (truncated)"
 
     try:
         payload = json.dumps({
-            "from":    from_email,
-            "to":      [to_email],
-            "subject": subject,
-            "html":    html_body,
+            "chat_id":    chat_id,
+            "text":       message,
+            "parse_mode": "Markdown",
         }).encode("utf-8")
 
-        req = _ur.Request(
-            "https://api.resend.com/emails",
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type":  "application/json",
-            },
-            method="POST",
-        )
+        url = f"https://api.telegram.org/bot{token}/sendMessage"
+        req = _ur.Request(url, data=payload,
+                          headers={"Content-Type": "application/json"},
+                          method="POST")
+
         with _ur.urlopen(req, timeout=15) as resp:
-            body = resp.read().decode()
-            print(f"  ✅ Alert email sent via Resend to {to_email}")
+            resp.read()
+            print(f"  ✅ Alert sent via Telegram (chat {chat_id})")
             return True
 
     except _ure.HTTPError as e:
         err_body = e.read().decode() if e.fp else ""
-        print(f"  ❌ Resend API error {e.code}: {err_body}")
+        print(f"  ❌ Telegram API error {e.code}: {err_body}")
         return False
     except Exception as e:
-        print(f"  ❌ Failed to send email: {e}")
+        print(f"  ❌ Failed to send Telegram alert: {e}")
         return False
 
 
