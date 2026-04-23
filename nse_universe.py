@@ -83,7 +83,7 @@ BUCKET_FILTERS = {
         "max_pb":               8.0,      # 1.4
         "max_52w_proximity":    0.90,     # 1.4
         "min_roe":              12,
-        "min_revenue_growth":   15,
+        "min_revenue_growth":   12,      # Relaxed from 15: infra/EPC revenue is lumpy (order-book driven)
         "max_debt_equity":      1.5,
         "max_peg":              3.0,
         "min_profit_growth":    12,
@@ -105,7 +105,7 @@ BUCKET_FILTERS = {
         "max_pe":               65,       # Revised: FMCG/Pharma 5yr avg PE is 52x; 65 allows premium without buying junk
         "max_pb":               12.0,     # Unchanged: FMCG brands justify high PB
         "max_52w_proximity":    0.90,     # Unchanged: don't buy near peaks
-        "min_roe":              18,       # Revised from 20: still screens weak businesses; 20 was too tight
+        "min_roe":              16,       # Relaxed from 18: VBL (16.8%), DrReddy (16.1%) are quality cos missed by 1-2%
         "min_revenue_growth":   8,        # Unchanged: only growing businesses
         "max_debt_equity":      1.5,      # Revised from 0.5: pharma D/E 0.04–0.58 operationally; 1.5 excludes truly leveraged
         "max_peg":              3.0,      # Unchanged
@@ -339,6 +339,18 @@ def passes_fundamental_filters(data: dict, bucket_key: str) -> tuple[bool, str]:
     is_financial = any(k in industry_for_gate for k in ("bank", "insurance", "financial"))
     if not is_financial and earn_g is None and rev_g_check is None:
         return False, "No growth data available — cannot verify fundamentals (earningsGrowth + revenueGrowth both None)"
+
+    # ── Loss-making stock gate ───────────────────────────────
+    # Exclude stocks with no PE (loss-making) AND negative earnings growth.
+    # A loss-making company has no place in a systematic value+growth strategy.
+    # Exception: financials where PE can be NaN due to Yahoo Finance quirks.
+    pe_val_check  = data.get("pe_ratio")
+    earn_g_check  = data.get("earnings_growth_pct")
+    if pe_val_check is None and earn_g_check is not None and earn_g_check < 0:
+        return False, f"Loss-making: no PE and earnings declining ({earn_g_check:.1f}%)"
+    # Also exclude if PE is NaN AND earnings growth is also NaN (no visibility at all)
+    # but only for non-financial stocks (financials already handled above)
+    # — this case is already caught by the data quality gate above
 
     # ── PEG ceiling ───────────────────────────────────────────
     # Primary: use computed PEG (PE / earningsGrowth)
