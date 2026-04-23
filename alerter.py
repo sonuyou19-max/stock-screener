@@ -133,7 +133,11 @@ def filter_new_alerts(alerts: dict) -> tuple[dict, int]:
             dedup_count += 1
             print(f"  ⏭️  {s['ticker']} profit alert already sent today — skipping.")
 
-    filtered["any_alerts"] = bool(filtered["stop_loss"] or filtered["profit"])
+    # Include macro alerts in any_alerts so email fires when macros trigger
+    filtered["macro"]      = alerts.get("macro", [])
+    filtered["any_alerts"] = bool(
+        filtered["stop_loss"] or filtered["profit"] or filtered["macro"]
+    )
     return filtered, dedup_count
 
 
