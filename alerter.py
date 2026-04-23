@@ -602,34 +602,55 @@ def _build_ok_rows(stocks: list) -> str:
 
 def send_email_alert(subject: str, html_body: str) -> bool:
     """
-    Send HTML email via Gmail SMTP.
-    Returns True if sent successfully, False otherwise.
-    """
-    cfg = _get_config()
+    Send HTML email via Resend HTTP API (HTTPS — works on Railway).
+    Railway blocks outbound SMTP (ports 465/587) on non-Pro plans.
+    Resend provides 100 free emails/day via a simple HTTPS API.
 
-    if not cfg["from_email"] or not cfg["password"] or not cfg["to_email"]:
-        print("  ⚠️  Email config missing. Set ALERT_EMAIL_FROM, "
-              "ALERT_EMAIL_PASSWORD, ALERT_EMAIL_TO in .env file.")
+    Required env vars:
+      RESEND_API_KEY   → your Resend API key (from resend.com)
+      ALERT_EMAIL_TO   → recipient email address
+      ALERT_EMAIL_FROM → sender address (must be verified in Resend)
+    """
+    import urllib.request as _ur
+    import urllib.error  as _ure
+
+    api_key  = os.getenv("RESEND_API_KEY", "")
+    to_email = os.getenv("ALERT_EMAIL_TO", "")
+    from_email = os.getenv("ALERT_EMAIL_FROM", "alerts@resend.dev")
+
+    if not api_key:
+        print("  ⚠️  RESEND_API_KEY not set. Add it to Railway environment variables.")
+        print("      Get a free key at https://resend.com (100 emails/day free)")
+        return False
+    if not to_email:
+        print("  ⚠️  ALERT_EMAIL_TO not set.")
         return False
 
     try:
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = subject
-        msg["From"]    = cfg["from_email"]
-        msg["To"]      = cfg["to_email"]
-        msg.attach(MIMEText(html_body, "html"))
+        payload = json.dumps({
+            "from":    from_email,
+            "to":      [to_email],
+            "subject": subject,
+            "html":    html_body,
+        }).encode("utf-8")
 
-        with smtplib.SMTP(cfg["smtp_host"], cfg["smtp_port"]) as server:
-            server.ehlo()
-            server.starttls()
-            server.login(cfg["from_email"], cfg["password"])
-            server.sendmail(cfg["from_email"], cfg["to_email"], msg.as_string())
+        req = _ur.Request(
+            "https://api.resend.com/emails",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type":  "application/json",
+            },
+            method="POST",
+        )
+        with _ur.urlopen(req, timeout=15) as resp:
+            body = resp.read().decode()
+            print(f"  ✅ Alert email sent via Resend to {to_email}")
+            return True
 
-        print(f"  ✅ Alert email sent to {cfg['to_email']}")
-        return True
-
-    except smtplib.SMTPAuthenticationError:
-        print("  ❌ Gmail authentication failed. Check your App Password in .env")
+    except _ure.HTTPError as e:
+        err_body = e.read().decode() if e.fp else ""
+        print(f"  ❌ Resend API error {e.code}: {err_body}")
         return False
     except Exception as e:
         print(f"  ❌ Failed to send email: {e}")
