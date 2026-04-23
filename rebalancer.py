@@ -1,412 +1,616 @@
+# -*- coding: utf-8 -*-
 """
-Monthly Portfolio Rebalancer — Tax-Aware (3.6)
-===============================================
-Compare last month's portfolio with this month's fresh screening.
-Tells you exactly what to BUY, SELL, and HOLD — with tax implications
-for every SELL recommendation.
+rebalancer.py — Monthly Portfolio Rebalancer
+=============================================
+Runs on the 1st working day of each month, BEFORE the screener.
 
-Indian Capital Gains Tax:
-  STCG (< 12 months held): 20%
-  LTCG (≥ 12 months held): 12.5% on gains above ₹1.25 lakh exemption
+What it does:
+  1. Loads current portfolio from API (what you bought, at what price)
+  2. Fetches live prices from Yahoo Finance
+  3. Calculates P&L for each position
+  4. Decides: EXIT / TRIM / HOLD for each stock
+  5. Computes freed cash available for new screener picks
+  6. Sends Telegram message with action list
+  7. Saves rebalance report to API
+
+Decision rules:
+  TRIM  — Stage 1 (+20%): sell 30% | Stage 2 (+35%): sell 30%
+  EXIT  — Stage 3 (+50%): sell all  |  3+ months, no stage hit  |  stop-loss breach
+  HOLD  — Everything else
+
+Railway schedule: 0 2 1 * *  (2:00 AM UTC on 1st of every month)
+
+Environment variables required:
+  API_URL              — Railway API base URL
+  TELEGRAM_BOT_TOKEN   — Telegram bot token
+  TELEGRAM_CHAT_ID     — Telegram chat ID
 
 Usage:
-    python rebalancer.py --old portfolio_202504.json --new portfolio_202505.json
-
-Or run without args to auto-detect the two most recent portfolio files.
+  python rebalancer.py              # normal monthly run
+  python rebalancer.py --dry-run    # print report, no Telegram
+  python rebalancer.py --force      # skip date check (for testing)
 """
 
-import json
 import os
-import glob
+import json
 import argparse
-import yfinance as yf
-from datetime import datetime, date
+import time
+import math
+import urllib.request as _ur
+import urllib.error   as _ure
+from datetime  import datetime, date, timedelta
+from zoneinfo  import ZoneInfo
+from typing    import Optional
 
-
-# ─────────────────────────────────────────────
-# TAX CONSTANTS (Indian FY 2024-25 onwards)
-# ─────────────────────────────────────────────
-
-STCG_RATE           = 0.20      # 20%
-LTCG_RATE           = 0.125     # 12.5%
-LTCG_EXEMPTION      = 125_000   # ₹1.25 lakh annual exemption
-LTCG_DAYS           = 365       # 12 months = 365 days
-LTCG_WARNING_DAYS   = 45        # flag if LTCG within 45 days
-MIN_SAVING_TO_FLAG  = 500       # only flag if tax saving > ₹500
-
+try:
+    import yfinance as yf
+except ImportError:
+    yf = None
 
 # ─────────────────────────────────────────────
-# HELPERS
+# CONSTANTS
 # ─────────────────────────────────────────────
 
-def load_portfolio(path: str) -> dict:
-    with open(path) as f:
-        return json.load(f)
+API_URL      = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+IST          = ZoneInfo("Asia/Kolkata")
 
+# Profit booking stages: (threshold_pct, label, sell_fraction)
+PROFIT_STAGES = [
+    (0.50, "Stage 3 — Sell ALL (+50%)",   1.00),   # Full exit
+    (0.35, "Stage 2 — Sell 30% (+35%)",   0.30),
+    (0.20, "Stage 1 — Sell 30% (+20%)",   0.30),
+]
 
-def extract_holdings(portfolio: dict) -> dict:
-    """
-    Return {ticker: stock_dict} from a portfolio dict.
-    Preserves all fields including buy_date, price, shares.
-    """
-    holdings = {}
-    for bucket in portfolio.values():
-        if not isinstance(bucket, dict):
-            continue
-        for s in bucket.get("stocks", []):
-            ticker = s.get("ticker")
-            if ticker:
-                holdings[ticker] = s
-    return holdings
+# Max months to hold a stock with no profit stage hit
+MAX_HOLD_MONTHS = 3
 
+# Min share count to bother selling (avoid fractional / tiny positions)
+MIN_SHARES_TO_SELL = 1
 
-def get_current_price(ticker: str) -> float | None:
+# ─────────────────────────────────────────────
+# DATA FETCHING
+# ─────────────────────────────────────────────
+
+def _api_get(path: str) -> Optional[dict]:
+    """GET from Railway API. Returns parsed JSON or None."""
     try:
-        hist = yf.Ticker(ticker).history(period="1d")
-        if hist.empty:
-            return None
-        return round(float(hist["Close"].iloc[-1]), 2)
-    except Exception:
+        url = f"{API_URL}{path}"
+        req = _ur.Request(url, headers={"Accept": "application/json"})
+        with _ur.urlopen(req, timeout=15) as r:
+            return json.loads(r.read().decode())
+    except Exception as e:
+        print(f"  ⚠️  API GET {path} failed: {e}")
         return None
 
 
+def _api_post(path: str, payload: dict) -> Optional[dict]:
+    """POST JSON to Railway API. Returns parsed response or None."""
+    try:
+        url  = f"{API_URL}{path}"
+        data = json.dumps(payload, default=str).encode("utf-8")
+        req  = _ur.Request(url, data=data,
+                           headers={"Content-Type": "application/json"},
+                           method="POST")
+        with _ur.urlopen(req, timeout=15) as r:
+            return json.loads(r.read().decode())
+    except Exception as e:
+        print(f"  ⚠️  API POST {path} failed: {e}")
+        return None
+
+
+def fetch_portfolio() -> Optional[dict]:
+    """Load latest portfolio from API."""
+    print("  📡 Fetching portfolio from API...")
+    data = _api_get("/portfolio/latest")
+    if not data:
+        print("  ❌ Could not load portfolio from API.")
+        return None
+    total_stocks = sum(len(b.get("stocks", [])) for b in data.values())
+    print(f"  ✅ Portfolio loaded — {len(data)} buckets, {total_stocks} positions")
+    return data
+
+
+def fetch_live_price(ticker: str) -> Optional[float]:
+    """Fetch current price from Yahoo Finance with 3-source fallback."""
+    if yf is None:
+        print(f"  ⚠️  yfinance not installed — cannot fetch {ticker}")
+        return None
+    try:
+        stock = yf.Ticker(ticker)
+        # Source 1: fast_info
+        price = getattr(stock.fast_info, "last_price", None)
+        if price and not math.isnan(price):
+            return round(price, 2)
+        # Source 2: info regularMarketPrice
+        info  = stock.info
+        price = info.get("regularMarketPrice") or info.get("currentPrice")
+        if price and not math.isnan(float(price)):
+            return round(float(price), 2)
+        # Source 3: last close from history
+        hist = stock.history(period="2d")
+        if not hist.empty:
+            return round(hist["Close"].iloc[-1], 2)
+    except Exception as e:
+        print(f"  ⚠️  Price fetch failed for {ticker}: {e}")
+    return None
+
+
 # ─────────────────────────────────────────────
-# TAX CHECKER (3.6)
+# CORE DECISION ENGINE
 # ─────────────────────────────────────────────
 
-def tax_check(
-    stock: dict,
-    current_price: float | None,
-    ltcg_used: float = 0.0,
-) -> dict:
-    """
-    Calculate tax implications for selling a stock.
+def months_held(buy_date_str: str) -> float:
+    """Return number of months since buy_date."""
+    try:
+        buy = datetime.strptime(buy_date_str, "%Y-%m-%d").date()
+        delta = date.today() - buy
+        return delta.days / 30.44
+    except Exception:
+        return 0.0
 
-    Args:
-      stock         : stock dict from old portfolio JSON
-      current_price : live price fetched from yfinance
-      ltcg_used     : LTCG gains already realised this FY (₹)
-                      Passed via --ltcg-used flag. Reduces available
-                      exemption so tax estimate is accurate, not optimistic.
 
-    Returns dict with:
-      days_held          : calendar days since buy_date
-      days_to_ltcg       : days remaining until LTCG threshold
-      tax_status         : "ltcg" | "stcg_near_ltcg" | "stcg"
-      est_profit         : estimated profit in ₹
-      stcg_tax           : tax if sold now (STCG)
-      ltcg_tax           : tax if held to LTCG threshold
-      potential_saving   : STCG - LTCG tax
-      ltcg_exemption_remaining : how much of ₹1.25L exemption is left
-      recommendation     : "sell_now" | "wait_for_ltcg" | "sell_now_ltcg"
-      tax_notes          : plain English explanation
+def get_profit_stage(gain_pct: float) -> Optional[tuple]:
     """
+    Return the highest profit stage triggered by gain_pct.
+    Returns (threshold_pct, label, sell_fraction) or None.
+    """
+    for threshold, label, fraction in PROFIT_STAGES:
+        if gain_pct >= threshold * 100:
+            return (threshold, label, fraction)
+    return None
+
+
+def decide_action(stock: dict, current_price: float) -> dict:
+    """
+    Core decision logic for one stock position.
+
+    Returns a dict with:
+      action      : "EXIT" | "TRIM" | "HOLD" | "WATCH"
+      reason      : plain English explanation
+      gain_pct    : float
+      shares_to_sell : int
+      proceeds_inr   : float
+      stage       : stage label or None
+      urgency     : "HIGH" | "MEDIUM" | "LOW"
+    """
+    ticker         = stock["ticker"]
+    buy_price      = stock["price"]            # price at time of screener pick
+    shares         = stock.get("approx_shares", 0)
+    stop_loss      = stock.get("stop_loss_price", 0)
+    buy_date_str   = stock.get("buy_date", str(date.today()))
+    held_months    = months_held(buy_date_str)
+
+    # ── P&L ─────────────────────────────────────
+    gain_pct   = ((current_price - buy_price) / buy_price) * 100 if buy_price > 0 else 0
+    gain_inr   = (current_price - buy_price) * shares
+
     result = {
-        "days_held":               None,
-        "days_to_ltcg":            None,
-        "tax_status":              "unknown",
-        "est_profit":              None,
-        "stcg_tax":                None,
-        "ltcg_tax":                None,
-        "potential_saving":        None,
-        "ltcg_exemption_remaining":None,
-        "recommendation":          "sell_now",
-        "tax_notes":               "",
+        "ticker":          ticker,
+        "name":            stock.get("name", ticker),
+        "bucket":          None,            # filled by caller
+        "buy_price":       buy_price,
+        "current_price":   current_price,
+        "gain_pct":        round(gain_pct, 2),
+        "gain_inr":        round(gain_inr, 2),
+        "shares_held":     shares,
+        "shares_to_sell":  0,
+        "proceeds_inr":    0.0,
+        "action":          "HOLD",
+        "reason":          "",
+        "stage":           None,
+        "urgency":         "LOW",
+        "held_months":     round(held_months, 1),
+        "stop_loss_price": stop_loss,
     }
 
-    # ── Days held ─────────────────────────────────────────────
-    buy_date_str = stock.get("buy_date")
-    if not buy_date_str:
-        result["tax_notes"] = "No buy_date in portfolio — tax calculation unavailable."
+    # ── Priority 1: Stop-loss breach ─────────────
+    if stop_loss and current_price <= stop_loss:
+        result.update({
+            "action":        "EXIT",
+            "reason":        (f"Stop-loss breached — price ₹{current_price} "
+                              f"at or below GTT ₹{stop_loss:.2f}. "
+                              f"Exit immediately on Kite if GTT hasn't fired."),
+            "shares_to_sell": shares,
+            "proceeds_inr":   round(current_price * shares, 2),
+            "urgency":        "HIGH",
+        })
         return result
 
-    try:
-        buy_date  = datetime.strptime(buy_date_str, "%Y-%m-%d").date()
-        days_held = (date.today() - buy_date).days
-        days_to_ltcg = max(0, LTCG_DAYS - days_held)
-    except ValueError:
-        result["tax_notes"] = f"Invalid buy_date format: {buy_date_str}"
+    # ── Priority 2: Profit stage hit ─────────────
+    stage = get_profit_stage(gain_pct)
+    if stage:
+        threshold_pct, label, fraction = stage
+        if threshold_pct == 1.00 or fraction == 1.00:
+            # Stage 3 — full exit
+            shares_to_sell = shares
+            action = "EXIT"
+        else:
+            # Stage 1 or 2 — partial trim
+            shares_to_sell = max(MIN_SHARES_TO_SELL, round(shares * fraction))
+            action = "TRIM"
+
+        result.update({
+            "action":         action,
+            "reason":         (f"{label} triggered at +{gain_pct:.1f}%. "
+                               f"Sell {shares_to_sell} of {shares} shares @ ₹{current_price}."),
+            "shares_to_sell": shares_to_sell,
+            "proceeds_inr":   round(current_price * shares_to_sell, 2),
+            "stage":          label,
+            "urgency":        "HIGH" if action == "EXIT" else "MEDIUM",
+        })
         return result
 
-    result["days_held"]    = days_held
-    result["days_to_ltcg"] = days_to_ltcg
-
-    # ── Tax status ────────────────────────────────────────────
-    if days_held >= LTCG_DAYS:
-        result["tax_status"] = "ltcg"
-    elif days_to_ltcg <= LTCG_WARNING_DAYS:
-        result["tax_status"] = "stcg_near_ltcg"
-    else:
-        result["tax_status"] = "stcg"
-
-    # ── Profit estimate ───────────────────────────────────────
-    buy_price = stock.get("price", 0)
-    shares    = stock.get("approx_shares", 0)
-
-    if not current_price or not buy_price or not shares:
-        result["tax_notes"] = (
-            f"Held {days_held} days — "
-            f"{'LTCG ✅' if result['tax_status'] == 'ltcg' else f'STCG ({days_to_ltcg}d to LTCG)'}"
-            f" — price data unavailable for tax calculation."
-        )
+    # ── Priority 3: Dead money — held too long, no progress ──
+    if held_months >= MAX_HOLD_MONTHS and gain_pct < 5.0:
+        result.update({
+            "action":         "EXIT",
+            "reason":         (f"Dead money — held {held_months:.1f} months with "
+                               f"only {gain_pct:+.1f}% gain. Redeploy into "
+                               f"next screener picks."),
+            "shares_to_sell": shares,
+            "proceeds_inr":   round(current_price * shares, 2),
+            "urgency":        "MEDIUM",
+        })
         return result
 
-    est_profit = round((current_price - buy_price) * shares, 0)
-    result["est_profit"] = est_profit
-
-    if est_profit <= 0:
-        result["tax_notes"] = (
-            f"Held {days_held} days | "
-            f"{'LTCG ✅' if result['tax_status'] == 'ltcg' else f'STCG ({days_to_ltcg}d to LTCG)'} | "
-            f"No profit — no tax impact."
-        )
-        result["recommendation"] = "sell_now"
+    # ── Priority 4: Approaching stop-loss (within 5%) ────────
+    if stop_loss and current_price <= stop_loss * 1.05:
+        result.update({
+            "action":   "WATCH",
+            "reason":   (f"Price ₹{current_price} is within 5% of stop-loss "
+                         f"₹{stop_loss:.2f}. Monitor closely. "
+                         f"Current: {gain_pct:+.1f}%."),
+            "urgency":  "MEDIUM",
+        })
         return result
 
-    # ── STCG calculation ──────────────────────────────────────
-    stcg_tax = round(est_profit * STCG_RATE, 0)
+    # ── Default: HOLD ────────────────────────────
+    stage_pct  = 20  # next stage threshold
+    to_stage_1 = ((buy_price * 1.20) - current_price) / buy_price * 100
 
-    # ── LTCG calculation with accurate exemption (Option B) ───
-    # Remaining exemption = ₹1.25L minus gains already realised this FY
-    # ltcg_used is passed in via --ltcg-used flag (default 0)
-    ltcg_exemption_remaining = max(0, LTCG_EXEMPTION - ltcg_used)
-    taxable_ltcg = max(0, est_profit - ltcg_exemption_remaining)
-    ltcg_tax     = round(taxable_ltcg * LTCG_RATE, 0)
-
-    result["ltcg_exemption_remaining"] = ltcg_exemption_remaining
-
-    potential_saving = round(stcg_tax - ltcg_tax, 0)
-
-    result["stcg_tax"]         = stcg_tax
-    result["ltcg_tax"]         = ltcg_tax
-    result["potential_saving"] = potential_saving
-
-    # ── Recommendation ────────────────────────────────────────
-    if result["tax_status"] == "ltcg":
-        result["recommendation"] = "sell_now_ltcg"
-        result["tax_notes"] = (
-            f"✅ LTCG applies (held {days_held} days). "
-            f"Est. profit: ₹{est_profit:,.0f} | "
-            f"Tax: ₹{ltcg_tax:,.0f} (12.5% on gains above ₹1.25L exemption)."
-        )
-    elif result["tax_status"] == "stcg_near_ltcg" and potential_saving >= MIN_SAVING_TO_FLAG:
-        result["recommendation"] = "wait_for_ltcg"
-        result["tax_notes"] = (
-            f"💰 Wait {days_to_ltcg} days for LTCG threshold. "
-            f"Est. profit: ₹{est_profit:,.0f} | "
-            f"STCG tax now: ₹{stcg_tax:,.0f} vs LTCG later: ₹{ltcg_tax:,.0f}. "
-            f"Potential saving: ₹{potential_saving:,.0f}."
-        )
-    else:
-        result["recommendation"] = "sell_now"
-        result["tax_notes"] = (
-            f"STCG applies (held {days_held} days, {days_to_ltcg} days to LTCG). "
-            f"Est. profit: ₹{est_profit:,.0f} | "
-            f"STCG tax: ₹{stcg_tax:,.0f}."
-            + (f" Saving by waiting: ₹{potential_saving:,.0f} — below ₹{MIN_SAVING_TO_FLAG} threshold."
-               if potential_saving > 0 else "")
-        )
-
+    result.update({
+        "action":  "HOLD",
+        "reason":  (f"No action needed. P&L: {gain_pct:+.1f}% "
+                    f"(₹{gain_inr:+,.0f}). "
+                    f"Need +{to_stage_1:.1f}% more to hit Stage 1."),
+        "urgency": "LOW",
+    })
     return result
 
 
 # ─────────────────────────────────────────────
-# REBALANCER
+# FULL REBALANCE RUN
 # ─────────────────────────────────────────────
 
-def rebalance(old_path: str, new_path: str, ltcg_used: float = 0.0):
-    old_portfolio = load_portfolio(old_path)
-    new_portfolio = load_portfolio(new_path)
+def run_rebalance(portfolio: dict) -> dict:
+    """
+    Run full rebalance logic across all buckets.
+    Returns structured report dict.
+    """
+    now_ist = datetime.now(IST)
+    report  = {
+        "date":        now_ist.strftime("%d %B %Y"),
+        "timestamp":   now_ist.isoformat(),
+        "actions":     [],          # all decisions
+        "exits":       [],          # full exits
+        "trims":       [],          # partial sells
+        "watches":     [],          # approaching stop-loss
+        "holds":       [],          # no action
+        "total_freed_inr":   0.0,   # cash from exits + trims
+        "original_buffer_inr": 0.0, # leftover from original budget
+        "new_budget_inr":    0.0,   # freed + buffer = next month budget
+        "price_errors":      [],    # tickers we couldn't price
+    }
 
-    old_holdings = extract_holdings(old_portfolio)
-    new_holdings = extract_holdings(new_portfolio)
+    print(f"\n  Fetching live prices for all positions...")
 
-    old_tickers = set(old_holdings.keys())
-    new_tickers = set(new_holdings.keys())
+    for bucket_key, bucket in portfolio.items():
+        bucket_label = bucket.get("label", bucket_key)
+        stocks       = bucket.get("stocks", [])
 
-    exits   = old_tickers - new_tickers
-    entries = new_tickers - old_tickers
-    holds   = old_tickers & new_tickers
+        for stock in stocks:
+            ticker = stock["ticker"]
+            print(f"    {ticker}... ", end="", flush=True)
 
-    exemption_remaining = max(0, LTCG_EXEMPTION - ltcg_used)
+            current_price = fetch_live_price(ticker)
+            time.sleep(0.3)   # rate limit
 
-    print("\n" + "="*60)
-    print("  📅 MONTHLY REBALANCING REPORT — TAX AWARE")
-    print(f"  Old: {os.path.basename(old_path)}")
-    print(f"  New: {os.path.basename(new_path)}")
-    print(f"  Date: {date.today().strftime('%d %B %Y')}")
-    print(f"  LTCG used this FY: ₹{ltcg_used:,.0f}  |  "
-          f"Exemption remaining: ₹{exemption_remaining:,.0f}")
-    if ltcg_used == 0:
-        print("  ℹ️  Pass --ltcg-used <amount> if you've had other LTCG sales this FY")
-    print("="*60)
+            if current_price is None:
+                print("❌ price unavailable")
+                report["price_errors"].append(ticker)
+                continue
 
-    # ── SELL ──────────────────────────────────────────────────
-    print(f"\n🔴 SELL — {len(exits)} stock(s) dropped from portfolio")
+            print(f"₹{current_price:,.2f}")
 
-    tax_wait_stocks  = []   # stocks where waiting saves tax
-    sell_now_stocks  = []   # stocks to sell immediately
+            decision           = decide_action(stock, current_price)
+            decision["bucket"] = bucket_label
 
-    if exits:
-        print("  Fetching live prices for tax calculation...")
-        for t in sorted(exits):
-            s       = old_holdings[t]
-            current = get_current_price(t)
-            tax     = tax_check(s, current, ltcg_used=ltcg_used)
+            report["actions"].append(decision)
 
-            print(f"\n  {t:<22} {s['name']}")
-            print(f"    Buy Price:  ₹{s['price']:,.2f}  |  Now: ₹{current:,.2f}" if current else
-                  f"    Buy Price:  ₹{s['price']:,.2f}  |  Price unavailable")
-            print(f"    Score was:  {s.get('final_score', 'N/A')}")
-
-            # Tax block
-            if tax["days_held"] is not None:
-                status_emoji = "✅" if tax["tax_status"] == "ltcg" else (
-                               "⚠️" if tax["tax_status"] == "stcg_near_ltcg" else "📋")
-                print(f"    ── Tax Assessment ─────────────────────────")
-                print(f"    Held:       {tax['days_held']} days "
-                      f"({s.get('buy_date','unknown')} → today)")
-                print(f"    Status:     {status_emoji} {tax['tax_status'].replace('_',' ').title()}")
-                if tax.get("ltcg_exemption_remaining") is not None:
-                    print(f"    LTCG Exempt:₹{tax['ltcg_exemption_remaining']:,.0f} remaining this FY")
-                if tax.get("est_profit"):
-                    print(f"    Est. Profit:₹{tax['est_profit']:,.0f}")
-                if tax.get("stcg_tax") is not None:
-                    print(f"    STCG Tax:   ₹{tax['stcg_tax']:,.0f}  (if sold now)")
-                if tax.get("ltcg_tax") is not None:
-                    print(f"    LTCG Tax:   ₹{tax['ltcg_tax']:,.0f}  (if held {tax['days_to_ltcg']}d more)")
-                if tax.get("potential_saving") and tax["potential_saving"] > 0:
-                    print(f"    💰 Saving:  ₹{tax['potential_saving']:,.0f} by waiting {tax['days_to_ltcg']} days")
-                print(f"    {tax['tax_notes']}")
-
-            # Recommendation
-            if tax["recommendation"] == "wait_for_ltcg":
-                print(f"    ➡️  RECOMMENDATION: HOLD {tax['days_to_ltcg']} more days for LTCG")
-                tax_wait_stocks.append(t)
+            if decision["action"] == "EXIT":
+                report["exits"].append(decision)
+                report["total_freed_inr"] += decision["proceeds_inr"]
+            elif decision["action"] == "TRIM":
+                report["trims"].append(decision)
+                report["total_freed_inr"] += decision["proceeds_inr"]
+            elif decision["action"] == "WATCH":
+                report["watches"].append(decision)
             else:
-                label = "✅ SELL NOW (LTCG applies)" if tax["recommendation"] == "sell_now_ltcg" \
-                        else "📋 SELL NOW (STCG applies)"
-                print(f"    ➡️  RECOMMENDATION: {label}")
-                sell_now_stocks.append(t)
-    else:
-        print("  None")
+                report["holds"].append(decision)
 
-    # ── BUY ───────────────────────────────────────────────────
-    print(f"\n🟢 BUY — {len(entries)} new stock(s) entering portfolio")
-    if entries:
-        for t in sorted(entries):
-            s = new_holdings[t]
-            approx = int(s.get("allocation_inr", 0) // s["price"]) if s["price"] > 0 else 0
-            print(f"\n  {t:<22} {s['name']}")
-            print(f"    Allocate:  ₹{s.get('allocation_inr',0):,.0f}  |  "
-                  f"Score: {s.get('final_score','N/A')}  |  "
-                  f"Price: ₹{s['price']:,.2f}")
-            print(f"    Buy approx {approx} shares at market open (limit order)")
-    else:
-        print("  None")
-
-    # ── HOLD ──────────────────────────────────────────────────
-    print(f"\n🟡 HOLD — {len(holds)} stock(s) continuing from last month")
-    if holds:
-        for t in sorted(holds):
-            old = old_holdings[t]
-            new = new_holdings[t]
-            score_delta = new.get("final_score",0) - old.get("final_score",0)
-            delta_str   = f"{score_delta:+.1f}"
-
-            # Check if any hold stocks are approaching LTCG
-            buy_date_str = old.get("buy_date")
-            days_note    = ""
-            if buy_date_str:
-                try:
-                    buy_dt    = datetime.strptime(buy_date_str, "%Y-%m-%d").date()
-                    days_held = (date.today() - buy_dt).days
-                    days_left = max(0, LTCG_DAYS - days_held)
-                    if days_left == 0:
-                        days_note = " ✅ LTCG"
-                    elif days_left <= LTCG_WARNING_DAYS:
-                        days_note = f" ⚠️  LTCG in {days_left}d"
-                except ValueError:
-                    pass
-
-            print(f"  {t:<22} Score: {old.get('final_score','?')} → "
-                  f"{new.get('final_score','?')} ({delta_str}){days_note}")
-    else:
-        print("  None")
-
-    # ── TAX SUMMARY ───────────────────────────────────────────
-    if tax_wait_stocks:
-        print(f"\n💰 TAX WAIT LIST — {len(tax_wait_stocks)} stock(s) worth holding for LTCG:")
-        for t in tax_wait_stocks:
-            print(f"  {t}")
-        print("  Note: Keep these positions open. The screener excluded them")
-        print("  this month but they may re-enter once LTCG threshold is crossed.")
-
-    # ── CASH FLOW SUMMARY ─────────────────────────────────────
-    sell_proceeds = sum(
-        old_holdings[t].get("allocation_inr", 0)
-        for t in exits if t in sell_now_stocks
+    # ── Cash buffer from original deployment ─────
+    # Original budget ₹1,00,000 minus deployed amount
+    total_deployed = sum(
+        s.get("allocation_inr", 0)
+        for b in portfolio.values()
+        for s in b.get("stocks", [])
     )
-    buy_cost = sum(new_holdings[t].get("allocation_inr", 0) for t in entries)
-    net_cash = sell_proceeds - buy_cost
+    original_buffer = max(0, 100_000 - total_deployed)
+    report["original_buffer_inr"] = round(original_buffer, 2)
+    report["total_freed_inr"]     = round(report["total_freed_inr"], 2)
+    report["new_budget_inr"]      = round(
+        report["original_buffer_inr"] + report["total_freed_inr"], 2
+    )
 
-    print(f"\n💰 CASH FLOW SUMMARY")
-    print(f"  Sell now (₹):   ₹{sell_proceeds:,.0f}  ({len(sell_now_stocks)} stocks)")
-    if tax_wait_stocks:
-        wait_value = sum(old_holdings[t].get("allocation_inr",0) for t in tax_wait_stocks)
-        print(f"  Hold for LTCG:  ₹{wait_value:,.0f}  ({len(tax_wait_stocks)} stocks — don't sell yet)")
-    print(f"  Buy cost:       ₹{buy_cost:,.0f}")
-    if net_cash >= 0:
-        print(f"  Net freed up:   ₹{net_cash:,.0f}  → Deploy to new buys or cash buffer")
-    else:
-        print(f"  Additional needed: ₹{abs(net_cash):,.0f}  → Use cash buffer")
-
-    print("\n⚠️  Tax estimates are approximate. Consult a CA for exact tax liability.")
-    print(f"   LTCG exemption used: ₹{ltcg_used:,.0f} / ₹{LTCG_EXEMPTION:,.0f} this FY.")
-    print("   Run with --ltcg-used <amount> to set your actual YTD LTCG gains.")
-    print("   Always use actual transaction prices for tax filing.")
-    print("   Download exact Tax P&L from Zerodha Console after each FY.")
-    print("="*60)
+    return report
 
 
-def auto_detect_portfolios(output_dirs: list = None) -> tuple:
-    if output_dirs is None:
-        output_dirs = ["./outputs", "/mnt/user-data/outputs", "."]
+# ─────────────────────────────────────────────
+# REPORTING
+# ─────────────────────────────────────────────
 
-    files = []
-    for d in output_dirs:
-        files.extend(glob.glob(os.path.join(d, "portfolio_*.json")))
+def _emoji(action: str) -> str:
+    return {"EXIT": "🔴", "TRIM": "🟡", "WATCH": "👁", "HOLD": "🟢"}.get(action, "⚪")
 
-    files = sorted(set(files))
-    if len(files) < 2:
-        raise FileNotFoundError(
-            "Need at least 2 portfolio_YYYYMM.json files. Run screener.py first."
+
+def format_terminal_report(report: dict) -> str:
+    """Format full report for Railway logs."""
+    lines = []
+    lines.append("=" * 60)
+    lines.append(f"  📊 MONTHLY REBALANCE REPORT — {report['date']}")
+    lines.append("=" * 60)
+
+    lines.append(f"\n  Summary:")
+    lines.append(f"    🔴 Exits  : {len(report['exits'])}")
+    lines.append(f"    🟡 Trims  : {len(report['trims'])}")
+    lines.append(f"    👁  Watches: {len(report['watches'])}")
+    lines.append(f"    🟢 Holds  : {len(report['holds'])}")
+
+    lines.append(f"\n  💰 Cash Position:")
+    lines.append(f"    Cash freed (exits + trims) : ₹{report['total_freed_inr']:>10,.2f}")
+    lines.append(f"    Original cash buffer       : ₹{report['original_buffer_inr']:>10,.2f}")
+    lines.append(f"    ─────────────────────────────────────────")
+    lines.append(f"    Budget for next screener   : ₹{report['new_budget_inr']:>10,.2f}")
+
+    if report["exits"] or report["trims"]:
+        lines.append(f"\n  ⚡ Actions Required on Kite:")
+        lines.append(f"  {'─' * 56}")
+        for d in sorted(report["actions"],
+                        key=lambda x: {"EXIT": 0, "TRIM": 1, "WATCH": 2, "HOLD": 3}[x["action"]]):
+            if d["action"] in ("EXIT", "TRIM"):
+                emoji = _emoji(d["action"])
+                lines.append(f"\n  {emoji} {d['ticker']} — {d['name']}")
+                lines.append(f"     Action     : {d['action']} — sell {d['shares_to_sell']} shares")
+                lines.append(f"     Buy price  : ₹{d['buy_price']:,.2f}")
+                lines.append(f"     Now        : ₹{d['current_price']:,.2f}  ({d['gain_pct']:+.1f}%)")
+                lines.append(f"     Proceeds   : ₹{d['proceeds_inr']:,.2f}")
+                lines.append(f"     Reason     : {d['reason']}")
+
+    if report["watches"]:
+        lines.append(f"\n  👁  Positions to Watch Closely:")
+        for d in report["watches"]:
+            lines.append(f"    {d['ticker']}  {d['gain_pct']:+.1f}%  — {d['reason']}")
+
+    lines.append(f"\n  ✅ Holds (no action needed):")
+    for d in report["holds"]:
+        lines.append(
+            f"    🟢 {d['ticker']:<18} {d['gain_pct']:>+7.1f}%   ₹{d['current_price']:>8,.2f}   "
+            f"({d['held_months']:.1f}mo)"
         )
-    return files[-2], files[-1]
+
+    if report["price_errors"]:
+        lines.append(f"\n  ⚠️  Price fetch errors: {', '.join(report['price_errors'])}")
+
+    lines.append(f"\n  {'=' * 58}")
+    return "\n".join(lines)
+
+
+def format_telegram_message(report: dict) -> str:
+    """Format concise Telegram message."""
+    lines = []
+    lines.append(f"📊 *Monthly Rebalance — {report['date']}*")
+    lines.append("")
+
+    # Summary counts
+    total_actions = len(report["exits"]) + len(report["trims"])
+    if total_actions == 0:
+        lines.append("✅ No actions needed this month — all positions healthy.")
+    else:
+        lines.append(f"*{total_actions} action(s) required on Kite:*")
+        lines.append("")
+
+    # Exits
+    if report["exits"]:
+        lines.append("🔴 *SELL ALL (Exit)*")
+        for d in report["exits"]:
+            lines.append(
+                f"  {d['ticker'].replace('.NS','')} — sell {d['shares_to_sell']} shares "
+                f"@ ₹{d['current_price']:,.0f}  ({d['gain_pct']:+.1f}%)"
+            )
+            lines.append(f"  _Reason: {d['reason'][:80]}..._" if len(d['reason']) > 80
+                         else f"  _{d['reason']}_")
+            lines.append(f"  Proceeds: ₹{d['proceeds_inr']:,.0f}")
+            lines.append("")
+
+    # Trims
+    if report["trims"]:
+        lines.append("🟡 *PARTIAL SELL (Trim)*")
+        for d in report["trims"]:
+            lines.append(
+                f"  {d['ticker'].replace('.NS','')} — sell {d['shares_to_sell']} of "
+                f"{d['shares_held']} shares @ ₹{d['current_price']:,.0f}  ({d['gain_pct']:+.1f}%)"
+            )
+            lines.append(f"  _Reason: {d['stage']}_")
+            lines.append(f"  Proceeds: ₹{d['proceeds_inr']:,.0f}")
+            lines.append("")
+
+    # Watches
+    if report["watches"]:
+        lines.append("👁 *WATCH CLOSELY*")
+        for d in report["watches"]:
+            lines.append(
+                f"  {d['ticker'].replace('.NS','')}  {d['gain_pct']:+.1f}%  "
+                f"— near stop-loss ₹{d['stop_loss_price']:,.2f}"
+            )
+        lines.append("")
+
+    # Holds
+    lines.append("🟢 *HOLD (no action)*")
+    for d in report["holds"]:
+        lines.append(
+            f"  {d['ticker'].replace('.NS',''):<14} {d['gain_pct']:>+6.1f}%   "
+            f"₹{d['current_price']:>8,.0f}"
+        )
+    lines.append("")
+
+    # Cash
+    lines.append("─" * 30)
+    lines.append(f"💰 *Cash for next screener*")
+    lines.append(f"  Freed this month  : ₹{report['total_freed_inr']:>10,.0f}")
+    lines.append(f"  Existing buffer   : ₹{report['original_buffer_inr']:>10,.0f}")
+    lines.append(f"  *Total budget     : ₹{report['new_budget_inr']:>10,.0f}*")
+
+    return "\n".join(lines)
+
+
+# ─────────────────────────────────────────────
+# TELEGRAM
+# ─────────────────────────────────────────────
+
+def send_telegram(message: str) -> bool:
+    """Send message via Telegram Bot API."""
+    token   = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+
+    if not token or not chat_id:
+        print("  ⚠️  Telegram not configured — skipping notification.")
+        return False
+
+    try:
+        payload = json.dumps({
+            "chat_id":    chat_id,
+            "text":       message,
+            "parse_mode": "Markdown",
+        }).encode("utf-8")
+
+        req = _ur.Request(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _ur.urlopen(req, timeout=15) as resp:
+            resp.read()
+            print(f"  ✅ Telegram notification sent.")
+            return True
+
+    except _ure.HTTPError as e:
+        err = e.read().decode() if e.fp else ""
+        print(f"  ❌ Telegram error {e.code}: {err}")
+        return False
+    except Exception as e:
+        print(f"  ❌ Telegram failed: {e}")
+        return False
+
+
+# ─────────────────────────────────────────────
+# SAVE REPORT TO API
+# ─────────────────────────────────────────────
+
+def save_report_to_api(report: dict):
+    """POST rebalance report to /signals/upload endpoint."""
+    payload = {
+        "type":    "rebalance_report",
+        "payload": report,
+    }
+    result = _api_post("/signals/upload", payload)
+    if result:
+        print(f"  ✅ Rebalance report saved to API.")
+    else:
+        print(f"  ⚠️  Could not save report to API (non-fatal).")
+
+
+# ─────────────────────────────────────────────
+# DATE CHECK — only run on 1st working day
+# ─────────────────────────────────────────────
+
+def is_first_working_day_of_month() -> bool:
+    """
+    Returns True if today is the 1st, 2nd, or 3rd of the month AND a weekday.
+    (Handles cases where 1st falls on a weekend.)
+    """
+    today = date.today()
+    if today.day > 3:
+        return False
+    return today.weekday() < 5   # Mon=0 ... Fri=4
+
+
+# ─────────────────────────────────────────────
+# MAIN
+# ─────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(description="Monthly portfolio rebalancer")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print report only — no Telegram, no API save")
+    parser.add_argument("--force",   action="store_true",
+                        help="Skip date check (for testing)")
+    args = parser.parse_args()
+
+    now_ist = datetime.now(IST)
+
+    print()
+    print("=" * 60)
+    print(f"  📊 PORTFOLIO REBALANCER")
+    print(f"  {now_ist.strftime('%d %B %Y, %I:%M %p IST')}")
+    print("=" * 60)
+
+    # ── Date guard ───────────────────────────────
+    if not args.force and not is_first_working_day_of_month():
+        today = date.today()
+        print(f"\n  ⏭️  Skipping — today is {today.strftime('%d %b %Y')} "
+              f"(not the 1st working day of the month).")
+        print(f"      Use --force to override for testing.\n")
+        return
+
+    # ── Load portfolio ───────────────────────────
+    portfolio = fetch_portfolio()
+    if not portfolio:
+        print("\n  ❌ Cannot rebalance — no portfolio data.\n")
+        return
+
+    # ── Run rebalance ────────────────────────────
+    print(f"\n  Step 1: Analysing {sum(len(b.get('stocks',[])) for b in portfolio.values())} positions...")
+    report = run_rebalance(portfolio)
+
+    # ── Print terminal report ────────────────────
+    print(format_terminal_report(report))
+
+    if args.dry_run:
+        print("\n  [DRY RUN] — No Telegram sent, no API save.\n")
+        return
+
+    # ── Send Telegram ────────────────────────────
+    print("\n  Step 2: Sending Telegram notification...")
+    tg_message = format_telegram_message(report)
+    send_telegram(tg_message)
+
+    # ── Save to API ──────────────────────────────
+    print("\n  Step 3: Saving report to API...")
+    save_report_to_api(report)
+
+    print("\n  ✅ Rebalance complete.\n")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Tax-aware monthly portfolio rebalancer")
-    parser.add_argument("--old",       help="Path to last month's portfolio JSON")
-    parser.add_argument("--new",       help="Path to this month's portfolio JSON")
-    parser.add_argument(
-        "--ltcg-used",
-        type=float,
-        default=0.0,
-        metavar="AMOUNT",
-        help=(
-            "LTCG gains already realised this financial year in ₹. "
-            "Reduces the ₹1.25L exemption accordingly for accurate tax estimates. "
-            "Example: --ltcg-used 80000 (if you've already booked ₹80,000 in LTCG gains). "
-            "Check Zerodha Console → Tax P&L for your YTD figure. Default: 0"
-        ),
-    )
-    args = parser.parse_args()
-
-    if args.old and args.new:
-        old_path, new_path = args.old, args.new
-    else:
-        print("Auto-detecting two most recent portfolio files...")
-        old_path, new_path = auto_detect_portfolios()
-
-    rebalance(old_path, new_path, ltcg_used=args.ltcg_used)
+    main()
