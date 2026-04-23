@@ -45,7 +45,7 @@ IST = ZoneInfo("Asia/Kolkata")
 MARKET_OPEN_HOUR  = 9
 MARKET_OPEN_MIN   = 15
 MARKET_CLOSE_HOUR = 15
-MARKET_CLOSE_MIN  = 30
+MARKET_CLOSE_MIN  = 45
 
 def is_market_hours() -> bool:
     """
