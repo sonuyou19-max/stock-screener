@@ -45,7 +45,7 @@ IST = ZoneInfo("Asia/Kolkata")
 MARKET_OPEN_HOUR  = 9
 MARKET_OPEN_MIN   = 15
 MARKET_CLOSE_HOUR = 15
-MARKET_CLOSE_MIN  = 45
+MARKET_CLOSE_MIN  = 30
 
 def is_market_hours() -> bool:
     """
@@ -64,7 +64,12 @@ def is_market_hours() -> bool:
 # ALERT DEDUPLICATION
 # ─────────────────────────────────────────────
 
-DEDUP_FILE = "/tmp/alerts_sent_today.json"
+# BUG FIX: /tmp is wiped on every Railway container restart (each cron run is
+# a fresh container). Dedup MUST live on the persistent volume, not /tmp.
+# DATA_DIR points to the Railway volume mount (same volume as alert-tracker-volume).
+DATA_DIR  = os.getenv("DATA_DIR", "/data")
+DEDUP_FILE = os.path.join(DATA_DIR, "alerts_sent_today.json")
+
 
 def _load_dedup() -> dict:
     """Load today's sent alert keys. Clears if file is from a previous day."""
@@ -75,46 +80,53 @@ def _load_dedup() -> dict:
             data = json.load(f)
         # Clear if stale (from a previous calendar day)
         if data.get("date") != str(date.today()):
+            print(f"  🗓️  Dedup file from {data.get('date')} — clearing for today.")
             return {}
-        return data.get("keys", {})
+        keys = data.get("keys", {})
+        if keys:
+            print(f"  ⏭️  Loaded {len(keys)} dedup key(s) from today — will suppress repeats.")
+        return keys
     except Exception:
         return {}
 
 
 def _save_dedup(keys: dict):
-    """Save today's sent alert keys to disk."""
+    """Save today's sent alert keys to persistent volume."""
     try:
+        os.makedirs(DATA_DIR, exist_ok=True)
         with open(DEDUP_FILE, "w") as f:
             json.dump({"date": str(date.today()), "keys": keys}, f)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"  ⚠️  Could not save dedup file: {e}")
 
 
 def _make_dedup_key(ticker: str, alert_type: str) -> str:
     """
     Unique key per ticker + alert type per day.
-    e.g. 'HDFCBANK.NS_stop_loss' or 'SUZLON.NS_profit_stage_1'
+    e.g. 'HDFCBANK.NS_stop_loss' or 'macro_crude_oil'
     """
     return f"{ticker}_{alert_type}"
 
 
 def filter_new_alerts(alerts: dict) -> tuple[dict, int]:
     """
-    Remove alerts already sent today.
+    Remove alerts already sent today — for stock AND macro alerts.
     Returns (filtered_alerts_dict, count_deduplicated).
     """
-    sent_keys  = _load_dedup()
+    sent_keys   = _load_dedup()
     dedup_count = 0
 
     filtered = {
-        "stop_loss": [],
-        "profit":    [],
-        "ok":        alerts["ok"],
-        "errors":    alerts["errors"],
-        "timestamp": alerts["timestamp"],
+        "stop_loss":  [],
+        "profit":     [],
+        "macro":      [],
+        "ok":         alerts["ok"],
+        "errors":     alerts["errors"],
+        "timestamp":  alerts["timestamp"],
         "any_alerts": False,
     }
 
+    # ── Stock stop-loss alerts ────────────────────────────────
     for s in alerts["stop_loss"]:
         key = _make_dedup_key(s["ticker"], "stop_loss")
         if key not in sent_keys:
@@ -123,8 +135,8 @@ def filter_new_alerts(alerts: dict) -> tuple[dict, int]:
             dedup_count += 1
             print(f"  ⏭️  {s['ticker']} stop-loss already alerted today — skipping.")
 
+    # ── Stock profit alerts ───────────────────────────────────
     for s in alerts["profit"]:
-        # Key includes stage so each stage only fires once per day
         stage_key = s.get("alert_label", "profit").replace(" ", "_").replace("—", "").strip()
         key = _make_dedup_key(s["ticker"], f"profit_{stage_key}")
         if key not in sent_keys:
@@ -133,8 +145,24 @@ def filter_new_alerts(alerts: dict) -> tuple[dict, int]:
             dedup_count += 1
             print(f"  ⏭️  {s['ticker']} profit alert already sent today — skipping.")
 
-    # Include macro alerts in any_alerts so email fires when macros trigger
-    filtered["macro"]      = alerts.get("macro", [])
+    # ── Macro alerts — BUG FIX: these were NEVER deduplicated ────
+    # Each macro condition gets a stable key based on its CATEGORY (not the
+    # full title which changes every run e.g. "$105.07" vs "$106.16").
+    # We strip the numeric value so "Crude Oil Alert — $105/bbl" and
+    # "Crude Oil Alert — $106/bbl" both map to the same dedup key.
+    for m in alerts.get("macro", []):
+        title = m.get("title", "")
+        # Strip numbers/symbols to get stable category key
+        import re as _re
+        stable = _re.sub(r"[\d₹$.,+\-/]", "", title).strip().lower()
+        stable = _re.sub(r"\s+", "_", stable)
+        key = f"macro_{stable}"
+        if key not in sent_keys:
+            filtered["macro"].append(m)
+        else:
+            dedup_count += 1
+            print(f"  ⏭️  Macro '{title[:40]}' already sent today — skipping.")
+
     filtered["any_alerts"] = bool(
         filtered["stop_loss"] or filtered["profit"] or filtered["macro"]
     )
@@ -154,7 +182,17 @@ def mark_alerts_sent(alerts: dict):
         key = _make_dedup_key(s["ticker"], f"profit_{stage_key}")
         sent_keys[key] = alerts["timestamp"]
 
+    # Mark macro alerts as sent too
+    import re as _re
+    for m in alerts.get("macro", []):
+        title = m.get("title", "")
+        stable = _re.sub(r"[\d₹$.,+\-/]", "", title).strip().lower()
+        stable = _re.sub(r"\s+", "_", stable)
+        key = f"macro_{stable}"
+        sent_keys[key] = alerts["timestamp"]
+
     _save_dedup(sent_keys)
+    print(f"  💾 Dedup: {len(sent_keys)} key(s) saved to volume.")
 
 # ─────────────────────────────────────────────
 # CONFIG — loaded from environment variables
