@@ -50,12 +50,50 @@ NSE_HEADERS = {
 # ─────────────────────────────────────────────
 
 def load_history() -> list:
-    """Load existing history. Returns [] if file doesn't exist."""
+    """
+    Load FII/DII history with two-source strategy:
+      1. GET /fiidii from the API  ← always has the full merged history
+      2. Fall back to local disk   ← only has recent runs (volume resets on deploy)
+
+    This ensures the collector always starts with the FULL history regardless
+    of whether its own volume was wiped on a Railway redeploy. Without this,
+    the collector would only know about the last 3-4 days and would overwrite
+    the API's full history with a truncated version.
+    """
+    import urllib.request as _ur
+    import urllib.error   as _ure
+
+    api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+
+    # ── Source 1: API (always authoritative) ──────────────────────
+    try:
+        req = _ur.Request(
+            f"{api_url}/fiidii",
+            headers={"Accept": "application/json"},
+        )
+        with _ur.urlopen(req, timeout=10) as resp:
+            api_data = json.loads(resp.read().decode())
+            if api_data and isinstance(api_data, list) and len(api_data) > 0:
+                print(f"  📡 History loaded from API: {len(api_data)} records")
+                # Also sync to local disk so we have a backup
+                try:
+                    with open(HISTORY_FILE, "w") as f:
+                        json.dump(api_data, f, indent=2)
+                except Exception:
+                    pass
+                return api_data
+    except Exception as e:
+        print(f"  ⚠️  Could not fetch history from API ({e}) — falling back to local disk")
+
+    # ── Source 2: Local disk (fallback) ───────────────────────────
     if not os.path.exists(HISTORY_FILE):
+        print(f"  ⚠️  No local history file either — starting fresh")
         return []
     try:
         with open(HISTORY_FILE) as f:
-            return json.load(f)
+            local_data = json.load(f)
+            print(f"  💾 History loaded from local disk: {len(local_data)} records")
+            return local_data
     except Exception:
         return []
 
@@ -296,6 +334,9 @@ def collect(target_date: str = None, force: bool = False):
 
     if added == 0:
         print(f"  ℹ️  All fetched dates already in history.")
+        # Still POST to API — this re-seeds it if the API volume was wiped on redeploy
+        print(f"  📡 Re-seeding API with full history ({len(history)} records)...")
+        _post_to_api(history)
     else:
         save_history(history)
         print(f"\n  ✅ Added {added} record(s). History now has {len(history)} days.")
