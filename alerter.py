@@ -253,7 +253,7 @@ MACRO_THRESHOLDS = {
     "sp500_crash":       -8.0,     # S&P 500 30d < -8%
 }
 
-# Files written by collector.py and macro signals
+# FII/DII history — API is primary source, local file is fallback only
 FIIDII_HISTORY_FILE = os.path.join(os.path.dirname(__file__), "fiidii_history.json")
 NEWS_SIGNALS_FILE   = os.path.join(os.path.dirname(__file__), "news_signals.json")
 
@@ -312,27 +312,60 @@ def detect_macro_alerts() -> list:
         pass
 
     # ── 3. FII Extreme Selling ────────────────────────────────
+    # FIX: Read from API (single source of truth) not local file.
+    # Local fiidii_history.json on the alert-tracker volume can be stale
+    # or contain different records than what the collector has posted to
+    # the API — causing the 10d sum to differ from the LLM Synth / dashboard.
     try:
-        if os.path.exists(FIIDII_HISTORY_FILE):
-            with open(FIIDII_HISTORY_FILE) as f:
-                history = json.load(f)
-            recent  = sorted(history, key=lambda r: r["date"], reverse=True)[:10]
-            fii_10d = sum(r["fii_net_cr"] for r in recent)
-            if fii_10d < MACRO_THRESHOLDS["fii_extreme_sell"]:
-                macro_alerts.append({
-                    "type":    "macro",
-                    "emoji":   "📊",
-                    "title":   f"FII Extreme Selling — ₹{fii_10d:,.0f}Cr (10d)",
-                    "message": (
-                        f"FII 10-day net flow: ₹{fii_10d:,.0f}Cr "
-                        f"(threshold: ₹{MACRO_THRESHOLDS['fii_extreme_sell']:,.0f}Cr). "
-                        f"Consider tightening stop-losses by 3% across all positions. "
-                        f"Defensive FMCG/Pharma holdings are best protected."
-                    ),
-                    "urgency": "warning",
-                })
-    except Exception:
-        pass
+        import urllib.request as _ur
+        api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+        req = _ur.Request(f"{api_url}/fiidii",
+                          headers={"Accept": "application/json"})
+        with _ur.urlopen(req, timeout=8) as resp:
+            history = json.loads(resp.read().decode())
+
+        if not history:
+            raise ValueError("Empty FII/DII response from API")
+
+        recent  = sorted(history, key=lambda r: r["date"], reverse=True)[:10]
+        fii_10d = sum(r["fii_net_cr"] for r in recent)
+        days    = len(recent)
+
+        if fii_10d < MACRO_THRESHOLDS["fii_extreme_sell"]:
+            macro_alerts.append({
+                "type":    "macro",
+                "emoji":   "📊",
+                "title":   f"FII Extreme Selling — ₹{fii_10d:,.0f}Cr (10d)",
+                "message": (
+                    f"FII 10-day net flow: ₹{fii_10d:,.0f}Cr "
+                    f"(threshold: ₹{MACRO_THRESHOLDS['fii_extreme_sell']:,.0f}Cr). "
+                    f"Consider tightening stop-losses by 3% across all positions. "
+                    f"Defensive FMCG/Pharma holdings are best protected."
+                ),
+                "urgency": "warning",
+            })
+    except Exception as _e:
+        # Fallback to local file if API unreachable
+        try:
+            if os.path.exists(FIIDII_HISTORY_FILE):
+                with open(FIIDII_HISTORY_FILE) as f:
+                    history = json.load(f)
+                recent  = sorted(history, key=lambda r: r["date"], reverse=True)[:10]
+                fii_10d = sum(r["fii_net_cr"] for r in recent)
+                if fii_10d < MACRO_THRESHOLDS["fii_extreme_sell"]:
+                    macro_alerts.append({
+                        "type":    "macro",
+                        "emoji":   "📊",
+                        "title":   f"FII Extreme Selling — ₹{fii_10d:,.0f}Cr (10d) [local]",
+                        "message": (
+                            f"FII 10-day net flow: ₹{fii_10d:,.0f}Cr "
+                            f"(threshold: ₹{MACRO_THRESHOLDS['fii_extreme_sell']:,.0f}Cr). "
+                            f"Consider tightening stop-losses by 3% across all positions."
+                        ),
+                        "urgency": "warning",
+                    })
+        except Exception:
+            pass
 
     # ── 4. S&P 500 Crash ──────────────────────────────────────
     try:
