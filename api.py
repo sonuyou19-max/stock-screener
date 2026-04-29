@@ -97,20 +97,39 @@ def latest_portfolio():
 
 @app.route("/fiidii/upload", methods=["POST", "OPTIONS"])
 def upload_fiidii():
-    """fii-collector POSTs its history here after every run."""
+    """fii-collector POSTs its history here after every run.
+    Merges incoming data with existing records so history survives API restarts.
+    """
     global _fiidii_cache
     if request.method == "OPTIONS":
         return jsonify({}), 200
     try:
-        data = request.get_json(force=True)
-        if not data:
+        incoming = request.get_json(force=True)
+        if not incoming:
             return jsonify({"error": "Empty payload"}), 400
-        _fiidii_cache = data
-        # Persist to disk best-effort
+
+        # Load existing data from disk to merge with
         path = os.path.join(DATA_DIR, "fiidii_history.json")
-        _save_json(path, data)
-        print(f"✅ FII/DII data received: {len(data)} records")
-        return jsonify({"status": "ok", "records": len(data)}), 200
+        existing = []
+        if os.path.exists(path):
+            try:
+                with open(path) as f:
+                    existing = json.load(f)
+            except Exception:
+                existing = []
+
+        # Merge: build dict keyed by date, incoming overwrites existing for same date
+        merged_by_date = {r["date"]: r for r in existing}
+        for r in incoming:
+            merged_by_date[r["date"]] = r
+
+        # Sort descending by date, keep last 90 days
+        merged = sorted(merged_by_date.values(), key=lambda r: r["date"], reverse=True)[:90]
+
+        _fiidii_cache = merged
+        _save_json(path, merged)
+        print(f"✅ FII/DII merged: {len(incoming)} incoming + existing → {len(merged)} total records")
+        return jsonify({"status": "ok", "records": len(merged)}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -205,6 +224,69 @@ def signals():
                 result[name] = data
                 break
     return jsonify(result)
+
+
+@app.route("/prices", methods=["GET"])
+def prices():
+    """
+    Fetch live prices for all stocks in the current portfolio.
+    Called by the dashboard every 5 minutes.
+    Returns: { "MAHABANK.NS": {"price": 80.10, "change_pct": 3.6, "ts": "..."}, ... }
+    """
+    try:
+        import yfinance as yf
+        import math
+        from datetime import datetime
+
+        # Get tickers from current portfolio
+        port = _portfolio_cache or {}
+        tickers = []
+        for bucket in port.values():
+            for s in bucket.get("stocks", []):
+                t = s.get("ticker")
+                if t:
+                    tickers.append(t)
+
+        if not tickers:
+            return jsonify({"error": "No portfolio loaded", "prices": {}})
+
+        result = {}
+        ts = datetime.now().strftime("%H:%M")
+
+        for ticker in tickers:
+            try:
+                stock = yf.Ticker(ticker)
+                # Fast path
+                price = getattr(stock.fast_info, "last_price", None)
+                prev  = getattr(stock.fast_info, "previous_close", None)
+
+                if price is None or (isinstance(price, float) and math.isnan(price)):
+                    info  = stock.info
+                    price = info.get("regularMarketPrice") or info.get("currentPrice")
+                    prev  = info.get("regularMarketPreviousClose") or info.get("previousClose")
+
+                if price is None:
+                    hist  = stock.history(period="2d")
+                    if not hist.empty:
+                        price = round(float(hist["Close"].iloc[-1]), 2)
+                        prev  = round(float(hist["Close"].iloc[-2]), 2) if len(hist) > 1 else price
+
+                if price:
+                    price = round(float(price), 2)
+                    change_pct = round(((price - prev) / prev) * 100, 2) if prev else 0
+                    result[ticker] = {
+                        "price":      price,
+                        "change_pct": change_pct,
+                        "ts":         ts,
+                    }
+            except Exception as e:
+                print(f"  ⚠️  Price fetch failed for {ticker}: {e}")
+                result[ticker] = None
+
+        return jsonify({"prices": result, "ts": ts, "count": len(result)})
+
+    except Exception as e:
+        return jsonify({"error": str(e), "prices": {}})
 
 
 @app.route("/health", methods=["GET"])
