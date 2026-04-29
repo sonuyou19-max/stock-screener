@@ -238,10 +238,16 @@ def prices():
         import math
         from datetime import datetime
 
-        # Get tickers from current portfolio
-        port = _portfolio_cache or {}
+        # Get tickers from current portfolio — try cache first, then disk
+        port = _portfolio_cache
+        if not port:
+            latest = _find_latest_portfolio()
+            if latest:
+                port = _load_json(latest) or {}
+                port = _sanitise(port)
+
         tickers = []
-        for bucket in port.values():
+        for bucket in (port or {}).values():
             for s in bucket.get("stocks", []):
                 t = s.get("ticker")
                 if t:
@@ -253,35 +259,48 @@ def prices():
         result = {}
         ts = datetime.now().strftime("%H:%M")
 
-        for ticker in tickers:
-            try:
-                stock = yf.Ticker(ticker)
-                # Fast path
-                price = getattr(stock.fast_info, "last_price", None)
-                prev  = getattr(stock.fast_info, "previous_close", None)
+        # Batch fetch all tickers at once — much faster than one-by-one
+        try:
+            import pandas as pd
+            raw = yf.download(
+                tickers, period="2d", interval="1d",
+                auto_adjust=True, progress=False, threads=True
+            )
+            closes = raw["Close"] if "Close" in raw.columns else raw.xs("Close", axis=1, level=0)
 
-                if price is None or (isinstance(price, float) and math.isnan(price)):
-                    info  = stock.info
-                    price = info.get("regularMarketPrice") or info.get("currentPrice")
-                    prev  = info.get("regularMarketPreviousClose") or info.get("previousClose")
-
-                if price is None:
-                    hist  = stock.history(period="2d")
-                    if not hist.empty:
-                        price = round(float(hist["Close"].iloc[-1]), 2)
-                        prev  = round(float(hist["Close"].iloc[-2]), 2) if len(hist) > 1 else price
-
-                if price:
-                    price = round(float(price), 2)
+            for ticker in tickers:
+                try:
+                    col = ticker if ticker in closes.columns else closes.columns[0]
+                    vals = closes[ticker].dropna() if ticker in closes.columns else pd.Series()
+                    if len(vals) >= 2:
+                        price = round(float(vals.iloc[-1]), 2)
+                        prev  = round(float(vals.iloc[-2]), 2)
+                    elif len(vals) == 1:
+                        price = round(float(vals.iloc[-1]), 2)
+                        prev  = price
+                    else:
+                        continue
                     change_pct = round(((price - prev) / prev) * 100, 2) if prev else 0
-                    result[ticker] = {
-                        "price":      price,
-                        "change_pct": change_pct,
-                        "ts":         ts,
-                    }
-            except Exception as e:
-                print(f"  ⚠️  Price fetch failed for {ticker}: {e}")
-                result[ticker] = None
+                    result[ticker] = {"price": price, "change_pct": change_pct, "ts": ts}
+                except Exception:
+                    pass
+        except Exception:
+            # Fallback: fetch one by one if batch fails
+            for ticker in tickers:
+                try:
+                    stock = yf.Ticker(ticker)
+                    price = getattr(stock.fast_info, "last_price", None)
+                    prev  = getattr(stock.fast_info, "previous_close", None)
+                    if price is None or (isinstance(price, float) and math.isnan(price)):
+                        info  = stock.info
+                        price = info.get("regularMarketPrice") or info.get("currentPrice")
+                        prev  = info.get("regularMarketPreviousClose") or info.get("previousClose")
+                    if price:
+                        price = round(float(price), 2)
+                        change_pct = round(((price - prev) / prev) * 100, 2) if prev else 0
+                        result[ticker] = {"price": price, "change_pct": change_pct, "ts": ts}
+                except Exception as e:
+                    print(f"  ⚠️  Price fetch failed for {ticker}: {e}")
 
         return jsonify({"prices": result, "ts": ts, "count": len(result)})
 
