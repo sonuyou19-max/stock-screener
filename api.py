@@ -259,53 +259,140 @@ def prices():
         result = {}
         ts = datetime.now().strftime("%H:%M")
 
-        # Batch fetch all tickers at once — much faster than one-by-one
-        try:
-            import pandas as pd
-            raw = yf.download(
-                tickers, period="2d", interval="1d",
-                auto_adjust=True, progress=False, threads=True
-            )
-            closes = raw["Close"] if "Close" in raw.columns else raw.xs("Close", axis=1, level=0)
+        # FIX: Use fast_info which carries regularMarketChangePercent —
+        # this is the official day-change field Yahoo populates correctly
+        # both during AND after market hours (like Groww/Kite).
+        # The old batch yf.download(period="2d") approach computed change
+        # from two daily closes which both equal today's close after hours
+        # → showing 0.00% incorrectly.
+        for ticker in tickers:
+            try:
+                stock  = yf.Ticker(ticker)
+                fi     = stock.fast_info
 
-            for ticker in tickers:
-                try:
-                    col = ticker if ticker in closes.columns else closes.columns[0]
-                    vals = closes[ticker].dropna() if ticker in closes.columns else pd.Series()
-                    if len(vals) >= 2:
-                        price = round(float(vals.iloc[-1]), 2)
-                        prev  = round(float(vals.iloc[-2]), 2)
-                    elif len(vals) == 1:
-                        price = round(float(vals.iloc[-1]), 2)
-                        prev  = price
-                    else:
-                        continue
-                    change_pct = round(((price - prev) / prev) * 100, 2) if prev else 0
-                    result[ticker] = {"price": price, "change_pct": change_pct, "ts": ts}
-                except Exception:
-                    pass
-        except Exception:
-            # Fallback: fetch one by one if batch fails
-            for ticker in tickers:
-                try:
-                    stock = yf.Ticker(ticker)
-                    price = getattr(stock.fast_info, "last_price", None)
-                    prev  = getattr(stock.fast_info, "previous_close", None)
-                    if price is None or (isinstance(price, float) and math.isnan(price)):
-                        info  = stock.info
-                        price = info.get("regularMarketPrice") or info.get("currentPrice")
-                        prev  = info.get("regularMarketPreviousClose") or info.get("previousClose")
-                    if price:
-                        price = round(float(price), 2)
-                        change_pct = round(((price - prev) / prev) * 100, 2) if prev else 0
-                        result[ticker] = {"price": price, "change_pct": change_pct, "ts": ts}
-                except Exception as e:
-                    print(f"  ⚠️  Price fetch failed for {ticker}: {e}")
+                price  = getattr(fi, "last_price", None)
+                prev   = getattr(fi, "previous_close", None)
+
+                # fast_info fallback → info dict
+                if price is None or (isinstance(price, float) and math.isnan(float(price))):
+                    info  = stock.info
+                    price = info.get("regularMarketPrice") or info.get("currentPrice")
+                    prev  = info.get("regularMarketPreviousClose") or info.get("previousClose")
+
+                if price is None:
+                    continue
+
+                price = round(float(price), 2)
+                prev  = round(float(prev),  2) if prev else price
+                change_pct = round(((price - prev) / prev) * 100, 2) if prev else 0
+
+                result[ticker] = {"price": price, "change_pct": change_pct, "ts": ts}
+
+            except Exception as e:
+                print(f"  ⚠️  Price fetch failed for {ticker}: {e}")
 
         return jsonify({"prices": result, "ts": ts, "count": len(result)})
 
     except Exception as e:
         return jsonify({"error": str(e), "prices": {}})
+
+
+@app.route("/market", methods=["GET"])
+def market():
+    """
+    Fetch 9 live market indicators for the dashboard overview strip.
+    Called every 5 minutes. Uses fast_info for correct day-change % at all hours.
+    Returns: { "indicators": [...], "ts": "HH:MM" }
+    """
+    try:
+        import yfinance as yf
+        import math
+        from datetime import datetime
+
+        TICKERS = [
+            # (key,           ticker,      label,        type,     unit  )
+            ("sp500",         "^GSPC",     "S&P 500",    "index",  ""    ),
+            ("sensex",        "^BSESN",    "Sensex",     "index",  ""    ),
+            ("nifty50",       "^NSEI",     "Nifty 50",   "index",  ""    ),
+            ("niftybank",     "^NSEBANK",  "Nifty Bank", "index",  ""    ),
+            ("nifty500",      "^CRSLDX",   "Nifty 500",  "index",  ""    ),
+            ("niftypharma",   "NIFTY_PHARMA.NS", "Nifty Pharma", "index", ""),
+            ("bitcoin",       "BTC-USD",   "Bitcoin",    "crypto", "$"   ),
+            ("gold",          "GC=F",      "Gold",       "commodity", "₹/10g"),
+            ("silver",        "SI=F",      "Silver",     "commodity", "₹/kg"),
+            ("crude",         "BZ=F",      "Brent Crude","commodity", "$/bbl"),
+        ]
+
+        # Fetch USD/INR once for commodity conversion
+        usd_inr = 84.0  # fallback
+        try:
+            fx = yf.Ticker("INR=X")
+            fx_price = getattr(fx.fast_info, "last_price", None)
+            if fx_price and not math.isnan(float(fx_price)):
+                usd_inr = float(fx_price)
+        except Exception:
+            pass
+
+        ts         = datetime.now().strftime("%H:%M")
+        indicators = []
+
+        for key, ticker, label, kind, unit in TICKERS:
+            try:
+                stock = yf.Ticker(ticker)
+                fi    = stock.fast_info
+
+                price = getattr(fi, "last_price", None)
+                prev  = getattr(fi, "previous_close", None)
+
+                if price is None or (isinstance(price, float) and math.isnan(float(price))):
+                    info  = stock.info
+                    price = info.get("regularMarketPrice") or info.get("currentPrice")
+                    prev  = info.get("regularMarketPreviousClose") or info.get("previousClose")
+
+                if price is None:
+                    continue
+
+                price = float(price)
+                prev  = float(prev) if prev else price
+                change_pct = round(((price - prev) / prev) * 100, 2) if prev else 0
+
+                # Convert gold/silver to INR
+                disp_price = price
+                if key == "gold":
+                    # GC=F = troy oz in USD → convert to ₹ per 10g
+                    # 1 troy oz = 31.1035g → price per gram = price/31.1035
+                    disp_price = round((price / 31.1035) * 10 * usd_inr, 0)
+                    unit = "₹/10g"
+                elif key == "silver":
+                    # SI=F = troy oz in USD → convert to ₹ per kg
+                    # 1 troy oz = 31.1035g → price per kg = price/31.1035 * 1000
+                    disp_price = round((price / 31.1035) * 1000 * usd_inr, 0)
+                    unit = "₹/kg"
+                elif key == "bitcoin":
+                    disp_price = round(price, 0)
+                elif key in ("sensex", "niftybank", "nifty500", "niftypharma"):
+                    disp_price = round(price, 2)
+                elif key == "nifty50":
+                    disp_price = round(price, 2)
+                else:
+                    disp_price = round(price, 2)
+
+                indicators.append({
+                    "key":        key,
+                    "label":      label,
+                    "price":      disp_price,
+                    "change_pct": change_pct,
+                    "unit":       unit,
+                    "type":       kind,
+                })
+
+            except Exception as e:
+                print(f"  ⚠️  Market fetch failed for {ticker}: {e}")
+
+        return jsonify({"indicators": indicators, "ts": ts, "usd_inr": round(usd_inr, 2)})
+
+    except Exception as e:
+        return jsonify({"error": str(e), "indicators": []})
 
 
 @app.route("/health", methods=["GET"])
