@@ -477,9 +477,9 @@ def detect_alerts(portfolio: dict) -> dict:
                 sl_price = round(buy_price * 0.85, 2)
 
             suggested_trail = (
-                round(current - trail_dist, 2)
+                round(current - trail_dist, 2)   # in profit → show trailing stop
                 if trail_dist and current > buy_price
-                else None
+                else sl_price                      # not in profit → show stop-loss
             )
 
             record = {
