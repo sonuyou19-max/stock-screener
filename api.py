@@ -584,11 +584,11 @@ def market():
                 # Gold/Silver ETFs already in INR — just scale to display units
                 disp_price = price
                 if key == "gold":
-                    # GOLDBEES.NS: 1 unit = ~1/100g gold → ×100 = ₹/10g
-                    disp_price = round(price * 100, 0)
+                    # GOLDBEES.NS: 1 unit ≈ 0.01g gold → ×1000 = ₹/10g (MCX-linked)
+                    disp_price = round(price * 1000, 0)
                     unit = "₹/10g"
                 elif key == "silver":
-                    # SILVERBEES.NS: 1 unit = ~1g silver → ×1000 = ₹/kg
+                    # SILVERBEES.NS: 1 unit ≈ 1g silver → ×1000 = ₹/kg
                     disp_price = round(price * 1000, 0)
                     unit = "₹/kg"
                 elif key == "bitcoin":
