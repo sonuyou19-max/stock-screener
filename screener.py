@@ -2251,24 +2251,48 @@ def save_results(portfolio: dict, all_results: dict):
             df.to_csv(path, index=False)
     print(f"  ✅ Full rankings saved as CSV files")
 
-    # POST portfolio to API so dashboard can read it immediately
+    # POST portfolio to API — two endpoints:
+    # 1. /portfolio/picks/upload  → always (screener recommendations)
+    # 2. /portfolio/live/upload   → only if no live portfolio exists yet (first run)
     api_url = _os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
-    upload_url = f"{api_url}/portfolio/upload"
-    try:
-        payload = json.dumps(portfolio, default=str).encode("utf-8")
+
+    def _post(url, payload_bytes):
         req = _urllib.Request(
-            upload_url,
-            data=payload,
+            url, data=payload_bytes,
             headers={"Content-Type": "application/json"},
             method="POST",
         )
         with _urllib.urlopen(req, timeout=15) as resp:
-            body = resp.read().decode()
-            print(f"  ✅ Portfolio POSTed to API: {body}")
-    except _urlerr.URLError as e:
-        print(f"  ⚠️  Could not POST to API (non-fatal): {e}")
+            return resp.read().decode()
+
+    payload = json.dumps(portfolio, default=str).encode("utf-8")
+
+    # Always POST to picks
+    try:
+        body = _post(f"{api_url}/portfolio/picks/upload", payload)
+        print(f"  ✅ Screener picks POSTed to API: {body}")
     except Exception as e:
-        print(f"  ⚠️  API upload error (non-fatal): {e}")
+        print(f"  ⚠️  Could not POST picks to API (non-fatal): {e}")
+
+    # Also POST to legacy /portfolio/upload for backward compat
+    try:
+        _post(f"{api_url}/portfolio/upload", payload)
+    except Exception:
+        pass
+
+    # Seed live portfolio only if none exists yet
+    try:
+        import urllib.request as _check_ur
+        with _check_ur.urlopen(f"{api_url}/portfolio/live", timeout=8) as r:
+            existing_live = r.read().decode()
+        if '"error"' in existing_live:
+            # No live portfolio yet — seed from picks (first ever run)
+            body = _post(f"{api_url}/portfolio/live/upload", payload)
+            print(f"  ✅ Live portfolio seeded from picks (first run): {body}")
+        else:
+            print(f"  ℹ️  Live portfolio already exists — not overwriting")
+    except Exception as e:
+        print(f"  ⚠️  Could not check/seed live portfolio (non-fatal): {e}")
 
     return portfolio_path
 
