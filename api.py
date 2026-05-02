@@ -20,7 +20,9 @@ DATA_DIR = os.getenv("DATA_DIR", "/data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 # In-memory cache — survives between requests within same container
-_portfolio_cache: dict = {}
+_portfolio_cache: dict = {}   # legacy — screener picks (kept for compat)
+_live_cache:      dict = {}   # what investor actually holds on Kite
+_picks_cache:     dict = {}   # screener recommendations this month
 _signals_cache:   dict = {}
 _fiidii_cache:    list = []
 
@@ -224,6 +226,227 @@ def signals():
                 result[name] = data
                 break
     return jsonify(result)
+
+
+
+# ─────────────────────────────────────────────
+# LIVE POSITIONS — what investor holds on Kite
+# ─────────────────────────────────────────────
+
+@app.route("/portfolio/live", methods=["GET", "OPTIONS"])
+def live_portfolio():
+    """Return what the investor actually holds on Kite right now."""
+    global _live_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    # Try cache
+    if _live_cache:
+        return jsonify(_sanitise(_live_cache))
+    # Try disk
+    path = os.path.join(DATA_DIR, "portfolio_live.json")
+    data = _load_json(path)
+    if data:
+        _live_cache = data
+        return jsonify(_sanitise(data))
+    # Fall back to latest screener picks (first run migration)
+    path = _find_latest_portfolio()
+    if path:
+        data = _load_json(path)
+        if data:
+            return jsonify(_sanitise(data))
+    return jsonify({"error": "No live portfolio found"}), 404
+
+
+@app.route("/portfolio/live/upload", methods=["POST", "OPTIONS"])
+def upload_live_portfolio():
+    """
+    Update live positions — called when investor buys/sells on Kite.
+    Dashboard Mark as Bought/Sold buttons POST here.
+    """
+    global _live_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        data = request.get_json(force=True)
+        if not data:
+            return jsonify({"error": "Empty payload"}), 400
+        _live_cache = _sanitise(data)
+        path = os.path.join(DATA_DIR, "portfolio_live.json")
+        _save_json(path, data)
+        print(f"✅ Live portfolio updated — {sum(len(b.get('stocks',[])) for b in data.values())} positions")
+        return jsonify({"status": "ok", "saved_to": path}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ─────────────────────────────────────────────
+# SCREENER PICKS — monthly recommendations
+# ─────────────────────────────────────────────
+
+@app.route("/portfolio/picks", methods=["GET", "OPTIONS"])
+def picks_portfolio():
+    """Return this month's screener recommendations."""
+    global _picks_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    if _picks_cache:
+        return jsonify(_sanitise(_picks_cache))
+    path = os.path.join(DATA_DIR, "portfolio_picks.json")
+    data = _load_json(path)
+    if data:
+        _picks_cache = data
+        return jsonify(_sanitise(data))
+    return jsonify({"error": "No picks found. Run screener.py first."}), 404
+
+
+@app.route("/portfolio/picks/upload", methods=["POST", "OPTIONS"])
+def upload_picks():
+    """Screener POSTs recommendations here — does NOT overwrite live positions."""
+    global _picks_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        data = request.get_json(force=True)
+        if not data:
+            return jsonify({"error": "Empty payload"}), 400
+        _picks_cache = _sanitise(data)
+        path = os.path.join(DATA_DIR, "portfolio_picks.json")
+        _save_json(path, data)
+        print(f"✅ Screener picks saved — {sum(len(b.get('stocks',[])) for b in data.values())} picks")
+        return jsonify({"status": "ok", "saved_to": path}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ─────────────────────────────────────────────
+# SWAP RECOMMENDATIONS — compare live vs picks
+# ─────────────────────────────────────────────
+
+@app.route("/portfolio/swap", methods=["GET", "OPTIONS"])
+def swap_recommendations():
+    """
+    Compare live positions vs screener picks bucket by bucket.
+    Returns swap recommendations: which stocks to sell and which to buy.
+    Logic:
+      - For each bucket, compare live stocks vs pick stocks
+      - If screener picked the same stock → KEEP
+      - If screener picked a different stock → SWAP recommendation
+      - Score difference drives conviction (HIGH/MEDIUM/LOW)
+    """
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        # Load both
+        live_data  = _live_cache  or _load_json(os.path.join(DATA_DIR, "portfolio_live.json"))
+        picks_data = _picks_cache or _load_json(os.path.join(DATA_DIR, "portfolio_picks.json"))
+
+        if not live_data:
+            return jsonify({"error": "No live portfolio"}), 404
+        if not picks_data:
+            return jsonify({"error": "No screener picks"}), 404
+
+        swaps   = []
+        keeps   = []
+
+        for bucket_key in set(list(live_data.keys()) + list(picks_data.keys())):
+            live_bucket  = live_data.get(bucket_key,  {})
+            picks_bucket = picks_data.get(bucket_key, {})
+
+            live_tickers  = {s["ticker"]: s for s in live_bucket.get("stocks",  [])}
+            picks_tickers = {s["ticker"]: s for s in picks_bucket.get("stocks", [])}
+
+            bucket_label = live_bucket.get("label") or picks_bucket.get("label") or bucket_key
+
+            # Stocks in live that are also in picks → KEEP
+            for ticker, s in live_tickers.items():
+                if ticker in picks_tickers:
+                    keeps.append({
+                        "bucket":       bucket_label,
+                        "ticker":       ticker,
+                        "name":         s.get("name", ticker),
+                        "action":       "KEEP",
+                        "reason":       "Screener picked again this month",
+                        "live_score":   s.get("final_score"),
+                        "pick_score":   picks_tickers[ticker].get("final_score"),
+                    })
+
+            # Stocks in picks but NOT in live → potential BUY
+            new_picks = [t for t in picks_tickers if t not in live_tickers]
+            # Stocks in live but NOT in picks → potential SELL
+            dropped   = [t for t in live_tickers if t not in picks_tickers]
+
+            # Match dropped vs new_picks by bucket slot
+            for i, drop_ticker in enumerate(dropped):
+                drop_stock = live_tickers[drop_ticker]
+                if i < len(new_picks):
+                    new_ticker = new_picks[i]
+                    new_stock  = picks_tickers[new_ticker]
+                    score_diff = (new_stock.get("final_score", 50) or 50) - (drop_stock.get("final_score", 50) or 50)
+                    conviction = "HIGH" if score_diff > 15 else "MEDIUM" if score_diff > 5 else "LOW"
+                    swaps.append({
+                        "bucket":           bucket_label,
+                        "action":           "SWAP",
+                        "conviction":       conviction,
+                        "sell_ticker":      drop_ticker,
+                        "sell_name":        drop_stock.get("name", drop_ticker),
+                        "sell_score":       drop_stock.get("final_score"),
+                        "sell_buy_price":   drop_stock.get("price"),
+                        "sell_shares":      drop_stock.get("approx_shares"),
+                        "sell_stop_loss":   drop_stock.get("stop_loss_price"),
+                        "buy_ticker":       new_ticker,
+                        "buy_name":         new_stock.get("name", new_ticker),
+                        "buy_score":        new_stock.get("final_score"),
+                        "buy_price":        new_stock.get("price"),
+                        "buy_shares":       new_stock.get("approx_shares"),
+                        "buy_stop_loss":    new_stock.get("stop_loss_price"),
+                        "score_improvement": round(score_diff, 1),
+                        "reason":           (
+                            f"{new_stock.get('name', new_ticker)} scores "
+                            f"{new_stock.get('final_score','?'):.1f} vs "
+                            f"{drop_stock.get('name', drop_ticker)}'s "
+                            f"{drop_stock.get('final_score','?'):.1f} "
+                            f"(+{score_diff:.1f} pts improvement)"
+                        ),
+                    })
+                else:
+                    # Dropped with no replacement — screener found fewer stocks
+                    swaps.append({
+                        "bucket":       bucket_label,
+                        "action":       "HOLD_NO_REPLACEMENT",
+                        "conviction":   "LOW",
+                        "sell_ticker":  drop_ticker,
+                        "sell_name":    drop_stock.get("name", drop_ticker),
+                        "reason":       "Screener found no replacement — hold current position",
+                    })
+
+            # New picks with no dropped stock — new addition
+            for new_ticker in new_picks[len(dropped):]:
+                new_stock = picks_tickers[new_ticker]
+                swaps.append({
+                    "bucket":      bucket_label,
+                    "action":      "NEW_BUY",
+                    "conviction":  "MEDIUM",
+                    "buy_ticker":  new_ticker,
+                    "buy_name":    new_stock.get("name", new_ticker),
+                    "buy_score":   new_stock.get("final_score"),
+                    "buy_price":   new_stock.get("price"),
+                    "buy_shares":  new_stock.get("approx_shares"),
+                    "buy_stop_loss": new_stock.get("stop_loss_price"),
+                    "reason":      "New screener pick — no existing position in this slot",
+                })
+
+        from datetime import datetime
+        return jsonify({
+            "generated":  datetime.now().strftime("%d %B %Y, %H:%M IST"),
+            "swaps":      swaps,
+            "keeps":      keeps,
+            "total_swaps": len([s for s in swaps if s["action"] == "SWAP"]),
+            "total_new":   len([s for s in swaps if s["action"] == "NEW_BUY"]),
+            "total_keeps": len(keeps),
+        }), 200
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/prices", methods=["GET"])
