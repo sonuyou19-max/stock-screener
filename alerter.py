@@ -769,11 +769,18 @@ def find_latest_portfolio(search_dirs: list = None) -> Optional[str]:
         import json as _json
         import tempfile as _tmp
         print(f"  📡 No local portfolio found — fetching from API...")
-        with _ur.urlopen(f"{api_url}/portfolio/latest", timeout=15) as r:
+        with _ur.urlopen(f"{api_url}/portfolio/live", timeout=15) as r:
             text = r.read().decode()
             # Strip NaN values
             text = text.replace(":NaN", ":null").replace(":Infinity", ":null")
             data = _json.loads(text)
+        # Reject if error response
+        if isinstance(data, dict) and "error" in data:
+            # Fall back to legacy endpoint
+            with _ur.urlopen(f"{api_url}/portfolio/latest", timeout=15) as r:
+                text = r.read().decode()
+                text = text.replace(":NaN", ":null").replace(":Infinity", ":null")
+                data = _json.loads(text)
         # Save to temp file
         tmp = _tmp.NamedTemporaryFile(
             mode="w", suffix=".json",
