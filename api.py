@@ -541,12 +541,14 @@ def market():
             ("nifty500",      "^CRSLDX",   "Nifty 500",  "index",  ""    ),
             ("niftypharma",   "NIFTY_PHARMA.NS", "Nifty Pharma", "index", ""),
             ("bitcoin",       "BTC-USD",   "Bitcoin",    "crypto", "$"   ),
-            ("gold",          "GC=F",      "Gold",       "commodity", "₹/10g"),
-            ("silver",        "SI=F",      "Silver",     "commodity", "₹/kg"),
-            ("crude",         "BZ=F",      "Brent Crude","commodity", "$/bbl"),
+            # GOLDBEES.NS: 1 unit ≈ 1/100g gold → price × 100 = ₹/10g (MCX-linked, includes duty+GST)
+            # SILVERBEES.NS: 1 unit ≈ 1g silver → price × 1000 = ₹/kg (MCX-linked)
+            ("gold",          "GOLDBEES.NS",  "Gold",       "commodity", "₹/10g"),
+            ("silver",        "SILVERBEES.NS","Silver",     "commodity", "₹/kg"),
+            ("crude",         "BZ=F",         "Brent Crude","commodity", "$/bbl"),
         ]
 
-        # Fetch USD/INR once for commodity conversion
+        # USD/INR still needed for crude
         usd_inr = 84.0  # fallback
         try:
             fx = yf.Ticker("INR=X")
@@ -579,17 +581,15 @@ def market():
                 prev  = float(prev) if prev else price
                 change_pct = round(((price - prev) / prev) * 100, 2) if prev else 0
 
-                # Convert gold/silver to INR
+                # Gold/Silver ETFs already in INR — just scale to display units
                 disp_price = price
                 if key == "gold":
-                    # GC=F = troy oz in USD → convert to ₹ per 10g
-                    # 1 troy oz = 31.1035g → price per gram = price/31.1035
-                    disp_price = round((price / 31.1035) * 10 * usd_inr, 0)
+                    # GOLDBEES.NS: 1 unit = ~1/100g gold → ×100 = ₹/10g
+                    disp_price = round(price * 100, 0)
                     unit = "₹/10g"
                 elif key == "silver":
-                    # SI=F = troy oz in USD → convert to ₹ per kg
-                    # 1 troy oz = 31.1035g → price per kg = price/31.1035 * 1000
-                    disp_price = round((price / 31.1035) * 1000 * usd_inr, 0)
+                    # SILVERBEES.NS: 1 unit = ~1g silver → ×1000 = ₹/kg
+                    disp_price = round(price * 1000, 0)
                     unit = "₹/kg"
                 elif key == "bitcoin":
                     disp_price = round(price, 0)
