@@ -99,14 +99,31 @@ def _api_post(path: str, payload: dict) -> Optional[dict]:
 
 
 def fetch_portfolio() -> Optional[dict]:
-    """Load latest portfolio from API."""
-    print("  📡 Fetching portfolio from API...")
-    data = _api_get("/portfolio/latest")
+    """
+    Load LIVE positions from API — what the investor actually holds on Kite.
+    Falls back to /portfolio/latest for backward compat.
+    """
+    print("  📡 Fetching live positions from API...")
+    data = _api_get("/portfolio/live")
+    if not data or "error" in data:
+        print("  ⚠️  No live portfolio — falling back to /portfolio/latest")
+        data = _api_get("/portfolio/latest")
     if not data:
         print("  ❌ Could not load portfolio from API.")
         return None
     total_stocks = sum(len(b.get("stocks", [])) for b in data.values())
-    print(f"  ✅ Portfolio loaded — {len(data)} buckets, {total_stocks} positions")
+    print(f"  ✅ Live positions loaded — {len(data)} buckets, {total_stocks} positions")
+    return data
+
+
+def fetch_picks() -> Optional[dict]:
+    """Load this month's screener picks for swap comparison."""
+    print("  📡 Fetching screener picks from API...")
+    data = _api_get("/portfolio/picks")
+    if not data or "error" in data:
+        return None
+    total = sum(len(b.get("stocks", [])) for b in data.values())
+    print(f"  ✅ Screener picks loaded — {total} picks this month")
     return data
 
 
@@ -556,6 +573,161 @@ def is_first_working_day_of_month() -> bool:
 
 
 # ─────────────────────────────────────────────
+# SWAP RECOMMENDATIONS
+# ─────────────────────────────────────────────
+
+def _build_swap_recommendations(live: dict, picks: dict) -> list:
+    """
+    Compare live positions vs screener picks bucket by bucket.
+    Returns list of swap/keep/new-buy decisions.
+    """
+    results = []
+    all_buckets = set(list(live.keys()) + list(picks.keys()))
+
+    for bucket_key in all_buckets:
+        live_bucket  = live.get(bucket_key,  {})
+        picks_bucket = picks.get(bucket_key, {})
+        bucket_label = live_bucket.get("label") or picks_bucket.get("label") or bucket_key
+
+        live_tickers  = {s["ticker"]: s for s in live_bucket.get("stocks",  [])}
+        picks_tickers = {s["ticker"]: s for s in picks_bucket.get("stocks", [])}
+
+        # Stocks in BOTH → KEEP
+        for ticker in set(live_tickers) & set(picks_tickers):
+            results.append({
+                "bucket":    bucket_label,
+                "action":    "KEEP",
+                "ticker":    ticker,
+                "name":      live_tickers[ticker].get("name", ticker),
+                "score":     picks_tickers[ticker].get("final_score"),
+            })
+
+        # In live but NOT in picks → evaluate for swap
+        dropped  = [t for t in live_tickers  if t not in picks_tickers]
+        new_ones = [t for t in picks_tickers if t not in live_tickers]
+
+        for i, sell_t in enumerate(dropped):
+            sell_s = live_tickers[sell_t]
+            if i < len(new_ones):
+                buy_t  = new_ones[i]
+                buy_s  = picks_tickers[buy_t]
+                diff   = (buy_s.get("final_score") or 50) - (sell_s.get("final_score") or 50)
+                conviction = "🔴 HIGH" if diff > 15 else "🟡 MEDIUM" if diff > 5 else "🟢 LOW"
+                results.append({
+                    "bucket":       bucket_label,
+                    "action":       "SWAP",
+                    "conviction":   conviction,
+                    "sell_ticker":  sell_t,
+                    "sell_name":    sell_s.get("name", sell_t),
+                    "sell_score":   sell_s.get("final_score"),
+                    "sell_price":   sell_s.get("price"),
+                    "sell_shares":  sell_s.get("approx_shares"),
+                    "sell_sl":      sell_s.get("stop_loss_price"),
+                    "buy_ticker":   buy_t,
+                    "buy_name":     buy_s.get("name", buy_t),
+                    "buy_score":    buy_s.get("final_score"),
+                    "buy_price":    buy_s.get("price"),
+                    "buy_shares":   buy_s.get("approx_shares"),
+                    "buy_sl":       buy_s.get("stop_loss_price"),
+                    "score_delta":  round(diff, 1),
+                })
+            else:
+                # No replacement found — hold
+                results.append({
+                    "bucket":    bucket_label,
+                    "action":    "HOLD_NO_REPLACE",
+                    "ticker":    sell_t,
+                    "name":      sell_s.get("name", sell_t),
+                    "score":     sell_s.get("final_score"),
+                })
+
+        # In picks but no matching dropped → new slot
+        for buy_t in new_ones[len(dropped):]:
+            buy_s = picks_tickers[buy_t]
+            results.append({
+                "bucket":      bucket_label,
+                "action":      "NEW_BUY",
+                "buy_ticker":  buy_t,
+                "buy_name":    buy_s.get("name", buy_t),
+                "buy_score":   buy_s.get("final_score"),
+                "buy_price":   buy_s.get("price"),
+                "buy_shares":  buy_s.get("approx_shares"),
+                "buy_sl":      buy_s.get("stop_loss_price"),
+            })
+
+    return results
+
+
+def _format_swap_telegram(swaps: list) -> str:
+    """Format swap recommendations as a Telegram message."""
+    now = datetime.now(IST).strftime("%d %B %Y")
+    lines = [f"🔄 *Screener Picks vs Your Holdings — {now}*", ""]
+
+    swap_items = [s for s in swaps if s["action"] == "SWAP"]
+    new_items  = [s for s in swaps if s["action"] == "NEW_BUY"]
+    keep_items = [s for s in swaps if s["action"] == "KEEP"]
+    hold_items = [s for s in swaps if s["action"] == "HOLD_NO_REPLACE"]
+
+    if swap_items:
+        lines.append("📊 *Swap Recommendations:*")
+        for s in swap_items:
+            lines.append(f"  📂 *{s['bucket']}*")
+            lines.append(f"  Conviction: {s['conviction']}")
+            lines.append(f"  🔴 SELL: {s['sell_ticker'].replace('.NS','')} "
+                         f"(Score: {s['sell_score']:.1f}) @ ₹{s['sell_price']:,.2f}")
+            lines.append(f"  🟢 BUY:  {s['buy_ticker'].replace('.NS','')} "
+                         f"(Score: {s['buy_score']:.1f}) @ ₹{s['buy_price']:,.2f}")
+            lines.append(f"  Score improvement: +{s['score_delta']:.1f} pts")
+            lines.append(f"  New GTT stop-loss: ₹{s['buy_sl']:,.2f}")
+            lines.append(f"  Qty to buy: ~{s['buy_shares']} shares")
+            lines.append("")
+
+    if new_items:
+        lines.append("🆕 *New Positions (no existing slot):*")
+        for s in new_items:
+            lines.append(f"  📂 {s['bucket']} — BUY {s['buy_ticker'].replace('.NS','')} "
+                         f"@ ₹{s['buy_price']:,.2f} (~{s['buy_shares']} sh)")
+        lines.append("")
+
+    if hold_items:
+        lines.append("⏸ *Hold — screener found no replacement:*")
+        for s in hold_items:
+            lines.append(f"  {s['ticker'].replace('.NS','')} — keep holding")
+        lines.append("")
+
+    if keep_items:
+        lines.append("✅ *Screener confirmed (no change needed):*")
+        for s in keep_items:
+            lines.append(f"  {s['ticker'].replace('.NS','')} — picked again this month")
+        lines.append("")
+
+    if not swap_items and not new_items:
+        lines.append("✅ Screener picked all the same stocks as last month.")
+        lines.append("No changes recommended.")
+
+    lines.append("─" * 30)
+    lines.append("_To act: execute on Kite, then update Live Portfolio on dashboard._")
+    return "\n".join(lines)
+
+
+def _print_swap_report(swaps: list):
+    """Print swap report to terminal/Railway logs."""
+    print("\n  📊 SWAP RECOMMENDATIONS")
+    print("  " + "─" * 56)
+    for s in swaps:
+        if s["action"] == "SWAP":
+            print(f"  🔄 {s['bucket']}")
+            print(f"     SELL {s['sell_ticker']:<20} score:{s['sell_score']:.1f}")
+            print(f"     BUY  {s['buy_ticker']:<20} score:{s['buy_score']:.1f}  (+{s['score_delta']:.1f} pts)  Conviction:{s['conviction']}")
+        elif s["action"] == "NEW_BUY":
+            print(f"  🆕 {s['bucket']} — NEW: {s['buy_ticker']} @ ₹{s['buy_price']:,.2f}")
+        elif s["action"] == "KEEP":
+            print(f"  ✅ {s['ticker']} — picked again, no change")
+        elif s["action"] == "HOLD_NO_REPLACE":
+            print(f"  ⏸  {s['ticker']} — hold, no replacement found")
+
+
+# ─────────────────────────────────────────────
 # MAIN
 # ─────────────────────────────────────────────
 
@@ -583,30 +755,48 @@ def main():
         print(f"      Use --force to override for testing.\n")
         return
 
-    # ── Load portfolio ───────────────────────────
+    # ── Load live positions ──────────────────────
     portfolio = fetch_portfolio()
     if not portfolio:
-        print("\n  ❌ Cannot rebalance — no portfolio data.\n")
+        print("\n  ❌ Cannot rebalance — no live portfolio data.\n")
         return
 
-    # ── Run rebalance ────────────────────────────
+    # ── Load screener picks for swap comparison ──
+    picks = fetch_picks()
+
+    # ── Run rebalance on live positions ──────────
     print(f"\n  Step 1: Analysing {sum(len(b.get('stocks',[])) for b in portfolio.values())} positions...")
     report = run_rebalance(portfolio)
+
+    # ── Generate swap recommendations ────────────
+    swap_msg = ""
+    if picks:
+        print(f"\n  Step 2: Comparing live positions vs screener picks...")
+        swaps = _build_swap_recommendations(portfolio, picks)
+        report["swaps"] = swaps
+        swap_msg = _format_swap_telegram(swaps)
+        _print_swap_report(swaps)
 
     # ── Print terminal report ────────────────────
     print(format_terminal_report(report))
 
     if args.dry_run:
         print("\n  [DRY RUN] — No Telegram sent, no API save.\n")
+        if swap_msg:
+            print("\n  SWAP RECOMMENDATIONS (dry run):")
+            print(swap_msg)
         return
 
-    # ── Send Telegram ────────────────────────────
-    print("\n  Step 2: Sending Telegram notification...")
+    # ── Send Telegram — rebalance + swaps ────────
+    print("\n  Step 3: Sending Telegram notifications...")
     tg_message = format_telegram_message(report)
     send_telegram(tg_message)
+    if swap_msg:
+        time.sleep(1)
+        send_telegram(swap_msg)
 
     # ── Save to API ──────────────────────────────
-    print("\n  Step 3: Saving report to API...")
+    print("\n  Step 4: Saving report to API...")
     save_report_to_api(report)
 
     print("\n  ✅ Rebalance complete.\n")
