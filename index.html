@@ -356,39 +356,37 @@ main{
 .amber{color:var(--amber)!important;}
 
 /* -- Bucket tabs -- */
-.bucket-tabs{
-  display:flex;
-  gap:8px;
-  overflow-x:auto;
-  scrollbar-width:none;
-  padding:0 20px 16px;
-  margin:0 -20px;
-}
+.bucket-tabs{ display:none; } /* kept for compat, hidden */
 
-.bucket-tabs::-webkit-scrollbar{display:none;}
-
-.bucket-tab{
-  padding:8px 16px;
-  border-radius:20px;
-  border:1.5px solid var(--border);
-  background:white;
-  color:var(--slate-500);
-  font-family:var(--sans);
-  font-size:12px;
-  font-weight:500;
-  cursor:pointer;
-  white-space:nowrap;
-  transition:all 0.2s;
-  flex-shrink:0;
+/* Vertical bucket sections */
+.bucket-section{ margin-bottom:20px; }
+.bucket-header{
+  display:flex;align-items:center;justify-content:space-between;
+  background:white;border:1px solid var(--border);border-radius:12px;
+  padding:14px 16px;margin-bottom:12px;cursor:pointer;
+  -webkit-tap-highlight-color:transparent;
+  box-shadow:var(--shadow-sm);
 }
-
-.bucket-tab:hover{border-color:var(--blue-400);color:var(--blue-600);}
-.bucket-tab.active{
-  background:var(--blue-600);
-  border-color:var(--blue-600);
-  color:white;
-  box-shadow:0 2px 8px rgba(37,99,235,0.25);
+.bucket-header-left{ display:flex;flex-direction:column;gap:3px; }
+.bucket-header-tag{
+  font-size:10px;font-weight:700;letter-spacing:.07em;
+  text-transform:uppercase;color:var(--blue-600);
 }
+.bucket-header-name{ font-size:15px;font-weight:600;color:var(--slate-800); }
+.bucket-header-right{ display:flex;align-items:center;gap:8px; }
+.bucket-stock-count{
+  font-size:12px;color:var(--slate-500);
+  background:var(--off-white);border:1px solid var(--border);
+  border-radius:20px;padding:3px 10px;
+}
+.bucket-alloc-badge{
+  font-size:12px;font-weight:600;color:var(--blue-600);
+  background:var(--blue-50);border:1px solid var(--blue-100);
+  border-radius:20px;padding:3px 10px;
+}
+.bucket-chevron{ font-size:13px;color:var(--slate-400);transition:transform .25s; }
+.bucket-section.collapsed .bucket-chevron{ transform:rotate(-90deg); }
+.bucket-section.collapsed .bucket-body{ display:none; }
 
 /* -- Stock cards (mobile-first — cards instead of table) -- */
 .stock-list{display:flex;flex-direction:column;gap:12px;}
@@ -1104,7 +1102,21 @@ main{
   80%{transform:translateX(6px)}
 }
 .pin-box.shake{animation:shake .4s ease;}
+/* ── PERFORMANCE CHART ───────────────────────────── */
+.perf-filter-row{display:flex;gap:8px;margin-bottom:16px;}
+.perf-filter{
+  padding:6px 14px;border-radius:20px;border:1.5px solid var(--border);
+  background:white;color:var(--slate-500);font-size:12px;font-weight:500;
+  cursor:pointer;font-family:var(--sans);transition:all .15s;
+  -webkit-tap-highlight-color:transparent;
+}
+.perf-filter.active{background:var(--blue-600);border-color:var(--blue-600);color:white;}
+.perf-chart-wrap{position:relative;height:220px;width:100%;}
+.perf-legend{display:flex;gap:16px;margin-top:12px;flex-wrap:wrap;}
+.perf-legend-item{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--slate-600);}
+.perf-dot{width:10px;height:10px;border-radius:50%;display:inline-block;}
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 </head>
 <body>
 
@@ -1274,10 +1286,34 @@ document.addEventListener('keydown', e => {
     <div class="section-title">Stock Picks</div>
     <div class="section-line"></div>
   </div>
-  <div class="card card-pad">
-    <div class="bucket-tabs" id="bucketTabs"></div>
-    <div id="stockTable">
-      <div class="loading-wrap"><div class="spinner"></div> Loading picks…</div>
+  <div id="stockTable">
+    <div class="loading-wrap"><div class="spinner"></div> Loading picks…</div>
+  </div>
+
+  <!-- Performance Chart -->
+  <div class="section-label">
+    <div class="section-dot"></div>
+    <div class="section-title">Performance vs Benchmark</div>
+    <div class="section-line"></div>
+  </div>
+  <div class="card card-pad" id="perfChartSection">
+    <div class="perf-filter-row">
+      <button class="perf-filter active" onclick="setPerfFilter('1W',this)">1W</button>
+      <button class="perf-filter" onclick="setPerfFilter('1M',this)">1M</button>
+      <button class="perf-filter" onclick="setPerfFilter('3M',this)">3M</button>
+      <button class="perf-filter" onclick="setPerfFilter('1Y',this)">1Y</button>
+      <button class="perf-filter" onclick="setPerfFilter('ALL',this)">All</button>
+    </div>
+    <div class="perf-chart-wrap">
+      <canvas id="perfChart"></canvas>
+    </div>
+    <div class="perf-legend">
+      <span class="perf-legend-item"><span class="perf-dot" style="background:#2563eb"></span>My Portfolio</span>
+      <span class="perf-legend-item"><span class="perf-dot" style="background:#059669"></span>Nifty 50</span>
+      <span class="perf-legend-item"><span class="perf-dot" style="background:#d97706"></span>Nifty 500</span>
+    </div>
+    <div id="perfNoData" style="display:none;text-align:center;padding:30px;color:var(--slate-400);font-size:13px;">
+      No performance data yet — chart builds automatically after market close each day.
     </div>
   </div>
 
@@ -1414,7 +1450,7 @@ async function loadAll() {
     if (sig)  signals  = sig;
     if (fii)  fiidii   = fii;
 
-    renderStats(); renderBucketTabs(); renderStocks(activeBucket);
+    renderStats(); renderBucketTabs(); renderStocks();
     renderMacro(); renderVerdict(); renderFiiDii();
     fetchSwaps(); // load swap recommendations
     const now = new Date();
@@ -1488,169 +1524,88 @@ function renderStats() {
     </div>`;
 }
 
-// -- BUCKET TABS -----------------------------------------------
-function renderBucketTabs() {
-  const el = document.getElementById('bucketTabs');
-  if (!portfolio) { el.innerHTML=''; return; }
-  el.innerHTML = Object.keys(portfolio).map((bk,i) => {
-    const b = portfolio[bk];
-    const shortLabel = (b.label||bk).replace(/|||/g,'').replace('Large Cap  - ','').replace('Mid Cap  - ','').replace('High Conviction  - ','').replace('Defensive  - ','').trim();
-    return `<button class="bucket-tab ${i===0?'active':''}" onclick="switchBucket(${i},this)">${shortLabel} (${(b.stocks||[]).length})</button>`;
-  }).join('');
-}
+// -- BUCKET TABS (kept for compat, no-op now) ------------------
+function renderBucketTabs() { /* replaced by vertical layout */ }
+function switchBucket() {}
 
-function switchBucket(idx, btn) {
-  activeBucket = idx;
-  document.querySelectorAll('.bucket-tab').forEach(b=>b.classList.remove('active'));
-  btn.classList.add('active');
-  renderStocks(idx);
-  // Wait one tick for DOM to paint before fetching prices
-  setTimeout(fetchLivePrices, 50);
-}
-
-// -- STOCK CARDS -----------------------------------------------
-function renderStocks(bucketIdx) {
+// -- STOCK CARDS (vertical — all buckets at once) ---------------
+function renderStocks() {
   const el = document.getElementById('stockTable');
   if (!portfolio) return;
-  const buckets = Object.values(portfolio);
-  if (bucketIdx >= buckets.length) return;
-  const bucket = buckets[bucketIdx];
-  const stocks = bucket.stocks || [];
-  if (!stocks.length) {
-    el.innerHTML = '<p style="color:var(--slate-400);padding:20px;font-size:13px;text-align:center;">No picks in this bucket this month.</p>';
-    return;
+  const buckets = Object.entries(portfolio);
+  if (!buckets.length) return;
+
+  const BUCKET_THRESHOLDS = {
+    BFSI_IT:        { min_rev:10, max_pe:35, max_pb:5.0, min_roe:15, max_de:2.0,  max_peg:2.5 },
+    DEFENCE_INFRA:  { min_rev:12, max_pe:50, max_pb:8.0, min_roe:12, max_de:1.5,  max_peg:3.0 },
+    GREEN_ENERGY_EV:{ min_rev:20, max_pe:80, max_pb:10.0,min_roe:null,max_de:6.0, max_peg:4.0 },
+    FMCG_PHARMA:    { min_rev:8,  max_pe:65, max_pb:12.0,min_roe:16, max_de:1.5,  max_peg:null},
+  };
+
+  function metricRow(label, val, fmt, req, reqFmt, passWhen) {
+    const hasVal = val !== null && val !== undefined && val !== 'N/A' && !isNaN(parseFloat(val));
+    const hasReq = req !== null && req !== undefined;
+    let status = '—', cls = 'm-na';
+    if (hasVal && hasReq) {
+      const n = parseFloat(val), r = parseFloat(req);
+      if (passWhen === 'above') { status = n >= r ? '✅' : '❌'; cls = n >= r ? 'm-pass' : 'm-fail'; }
+      else { status = n <= r ? '✅' : '⚠️'; cls = n <= r ? 'm-pass' : 'm-warn'; }
+    }
+    const dispVal = hasVal ? fmt(parseFloat(val)) : 'N/A';
+    const dispReq = hasReq ? reqFmt(req) : '—';
+    return `<tr><td class="m-metric">${label}</td><td class="m-val">${dispVal}</td><td class="m-req">${dispReq}</td><td class="m-status ${cls}">${status}</td></tr>`;
   }
-  el.innerHTML = '<div class="stock-list">' + stocks.map((s,i) => {
+
+  function buildStockCard(s, i, bKey) {
+    const thr = BUCKET_THRESHOLDS[bKey] || {};
     const scoreClass = s.final_score >= 70 ? 'score-high' : s.final_score >= 50 ? 'score-mid' : 'score-low';
     const riskClass  = s.circuit_risk === 'low' ? 'risk-low' : s.circuit_risk === 'moderate' ? 'risk-moderate' : 'risk-elevated';
     const at = s.audit_trail || {};
     const reasons = (at.why_picked||[]).slice(0,3).map(r=>`<div class="audit-reason"> ${r}</div>`).join('');
     const risks = (at.risks||[]).filter(r=>!r.includes('No significant')).slice(0,2).map(r=>`<div class="audit-risk"> ${r}</div>`).join('');
-    // ── Bucket thresholds for absolute metrics display ──────────────
-    const BUCKET_THRESHOLDS = {
-      BFSI_IT:        { min_rev:10, max_pe:35, max_pb:5.0, min_roe:15, max_de:2.0,  max_peg:2.5, label:'BFSI + IT' },
-      DEFENCE_INFRA:  { min_rev:12, max_pe:50, max_pb:8.0, min_roe:12, max_de:1.5,  max_peg:3.0, label:'Defence + Infra' },
-      GREEN_ENERGY_EV:{ min_rev:20, max_pe:80, max_pb:10.0,min_roe:null,max_de:6.0, max_peg:4.0, label:'Green Energy + EV' },
-      FMCG_PHARMA:    { min_rev:8,  max_pe:65, max_pb:12.0,min_roe:16, max_de:1.5,  max_peg:null,label:'FMCG + Pharma' },
-    };
-
-    // Derive bucket key from the bucket object's position in portfolio
-    const bKey = Object.keys(portfolio)[bucketIdx] || '';
-    const thr = BUCKET_THRESHOLDS[bKey] || {};
-
-    // ── Build metrics table ──────────────────────────────────────────
-    function metricRow(label, val, fmt, req, reqFmt, passWhen) {
-      // passWhen: 'above' (rev growth, ROE) | 'below' (PE, PB, D/E, PEG)
-      const hasVal = val !== null && val !== undefined && val !== 'N/A' && !isNaN(parseFloat(val));
-      const hasReq = req !== null && req !== undefined;
-      let status = '—', cls = 'm-na';
-      if (hasVal && hasReq) {
-        const n = parseFloat(val);
-        const r = parseFloat(req);
-        if (passWhen === 'above') {
-          status = n >= r ? '✅' : '❌'; cls = n >= r ? 'm-pass' : 'm-fail';
-          if (n >= r && n < r * 1.1) { status = '✅'; cls = 'm-pass'; }  // barely passed
-        } else {
-          status = n <= r ? '✅' : '⚠️'; cls = n <= r ? 'm-pass' : 'm-warn';
-        }
-      }
-      const dispVal = hasVal ? fmt(parseFloat(val)) : 'N/A';
-      const dispReq = hasReq ? reqFmt(req) : '—';
-      return `<tr>
-        <td class="m-metric">${label}</td>
-        <td class="m-val">${dispVal}</td>
-        <td class="m-req">${dispReq}</td>
-        <td class="m-status ${cls}">${status}</td>
-      </tr>`;
-    }
-
     const metricsTable = `
       <div class="metrics-title">Fundamentals vs Filter Criteria</div>
       <table class="metrics-table">
-        <thead><tr>
-          <th>Metric</th>
-          <th>This Stock</th>
-          <th>Required</th>
-          <th style="text-align:center">✓</th>
-        </tr></thead>
+        <thead><tr><th>Metric</th><th>This Stock</th><th>Required</th><th style="text-align:center">✓</th></tr></thead>
         <tbody>
-          ${metricRow('Revenue Growth', s.rev_growth_pct,
-              v => v.toFixed(1)+'% YoY',
-              thr.min_rev, r => '≥ '+r+'%', 'above')}
-          ${metricRow('PE Ratio', s.pe_ratio,
-              v => v.toFixed(1)+'x',
-              thr.max_pe,  r => '≤ '+r+'x', 'below')}
-          ${metricRow('PB Ratio', s.pb_ratio,
-              v => v.toFixed(1)+'x',
-              thr.max_pb,  r => '≤ '+r+'x', 'below')}
-          ${thr.min_roe ? metricRow('ROE', s.roe_pct === 'N/A' ? null : s.roe_pct,
-              v => v.toFixed(1)+'%',
-              thr.min_roe, r => '≥ '+r+'%', 'above') : ''}
-          ${metricRow('Debt / Equity', s.debt_equity,
-              v => v.toFixed(2),
-              thr.max_de,  r => '≤ '+r+'x', 'below')}
-          ${thr.max_peg ? metricRow('PEG Ratio', s.peg_ratio,
-              v => v.toFixed(2),
-              thr.max_peg, r => '≤ '+r+'x', 'below') : ''}
-          ${metricRow('Momentum (1M)', s.momentum_1m,
-              v => (v>=0?'+':'')+v.toFixed(1)+'%',
-              0, () => '> 0%', 'above')}
-          ${metricRow('Momentum (3M)', s.momentum_3m,
-              v => (v>=0?'+':'')+v.toFixed(1)+'%',
-              0, () => '> 0%', 'above')}
+          ${metricRow('Revenue Growth', s.rev_growth_pct, v=>v.toFixed(1)+'% YoY', thr.min_rev, r=>'≥ '+r+'%', 'above')}
+          ${metricRow('PE Ratio', s.pe_ratio, v=>v.toFixed(1)+'x', thr.max_pe, r=>'≤ '+r+'x', 'below')}
+          ${metricRow('PB Ratio', s.pb_ratio, v=>v.toFixed(1)+'x', thr.max_pb, r=>'≤ '+r+'x', 'below')}
+          ${thr.min_roe ? metricRow('ROE', s.roe_pct==='N/A'?null:s.roe_pct, v=>v.toFixed(1)+'%', thr.min_roe, r=>'≥ '+r+'%', 'above') : ''}
+          ${metricRow('Debt / Equity', s.debt_equity, v=>v.toFixed(2), thr.max_de, r=>'≤ '+r+'x', 'below')}
+          ${thr.max_peg ? metricRow('PEG Ratio', s.peg_ratio, v=>v.toFixed(2), thr.max_peg, r=>'≤ '+r+'x', 'below') : ''}
+          ${metricRow('Momentum (1M)', s.momentum_1m, v=>(v>=0?'+':'')+v.toFixed(1)+'%', 0, ()=>'> 0%', 'above')}
+          ${metricRow('Momentum (3M)', s.momentum_3m, v=>(v>=0?'+':'')+v.toFixed(1)+'%', 0, ()=>'> 0%', 'above')}
         </tbody>
       </table>`;
-    const mom1m = s.momentum_1m;
-    const mom3m = s.momentum_3m;
+    const mom1m = s.momentum_1m, mom3m = s.momentum_3m;
     const mom1mClass = mom1m > 0 ? 'mom-pos' : mom1m < 0 ? 'mom-neg' : 'mom-neu';
     const mom3mClass = mom3m > 0 ? 'mom-pos' : mom3m < 0 ? 'mom-neg' : 'mom-neu';
-    // Profit targets
     const price = s.price || 0;
-    const t1 = (price * 1.20).toFixed(0);
-    const t2 = (price * 1.35).toFixed(0);
-    const t3 = (price * 1.50).toFixed(0);
+    const t1 = (price*1.20).toFixed(0), t2 = (price*1.35).toFixed(0), t3 = (price*1.50).toFixed(0);
+    const cardId = `${bKey}_${i}`;
     return `
       <div class="stock-card" style="animation-delay:${i*0.05}s">
         <div class="stock-card-header">
-          <div class="stock-id">
-            <div>
-              <div class="ticker">${s.ticker.replace('.NS','')}</div>
-              <div class="company-name" title="${s.name||''}">${s.name||''}</div>
-            </div>
-          </div>
+          <div class="stock-id"><div>
+            <div class="ticker">${s.ticker.replace('.NS','')}</div>
+            <div class="company-name" title="${s.name||''}">${s.name||''}</div>
+          </div></div>
           <div class="score-badge">
             <div class="score-num ${scoreClass}">${s.final_score?.toFixed(1)}</div>
             <div class="score-label">Score</div>
           </div>
         </div>
         <div class="stock-metrics">
-          <div class="metric">
-            <div class="metric-label">Buy Price</div>
-            <div class="metric-val">\u20B9${price.toLocaleString('en-IN')}</div>
-          </div>
-          <div class="metric">
-            <div class="metric-label">Allocation</div>
-            <div class="metric-val">\u20B9${(s.allocation_inr||0).toLocaleString('en-IN')}</div>
-          </div>
-          <div class="metric">
-            <div class="metric-label">Qty</div>
-            <div class="metric-val">${s.approx_shares||0} sh</div>
-          </div>
+          <div class="metric"><div class="metric-label">Buy Price</div><div class="metric-val">\u20B9${price.toLocaleString('en-IN')}</div></div>
+          <div class="metric"><div class="metric-label">Allocation</div><div class="metric-val">\u20B9${(s.allocation_inr||0).toLocaleString('en-IN')}</div></div>
+          <div class="metric"><div class="metric-label">Qty</div><div class="metric-val">${s.approx_shares||0} sh</div></div>
         </div>
         <div class="live-strip" id="live-${s.ticker.replace('.','_')}">
           <div class="live-dot"></div>
-          <div>
-            <div class="live-label">Current</div>
-            <div class="live-price" id="lp-${s.ticker.replace('.','_')}">—</div>
-          </div>
-          <div>
-            <div class="live-label">Day Chg</div>
-            <div class="live-change flat" id="lc-${s.ticker.replace('.','_')}">—</div>
-          </div>
-          <div>
-            <div class="live-label">P&L</div>
-            <div class="live-change flat" id="ll-${s.ticker.replace('.','_')}">—</div>
-          </div>
+          <div><div class="live-label">Current</div><div class="live-price" id="lp-${s.ticker.replace('.','_')}">—</div></div>
+          <div><div class="live-label">Day Chg</div><div class="live-change flat" id="lc-${s.ticker.replace('.','_')}">—</div></div>
+          <div><div class="live-label">P&L</div><div class="live-change flat" id="ll-${s.ticker.replace('.','_')}">—</div></div>
           <div class="live-pnl" id="lt-${s.ticker.replace('.','_')}">–</div>
         </div>
         <div class="gtt-row">
@@ -1663,35 +1618,58 @@ function renderStocks(bucketIdx) {
           <span class="risk-badge ${riskClass}">${(s.circuit_risk||'low')}</span>
         </div>
         <div class="profit-targets">
-          <div class="pt-box">
-            <div class="pt-label">+20% \u2192 Sell 30%</div>
-            <div class="pt-val">\u20B9${Number(t1).toLocaleString('en-IN')}</div>
-          </div>
-          <div class="pt-box">
-            <div class="pt-label">+35% \u2192 Sell 30%</div>
-            <div class="pt-val">\u20B9${Number(t2).toLocaleString('en-IN')}</div>
-          </div>
-          <div class="pt-box">
-            <div class="pt-label">+50% \u2192 Sell 40%</div>
-            <div class="pt-val">\u20B9${Number(t3).toLocaleString('en-IN')}</div>
-          </div>
+          <div class="pt-box"><div class="pt-label">+20% \u2192 Sell 30%</div><div class="pt-val">\u20B9${Number(t1).toLocaleString('en-IN')}</div></div>
+          <div class="pt-box"><div class="pt-label">+35% \u2192 Sell 30%</div><div class="pt-val">\u20B9${Number(t2).toLocaleString('en-IN')}</div></div>
+          <div class="pt-box"><div class="pt-label">+50% \u2192 Sell 40%</div><div class="pt-val">\u20B9${Number(t3).toLocaleString('en-IN')}</div></div>
         </div>
         <div class="momentum-row" style="margin-bottom:10px">
-          ${mom1m != null ? `<span class="mom-chip ${mom1mClass}">${mom1m >= 0?'+':''}${mom1m}% (1M)</span>` : ''}
-          ${mom3m != null ? `<span class="mom-chip ${mom3mClass}">${mom3m >= 0?'+':''}${mom3m}% (3M)</span>` : ''}
+          ${mom1m != null ? `<span class="mom-chip ${mom1mClass}">${mom1m>=0?'+':''}${mom1m}% (1M)</span>` : ''}
+          ${mom3m != null ? `<span class="mom-chip ${mom3mClass}">${mom3m>=0?'+':''}${mom3m}% (3M)</span>` : ''}
         </div>
-        <button class="audit-toggle" onclick="toggleAudit('audit-${i}',this)">
-          <span>Why picked</span>
-          <span class="audit-toggle-icon">\u25BE</span>
+        <button class="audit-toggle" onclick="toggleAudit('audit-${cardId}',this)">
+          <span>Why picked</span><span class="audit-toggle-icon">\u25BE</span>
         </button>
-        <div class="audit-panel" id="audit-${i}">
-          ${reasons}
-          ${metricsTable}
+        <div class="audit-panel" id="audit-${cardId}">
+          ${reasons}${metricsTable}
           ${risks ? `<div style="margin-top:10px">${risks}</div>` : ''}
         </div>
       </div>`;
-  }).join('') + '</div>';
+  }
+
+  const BUCKET_TAGS = {
+    BFSI_IT:'BFSI + IT · 30%', DEFENCE_INFRA:'Defence + Infra · 30%',
+    GREEN_ENERGY_EV:'Green Energy + EV · 20%', FMCG_PHARMA:'FMCG + Pharma · 20%',
+  };
+
+  el.innerHTML = buckets.map(([bKey, bucket], bi) => {
+    const stocks = bucket.stocks || [];
+    const tag    = BUCKET_TAGS[bKey] || bKey;
+    const label  = (bucket.label||bKey).replace(/Large Cap\s*-\s*/i,'').replace(/Mid Cap\s*-\s*/i,'').replace(/High Conviction\s*-\s*/i,'').replace(/Defensive\s*-\s*/i,'').trim();
+    const cards  = stocks.map((s,i) => buildStockCard(s, i, bKey)).join('');
+    const empty  = `<p style="color:var(--slate-400);padding:16px;font-size:13px;text-align:center;">No picks this month.</p>`;
+    return `
+      <div class="bucket-section" id="bsec-${bKey}">
+        <div class="bucket-header" onclick="toggleBucket('${bKey}')">
+          <div class="bucket-header-left">
+            <div class="bucket-header-tag">${tag}</div>
+            <div class="bucket-header-name">${label}</div>
+          </div>
+          <div class="bucket-header-right">
+            <span class="bucket-stock-count">${stocks.length} stock${stocks.length!==1?'s':''}</span>
+            <span class="bucket-chevron">▾</span>
+          </div>
+        </div>
+        <div class="bucket-body">
+          <div class="stock-list">${stocks.length ? cards : empty}</div>
+        </div>
+      </div>`;
+  }).join('');
 }
+
+function toggleBucket(bKey) {
+  document.getElementById('bsec-'+bKey)?.classList.toggle('collapsed');
+}
+
 
 function toggleAudit(id, btn) {
   const el = document.getElementById(id);
@@ -2035,11 +2013,12 @@ async function fetchMarket() {
     // Format price based on type
     function fmtPrice(ind) {
       const p = ind.price;
-      if (ind.key === 'bitcoin')     return '$' + p.toLocaleString('en-US', {maximumFractionDigits:0});
-      if (ind.key === 'gold')        return '₹' + p.toLocaleString('en-IN', {maximumFractionDigits:0});
-      if (ind.key === 'silver')      return '₹' + p.toLocaleString('en-IN', {maximumFractionDigits:0});
-      if (ind.key === 'crude')       return '$' + p.toFixed(2);
-      if (ind.key === 'sp500')       return p.toLocaleString('en-US', {maximumFractionDigits:0});
+      if (ind.key === 'bitcoin')            return '$' + p.toLocaleString('en-US', {maximumFractionDigits:0});
+      if (ind.key === 'gold')               return '₹' + p.toLocaleString('en-IN', {maximumFractionDigits:0});
+      if (ind.key === 'silver')             return '₹' + p.toLocaleString('en-IN', {maximumFractionDigits:0});
+      if (ind.key === 'crude')              return '$' + p.toFixed(2);
+      if (ind.key === 'sp500')              return p.toLocaleString('en-US', {maximumFractionDigits:0});
+      if (ind.key === 'usdinr' || ind.key === 'eurinr') return '₹' + p.toFixed(2);
       // Indian indices — add ₹ prefix
       return '₹' + p.toLocaleString('en-IN', {maximumFractionDigits:0});
     }
@@ -2086,16 +2065,20 @@ async function fetchLivePrices() {
         if (!info) continue;
 
         const { price, change_pct } = info;
-        const buyPrice = s.price || 0;
-        const pnlPct   = buyPrice ? ((price - buyPrice) / buyPrice * 100) : 0;
-        const pnlAbs   = buyPrice ? ((price - buyPrice) * (s.approx_shares || 0)) : 0;
+        const buyPrice  = s.price || 0;
+        const shares    = s.approx_shares || 0;
+        const pnlPct    = buyPrice ? ((price - buyPrice) / buyPrice * 100) : 0;
+        const pnlAbs    = buyPrice ? ((price - buyPrice) * shares) : 0;
+        const prevClose = price / (1 + change_pct / 100);
+        const dayInr    = (price - prevClose) * shares;  // ₹ day change
 
         const lpEl = document.getElementById(`lp-${key}`);
         if (lpEl) { lpEl.textContent = `₹${price.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2})}`; populated++; }
 
         const lcEl = document.getElementById(`lc-${key}`);
         if (lcEl) {
-          lcEl.textContent = `${change_pct >= 0 ? '+' : ''}${change_pct.toFixed(2)}%`;
+          const inrStr = `${dayInr >= 0 ? '+' : ''}₹${Math.abs(dayInr).toLocaleString('en-IN',{maximumFractionDigits:0})}`;
+          lcEl.textContent = `${change_pct >= 0 ? '+' : ''}${change_pct.toFixed(2)}%  ${inrStr}`;
           lcEl.className   = `live-change ${change_pct > 0 ? 'up' : change_pct < 0 ? 'down' : 'flat'}`;
         }
 
@@ -2185,8 +2168,150 @@ function startPricePolling() {
   }, 5 * 60 * 1000); // every 5 min
 }
 
-// -- INIT -----------------------------------------------------
-loadAll().then(() => startPricePolling());
+// -- PERFORMANCE CHART -----------------------------------------
+let _perfData = [];
+let _perfChart = null;
+let _perfFilter = '1W';
+
+async function loadPerfChart() {
+  try {
+    const data = await fetchData('/performance');
+    _perfData = (data?.history || []).sort((a,b) => a.date < b.date ? -1 : 1);
+    renderPerfChart();
+  } catch(e) {
+    console.warn('Performance fetch failed:', e);
+  }
+}
+
+function setPerfFilter(filter, btn) {
+  _perfFilter = filter;
+  document.querySelectorAll('.perf-filter').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderPerfChart();
+}
+
+function renderPerfChart() {
+  const noDataEl = document.getElementById('perfNoData');
+  const wrapEl   = document.querySelector('.perf-chart-wrap');
+
+  if (!_perfData.length) {
+    if (noDataEl) noDataEl.style.display = 'block';
+    if (wrapEl)   wrapEl.style.display   = 'none';
+    return;
+  }
+  if (noDataEl) noDataEl.style.display = 'none';
+  if (wrapEl)   wrapEl.style.display   = 'block';
+
+  // Filter data by selected range
+  const now   = new Date();
+  const cutoff = new Date(now);
+  if      (_perfFilter === '1W')  cutoff.setDate(now.getDate() - 7);
+  else if (_perfFilter === '1M')  cutoff.setMonth(now.getMonth() - 1);
+  else if (_perfFilter === '3M')  cutoff.setMonth(now.getMonth() - 3);
+  else if (_perfFilter === '1Y')  cutoff.setFullYear(now.getFullYear() - 1);
+  else                            cutoff.setFullYear(2000); // ALL
+
+  const filtered = _perfData.filter(r => new Date(r.date) >= cutoff);
+  if (!filtered.length) {
+    if (noDataEl) noDataEl.style.display = 'block';
+    if (wrapEl)   wrapEl.style.display   = 'none';
+    return;
+  }
+
+  // Convert to cumulative % from first point
+  function toCumulative(arr, field) {
+    const vals = arr.map(r => r[field]);
+    const result = [];
+    let cum = 0;
+    for (const v of vals) {
+      cum += (v ?? 0);
+      result.push(parseFloat(cum.toFixed(2)));
+    }
+    return result;
+  }
+
+  const labels   = filtered.map(r => {
+    const d = new Date(r.date);
+    return d.toLocaleDateString('en-IN', {day:'numeric', month:'short'});
+  });
+  const portVals  = toCumulative(filtered, 'portfolio_pct');
+  const n50Vals   = toCumulative(filtered, 'nifty50_pct');
+  const n500Vals  = toCumulative(filtered, 'nifty500_pct');
+
+  const ctx = document.getElementById('perfChart').getContext('2d');
+  if (_perfChart) _perfChart.destroy();
+
+  _perfChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'My Portfolio',
+          data: portVals,
+          borderColor: '#2563eb',
+          backgroundColor: 'rgba(37,99,235,0.08)',
+          borderWidth: 2.5,
+          pointRadius: filtered.length > 30 ? 0 : 3,
+          pointHoverRadius: 5,
+          fill: true,
+          tension: 0.3,
+        },
+        {
+          label: 'Nifty 50',
+          data: n50Vals,
+          borderColor: '#059669',
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          borderDash: [],
+          tension: 0.3,
+        },
+        {
+          label: 'Nifty 500',
+          data: n500Vals,
+          borderColor: '#d97706',
+          backgroundColor: 'transparent',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          borderDash: [4, 3],
+          tension: 0.3,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y >= 0 ? '+' : ''}${ctx.parsed.y.toFixed(2)}%`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          grid: { display: false },
+          ticks: { font: { size: 10 }, maxTicksLimit: 6, color: '#94a3b8' },
+        },
+        y: {
+          grid: { color: 'rgba(0,0,0,0.05)' },
+          ticks: {
+            font: { size: 10 }, color: '#94a3b8',
+            callback: v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%',
+          },
+        },
+      },
+    },
+  });
+}
+
+
+loadAll().then(() => { startPricePolling(); loadPerfChart(); });
 </script>
 </body>
 </html>
