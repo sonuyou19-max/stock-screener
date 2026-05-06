@@ -26,8 +26,10 @@ _picks_cache:     dict = {}   # screener recommendations this month
 _signals_cache:   dict = {}
 _fiidii_cache:    list = []
 _perf_cache:      list = []   # daily performance snapshots
+_history_cache:   list = []   # closed/realised trade history
 
-PERF_FILE = os.path.join(os.getenv("DATA_DIR", "/data"), "performance_history.json")
+PERF_FILE    = os.path.join(os.getenv("DATA_DIR", "/data"), "performance_history.json")
+HISTORY_FILE = os.path.join(os.getenv("DATA_DIR", "/data"), "trade_history.json")
 
 
 def _load_json(path: str):
@@ -621,6 +623,44 @@ def market():
 
     except Exception as e:
         return jsonify({"error": str(e), "indicators": []})
+
+
+@app.route("/portfolio/history", methods=["GET"])
+def portfolio_history_get():
+    """Returns all closed/realised trade records."""
+    global _history_cache
+    if not _history_cache:
+        loaded = _load_json(HISTORY_FILE)
+        _history_cache = loaded if isinstance(loaded, list) else []
+    return jsonify({"trades": _sanitise(_history_cache), "count": len(_history_cache)})
+
+
+@app.route("/portfolio/history/upload", methods=["POST", "OPTIONS"])
+def portfolio_history_upload():
+    """
+    Dashboard POSTs a closed trade record here when a stock is sold.
+    Body: { ticker, name, bucket, buy_price, sell_price, shares,
+             buy_date, sell_date, realised_pnl_inr, realised_pnl_pct, reason }
+    """
+    global _history_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        rec = request.get_json(force=True)
+        if not rec.get("ticker"):
+            return jsonify({"error": "ticker required"}), 400
+
+        if not _history_cache:
+            loaded = _load_json(HISTORY_FILE)
+            _history_cache = loaded if isinstance(loaded, list) else []
+
+        _history_cache.append(rec)
+        # Sort newest first
+        _history_cache.sort(key=lambda r: r.get("sell_date", ""), reverse=True)
+        _save_json(HISTORY_FILE, _history_cache)
+        return jsonify({"ok": True, "total": len(_history_cache)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/performance", methods=["GET"])
