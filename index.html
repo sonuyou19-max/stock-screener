@@ -1102,6 +1102,64 @@ main{
   80%{transform:translateX(6px)}
 }
 .pin-box.shake{animation:shake .4s ease;}
+/* ── SELL MODAL ──────────────────────────────────── */
+.modal-overlay{
+  position:fixed;inset:0;z-index:9998;
+  background:rgba(0,0,0,.5);backdrop-filter:blur(4px);
+  display:flex;align-items:flex-end;justify-content:center;
+}
+.modal-overlay.hidden{display:none;}
+.modal-sheet{
+  background:white;border-radius:20px 20px 0 0;
+  padding:24px 20px 36px;width:100%;max-width:480px;
+  animation:slideUp .25s ease;
+}
+@keyframes slideUp{from{transform:translateY(100%)}to{transform:translateY(0)}}
+.modal-title{font-size:16px;font-weight:700;color:var(--slate-800);margin-bottom:4px;}
+.modal-sub{font-size:13px;color:var(--slate-500);margin-bottom:20px;}
+.modal-label{font-size:12px;font-weight:600;color:var(--slate-600);margin-bottom:6px;text-transform:uppercase;letter-spacing:.04em;}
+.modal-input{
+  width:100%;padding:12px 14px;border:1.5px solid var(--border);
+  border-radius:10px;font-size:16px;font-family:var(--mono);
+  color:var(--slate-800);box-sizing:border-box;margin-bottom:10px;
+  -webkit-appearance:none;
+}
+.modal-input:focus{outline:none;border-color:var(--blue-500);}
+.modal-mkt-btn{
+  width:100%;padding:10px;border:1.5px dashed var(--blue-300);
+  border-radius:10px;background:var(--blue-50);color:var(--blue-600);
+  font-size:13px;font-weight:500;cursor:pointer;margin-bottom:16px;
+  font-family:var(--sans);-webkit-tap-highlight-color:transparent;
+}
+.modal-mkt-btn:active{background:var(--blue-100);}
+.modal-actions{display:flex;gap:10px;}
+.modal-cancel{flex:1;padding:13px;border:1.5px solid var(--border);border-radius:12px;background:white;color:var(--slate-600);font-size:14px;font-weight:500;cursor:pointer;font-family:var(--sans);}
+.modal-confirm{flex:2;padding:13px;border:none;border-radius:12px;background:#dc2626;color:white;font-size:14px;font-weight:600;cursor:pointer;font-family:var(--sans);}
+.modal-confirm:active{background:#b91c1c;}
+
+/* ── CLOSED POSITIONS ────────────────────────────── */
+.closed-list{display:flex;flex-direction:column;gap:10px;}
+.closed-card{
+  background:white;border:1px solid var(--border);border-radius:12px;
+  padding:14px 16px;display:flex;justify-content:space-between;align-items:center;
+}
+.closed-left{}
+.closed-ticker{font-size:15px;font-weight:700;color:var(--slate-800);}
+.closed-name{font-size:11px;color:var(--slate-400);margin-top:1px;}
+.closed-dates{font-size:11px;color:var(--slate-400);margin-top:4px;}
+.closed-reason{font-size:11px;color:var(--slate-500);margin-top:3px;font-style:italic;}
+.closed-right{text-align:right;flex-shrink:0;margin-left:12px;}
+.closed-pnl{font-size:17px;font-weight:700;}
+.closed-pnl.gain{color:#059669;}.closed-pnl.loss{color:#dc2626;}
+.closed-pnl-sub{font-size:11px;color:var(--slate-400);margin-top:2px;}
+.closed-summary{
+  background:var(--off-white);border:1px solid var(--border);border-radius:12px;
+  padding:14px 16px;margin-bottom:14px;
+  display:flex;justify-content:space-between;align-items:center;
+}
+.closed-summary-label{font-size:12px;color:var(--slate-500);font-weight:600;text-transform:uppercase;letter-spacing:.04em;}
+.closed-summary-val{font-size:18px;font-weight:700;}
+
 /* ── PERFORMANCE CHART ───────────────────────────── */
 .perf-filter-row{display:flex;gap:8px;margin-bottom:16px;}
 .perf-filter{
@@ -1212,6 +1270,23 @@ document.addEventListener('keydown', e => {
   else if (e.key === 'Backspace') pinDel();
 });
 </script>
+<!-- Sell Price Modal -->
+<div class="modal-overlay hidden" id="sellModal">
+  <div class="modal-sheet">
+    <div class="modal-title" id="sellModalTitle">Record Sale</div>
+    <div class="modal-sub" id="sellModalSub">Enter the price you sold at on Kite</div>
+    <div class="modal-label">Sell Price (₹)</div>
+    <input class="modal-input" type="number" id="sellPriceInput" placeholder="e.g. 1050.00" step="0.05"/>
+    <button class="modal-mkt-btn" id="sellMktBtn" onclick="fillMarketPrice()">
+      📡 Use Current Market Price
+    </button>
+    <div class="modal-actions">
+      <button class="modal-cancel" onclick="closeSellModal()">Cancel</button>
+      <button class="modal-confirm" onclick="confirmSell()">Confirm Sale & Update Portfolio</button>
+    </div>
+  </div>
+</div>
+
 <header>
   <div class="header-inner">
     <a class="brand" href="#">
@@ -1315,6 +1390,16 @@ document.addEventListener('keydown', e => {
     <div id="perfNoData" style="display:none;text-align:center;padding:30px;color:var(--slate-400);font-size:13px;">
       No performance data yet — chart builds automatically after market close each day.
     </div>
+  </div>
+
+  <!-- Closed Positions -->
+  <div class="section-label">
+    <div class="section-dot"></div>
+    <div class="section-title">Closed Positions</div>
+    <div class="section-line"></div>
+  </div>
+  <div id="closedSection">
+    <div class="loading-wrap"><div class="spinner"></div> Loading…</div>
   </div>
 
   <!-- Policy Signals -->
@@ -1942,62 +2027,167 @@ function renderSwaps(data) {
   el.innerHTML = html;
 }
 
+// -- SELL MODAL STATE ------------------------------------------
+let _sellState = null;
+
 async function markBought(buyTicker, sellTicker, buyPrice) {
-  // Simple confirmation dialog
-  const msg = sellTicker
-    ? `Confirm: Sell ${sellTicker.replace('.NS','')} and Buy ${buyTicker.replace('.NS','')} on Kite?\n\nThis will update your Live Portfolio so the alerter tracks the new stock.`
-    : `Confirm: Buy ${buyTicker.replace('.NS','')} on Kite?\n\nThis will add it to your Live Portfolio for alerter tracking.`;
+  if (sellTicker) {
+    let sellStock = null;
+    for (const bucket of Object.values(portfolio || {})) {
+      const s = (bucket.stocks||[]).find(s => s.ticker === sellTicker);
+      if (s) { sellStock = s; break; }
+    }
+    _sellState = { buyTicker, sellTicker, buyPrice, sellStock };
+    document.getElementById('sellModalTitle').textContent =
+      `Sell ${sellTicker.replace('.NS','')} → Buy ${buyTicker.replace('.NS','')}`;
+    document.getElementById('sellModalSub').textContent =
+      `Buy price was ₹${(sellStock?.price||0).toLocaleString('en-IN')} · ${sellStock?.approx_shares||0} shares`;
+    document.getElementById('sellPriceInput').value = '';
+    document.getElementById('sellModal').classList.remove('hidden');
+  } else {
+    if (!confirm(`Confirm: Buy ${buyTicker.replace('.NS','')} on Kite?\n\nThis will add it to your Live Portfolio.`)) return;
+    await executeTrade(buyTicker, null, buyPrice, null);
+  }
+}
 
-  if (!confirm(msg)) return;
+function closeSellModal() {
+  document.getElementById('sellModal').classList.add('hidden');
+  _sellState = null;
+}
 
+async function fillMarketPrice() {
+  const btn = document.getElementById('sellMktBtn');
+  const ticker = _sellState?.sellTicker;
+  if (!ticker) return;
+  btn.textContent = '⏳ Fetching…';
+  btn.disabled = true;
   try {
-    // Fetch current live portfolio
-    const live = await fetchData('/portfolio/live');
-    if (!live || live.error) { alert('Could not load live portfolio'); return; }
+    const data = await fetchData('/prices');
+    const info  = data?.prices?.[ticker];
+    if (info?.price) {
+      document.getElementById('sellPriceInput').value = info.price.toFixed(2);
+      btn.textContent = `✅ Fetched: ₹${info.price.toLocaleString('en-IN',{minimumFractionDigits:2})}`;
+    } else {
+      btn.textContent = '⚠️ Could not fetch — enter manually';
+    }
+  } catch(e) {
+    btn.textContent = '⚠️ Error — enter manually';
+  }
+  setTimeout(() => { btn.textContent = '📡 Use Current Market Price'; btn.disabled = false; }, 3000);
+}
 
-    // Find the bucket containing sellTicker and replace with buyTicker from picks
+async function confirmSell() {
+  const sellPriceRaw = parseFloat(document.getElementById('sellPriceInput').value);
+  if (!sellPriceRaw || isNaN(sellPriceRaw) || sellPriceRaw <= 0) {
+    document.getElementById('sellPriceInput').style.borderColor = '#dc2626';
+    setTimeout(() => document.getElementById('sellPriceInput').style.borderColor = '', 1500);
+    return;
+  }
+  const state = { ..._sellState };
+  closeSellModal();
+  await executeTrade(state.buyTicker, state.sellTicker, state.buyPrice, sellPriceRaw, state.sellStock);
+}
+
+async function executeTrade(buyTicker, sellTicker, buyPrice, sellPrice, sellStock) {
+  try {
+    const live  = await fetchData('/portfolio/live');
+    if (!live || live.error) { alert('Could not load live portfolio'); return; }
     const picks = await fetchData('/portfolio/picks');
+
+    if (sellTicker && sellStock && sellPrice) {
+      const shares = sellStock.approx_shares || 0;
+      const buyAt  = sellStock.price || 0;
+      const pnlInr = (sellPrice - buyAt) * shares;
+      const pnlPct = buyAt ? ((sellPrice - buyAt) / buyAt * 100) : 0;
+      let bucketLabel = '';
+      for (const [bk, bucket] of Object.entries(live)) {
+        if ((bucket.stocks||[]).find(s => s.ticker === sellTicker)) { bucketLabel = bucket.label || bk; break; }
+      }
+      await fetch(`${apiBase}/portfolio/history/upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticker: sellTicker, name: sellStock.name || sellTicker.replace('.NS',''),
+          bucket: bucketLabel, buy_price: buyAt, sell_price: sellPrice, shares,
+          buy_date: sellStock.buy_date || '', sell_date: new Date().toISOString().split('T')[0],
+          realised_pnl_inr: parseFloat(pnlInr.toFixed(2)),
+          realised_pnl_pct: parseFloat(pnlPct.toFixed(2)),
+          reason: buyTicker ? `Replaced by ${buyTicker.replace('.NS','')} — screener recommendation` : 'Manual exit',
+        }),
+      });
+    }
 
     for (const [bk, bucket] of Object.entries(live)) {
       if (sellTicker) {
         const idx = bucket.stocks.findIndex(s => s.ticker === sellTicker);
         if (idx !== -1) {
-          // Find buy stock in picks
-          const pickBucket = picks?.[bk];
-          const buyStock   = pickBucket?.stocks?.find(s => s.ticker === buyTicker);
-          if (buyStock) {
-            // Replace sell with buy in live portfolio
-            bucket.stocks[idx] = { ...buyStock };
-          } else {
-            // Picks not found — just remove sold stock
-            bucket.stocks.splice(idx, 1);
-          }
+          const buyStock = picks?.[bk]?.stocks?.find(s => s.ticker === buyTicker);
+          if (buyStock) bucket.stocks[idx] = { ...buyStock };
+          else bucket.stocks.splice(idx, 1);
         }
       } else {
-        // New buy — add to correct bucket
-        const pickBucket = picks?.[bk];
-        const buyStock   = pickBucket?.stocks?.find(s => s.ticker === buyTicker);
-        if (buyStock) {
-          bucket.stocks.push({ ...buyStock });
-        }
+        const buyStock = picks?.[bk]?.stocks?.find(s => s.ticker === buyTicker);
+        if (buyStock) bucket.stocks.push({ ...buyStock });
       }
     }
 
-    // POST updated live portfolio
     const resp = await fetch(`${apiBase}/portfolio/live/upload`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(live),
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(live),
     });
     const result = await resp.json();
     if (result.status === 'ok') {
-      alert(`✅ Live portfolio updated!\n\nAlerter will now track ${buyTicker.replace('.NS','')}.\n\nRefresh the dashboard to see changes.`);
-      loadAll().then(() => { fetchLivePrices(); fetchSwaps(); });
+      alert(`✅ Portfolio updated!\n\nAlerter will now track ${buyTicker.replace('.NS','')}.`);
+      loadAll().then(() => { fetchLivePrices(); fetchSwaps(); loadClosedPositions(); });
     } else {
-      alert('Error updating live portfolio: ' + JSON.stringify(result));
+      alert('Error: ' + JSON.stringify(result));
     }
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+// -- CLOSED POSITIONS ------------------------------------------
+async function loadClosedPositions() {
+  const el = document.getElementById('closedSection');
+  try {
+    const data   = await fetchData('/portfolio/history');
+    const trades = data?.trades || [];
+    if (!trades.length) {
+      el.innerHTML = `<p style="color:var(--slate-400);font-size:13px;padding:16px;text-align:center;">No closed positions yet. When you replace a stock, the trade will be recorded here.</p>`;
+      return;
+    }
+    const totalPnl = trades.reduce((s,t) => s + (t.realised_pnl_inr||0), 0);
+    const winners  = trades.filter(t => t.realised_pnl_inr > 0).length;
+    const winRate  = trades.length ? Math.round(winners/trades.length*100) : 0;
+    const sign     = totalPnl >= 0 ? '+' : '';
+    el.innerHTML = `
+      <div class="closed-summary">
+        <div>
+          <div class="closed-summary-label">Total Realised P&L</div>
+          <div class="closed-summary-val" style="color:${totalPnl>=0?'#059669':'#dc2626'}">${sign}₹${Math.abs(totalPnl).toLocaleString('en-IN',{maximumFractionDigits:0})}</div>
+        </div>
+        <div style="text-align:right">
+          <div class="closed-summary-label">Win Rate</div>
+          <div class="closed-summary-val">${winRate}%</div>
+          <div style="font-size:11px;color:var(--slate-400)">${winners}/${trades.length} trades</div>
+        </div>
+      </div>
+      <div class="closed-list">${trades.map(t => {
+        const pnl = t.realised_pnl_inr||0; const s = pnl>=0?'+':''; const cls = pnl>=0?'gain':'loss';
+        return `<div class="closed-card">
+          <div class="closed-left">
+            <div class="closed-ticker">${(t.ticker||'').replace('.NS','')}</div>
+            <div class="closed-name">${t.name||''}</div>
+            <div class="closed-dates">₹${(t.buy_price||0).toLocaleString('en-IN')} → ₹${(t.sell_price||0).toLocaleString('en-IN')} · ${t.shares||0} sh</div>
+            <div class="closed-dates">${t.buy_date||'—'} → ${t.sell_date||'—'}</div>
+            ${t.reason?`<div class="closed-reason">${t.reason}</div>`:''}
+          </div>
+          <div class="closed-right">
+            <div class="closed-pnl ${cls}">${s}₹${Math.abs(pnl).toLocaleString('en-IN',{maximumFractionDigits:0})}</div>
+            <div class="closed-pnl-sub">${s}${(t.realised_pnl_pct||0).toFixed(2)}%</div>
+          </div>
+        </div>`;
+      }).join('')}</div>`;
   } catch(e) {
-    alert('Error: ' + e.message);
+    el.innerHTML = `<p style="color:var(--slate-400);font-size:13px;padding:16px;">Could not load trade history.</p>`;
   }
 }
 
@@ -2311,7 +2501,7 @@ function renderPerfChart() {
 }
 
 
-loadAll().then(() => { startPricePolling(); loadPerfChart(); });
+loadAll().then(() => { startPricePolling(); loadPerfChart(); loadClosedPositions(); });
 </script>
 </body>
 </html>
