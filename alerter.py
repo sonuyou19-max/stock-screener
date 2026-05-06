@@ -799,6 +799,109 @@ def find_latest_portfolio(search_dirs: list = None) -> Optional[str]:
 # MAIN ENTRY POINT
 # ─────────────────────────────────────────────
 
+def capture_eod_snapshot(portfolio: dict) -> None:
+    """
+    Called once per day after market close (15:30 IST).
+    Fetches closing prices for portfolio, Nifty50, Nifty500 and
+    POSTs a performance record to /performance/upload.
+    Uses the same weighted P&L calculation as the dashboard.
+    """
+    import urllib.request as _ur
+    import urllib.error   as _ure
+    import math
+
+    today_str = date.today().isoformat()
+    api_url   = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+
+    # ── Check if already captured today ──────────────────────
+    dedup_file = os.path.join(os.getenv("DATA_DIR", "/data"), "perf_snapshot_dedup.txt")
+    if os.path.exists(dedup_file):
+        with open(dedup_file) as f:
+            if f.read().strip() == today_str:
+                print("  📊 EOD snapshot already captured today — skipping.")
+                return
+
+    print(f"\n  📊 Capturing EOD performance snapshot for {today_str}...")
+
+    try:
+        # ── Fetch index closing prices ────────────────────────
+        nifty50_pct  = None
+        nifty500_pct = None
+        try:
+            n50  = yf.Ticker("^NSEI")
+            n500 = yf.Ticker("^CRSLDX")
+            fi50  = n50.fast_info
+            fi500 = n500.fast_info
+            p50   = getattr(fi50,  "last_price",    None)
+            pr50  = getattr(fi50,  "previous_close", None)
+            p500  = getattr(fi500, "last_price",    None)
+            pr500 = getattr(fi500, "previous_close", None)
+            if p50 and pr50:
+                nifty50_pct  = round(((p50  - pr50)  / pr50)  * 100, 2)
+            if p500 and pr500:
+                nifty500_pct = round(((p500 - pr500) / pr500) * 100, 2)
+        except Exception as e:
+            print(f"  ⚠️  Index fetch failed: {e}")
+
+        # ── Calculate portfolio weighted % change ─────────────
+        # Same formula as dashboard Today's P&L
+        total_prev_value = 0.0
+        total_day_chg    = 0.0
+        portfolio_pct    = None
+
+        all_tickers = []
+        for bucket in portfolio.values():
+            for s in bucket.get("stocks", []):
+                t = s.get("ticker")
+                if t:
+                    all_tickers.append((t, s.get("approx_shares", 0)))
+
+        for ticker, shares in all_tickers:
+            try:
+                fi    = yf.Ticker(ticker).fast_info
+                price = getattr(fi, "last_price",    None)
+                prev  = getattr(fi, "previous_close", None)
+                if price and prev and shares:
+                    price = float(price); prev = float(prev)
+                    total_day_chg    += (price - prev) * shares
+                    total_prev_value += prev * shares
+            except Exception:
+                pass
+
+        if total_prev_value > 0:
+            portfolio_pct = round((total_day_chg / total_prev_value) * 100, 2)
+
+        if portfolio_pct is None and nifty50_pct is None:
+            print("  ⚠️  Could not fetch any prices — skipping snapshot.")
+            return
+
+        # ── POST to API ───────────────────────────────────────
+        rec = {
+            "date":          today_str,
+            "portfolio_pct": portfolio_pct,
+            "nifty50_pct":   nifty50_pct,
+            "nifty500_pct":  nifty500_pct,
+        }
+        payload = json.dumps(rec).encode()
+        req = _ur.Request(
+            f"{api_url}/performance/upload",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _ur.urlopen(req, timeout=15) as r:
+            resp = json.loads(r.read())
+            print(f"  ✅ Snapshot saved: portfolio={portfolio_pct}%, "
+                  f"nifty50={nifty50_pct}%, nifty500={nifty500_pct}%")
+
+        # Mark as done for today
+        with open(dedup_file, "w") as f:
+            f.write(today_str)
+
+    except Exception as e:
+        print(f"  ⚠️  EOD snapshot failed: {e}")
+
+
 def check_and_alert(
     portfolio_path: str,
     send_email:  bool = True,
@@ -834,6 +937,11 @@ def check_and_alert(
 
     with open(portfolio_path) as f:
         portfolio = json.load(f)
+
+    # ── EOD snapshot — capture once per day after 15:25 IST ──
+    now_ist = datetime.now(IST)
+    if now_ist.hour > 15 or (now_ist.hour == 15 and now_ist.minute >= 25):
+        capture_eod_snapshot(portfolio)
 
     # ── Detect all triggered alerts ───────────────────────────
     all_alerts = detect_alerts(portfolio)

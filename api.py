@@ -25,6 +25,9 @@ _live_cache:      dict = {}   # what investor actually holds on Kite
 _picks_cache:     dict = {}   # screener recommendations this month
 _signals_cache:   dict = {}
 _fiidii_cache:    list = []
+_perf_cache:      list = []   # daily performance snapshots
+
+PERF_FILE = os.path.join(os.getenv("DATA_DIR", "/data"), "performance_history.json")
 
 
 def _load_json(path: str):
@@ -541,14 +544,14 @@ def market():
             ("nifty500",      "^CRSLDX",   "Nifty 500",  "index",  ""    ),
             ("niftypharma",   "NIFTY_PHARMA.NS", "Nifty Pharma", "index", ""),
             ("bitcoin",       "BTC-USD",   "Bitcoin",    "crypto", "$"   ),
-            # GOLDBEES.NS: 1 unit ≈ 1/100g gold → price × 100 = ₹/10g (MCX-linked, includes duty+GST)
-            # SILVERBEES.NS: 1 unit ≈ 1g silver → price × 1000 = ₹/kg (MCX-linked)
-            ("gold",          "GOLDBEES.NS",  "Gold",       "commodity", "₹/10g"),
-            ("silver",        "SILVERBEES.NS","Silver",     "commodity", "₹/kg"),
-            ("crude",         "BZ=F",         "Brent Crude","commodity", "$/bbl"),
+            ("gold",          "GOLDBEES.NS","Gold",       "commodity", "₹/10g"),
+            ("silver",        "SILVERBEES.NS","Silver",   "commodity", "₹/kg"),
+            ("crude",         "BZ=F",      "Brent Crude","commodity", "$/bbl"),
+            ("usdinr",        "INR=X",     "USD/INR",    "forex",  "₹"   ),
+            ("eurinr",        "EURINR=X",  "EUR/INR",    "forex",  "₹"   ),
         ]
 
-        # USD/INR still needed for crude
+        # Fetch USD/INR once for commodity conversion (crude)
         usd_inr = 84.0  # fallback
         try:
             fx = yf.Ticker("INR=X")
@@ -581,18 +584,20 @@ def market():
                 prev  = float(prev) if prev else price
                 change_pct = round(((price - prev) / prev) * 100, 2) if prev else 0
 
-                # Gold/Silver ETFs already in INR — just scale to display units
+                # Convert/scale prices to display units
                 disp_price = price
                 if key == "gold":
-                    # GOLDBEES.NS: 1 unit ≈ 0.01g gold → ×1000 = ₹/10g (MCX-linked)
+                    # GOLDBEES.NS: 1 unit = ~0.01g gold → ×1000 = ₹/10g (MCX-linked)
                     disp_price = round(price * 1000, 0)
                     unit = "₹/10g"
                 elif key == "silver":
-                    # SILVERBEES.NS: 1 unit ≈ 1g silver → ×1000 = ₹/kg
+                    # SILVERBEES.NS: 1 unit = ~1g silver → ×1000 = ₹/kg (MCX-linked)
                     disp_price = round(price * 1000, 0)
                     unit = "₹/kg"
                 elif key == "bitcoin":
                     disp_price = round(price, 0)
+                elif key in ("usdinr", "eurinr"):
+                    disp_price = round(price, 2)
                 elif key in ("sensex", "niftybank", "nifty500", "niftypharma"):
                     disp_price = round(price, 2)
                 elif key == "nifty50":
@@ -616,6 +621,50 @@ def market():
 
     except Exception as e:
         return jsonify({"error": str(e), "indicators": []})
+
+
+@app.route("/performance", methods=["GET"])
+def performance_get():
+    """
+    Returns daily performance history for portfolio vs Nifty50 vs Nifty500.
+    Each record: { date, portfolio_pct, nifty50_pct, nifty500_pct }
+    """
+    global _perf_cache
+    if not _perf_cache:
+        loaded = _load_json(PERF_FILE)
+        _perf_cache = loaded if isinstance(loaded, list) else []
+    return jsonify({"history": _sanitise(_perf_cache), "count": len(_perf_cache)})
+
+
+@app.route("/performance/upload", methods=["POST", "OPTIONS"])
+def performance_upload():
+    """
+    Alerter posts EOD snapshot here after market close.
+    Body: { date, portfolio_pct, nifty50_pct, nifty500_pct }
+    Upserts by date (one record per calendar day).
+    """
+    global _perf_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        rec = request.get_json(force=True)
+        date_str = rec.get("date")
+        if not date_str:
+            return jsonify({"error": "date required"}), 400
+
+        if not _perf_cache:
+            loaded = _load_json(PERF_FILE)
+            _perf_cache = loaded if isinstance(loaded, list) else []
+
+        # Upsert — replace existing record for same date
+        _perf_cache = [r for r in _perf_cache if r.get("date") != date_str]
+        _perf_cache.append(rec)
+        _perf_cache.sort(key=lambda r: r.get("date", ""))
+
+        _save_json(PERF_FILE, _perf_cache)
+        return jsonify({"ok": True, "date": date_str, "total": len(_perf_cache)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/health", methods=["GET"])
