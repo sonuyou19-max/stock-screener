@@ -923,6 +923,22 @@ def check_and_alert(
       force_run  : bypass market hours check (for testing)
       test_mode  : send email even with no alerts
     """
+    # ── EOD snapshot — runs even outside market hours ─────────
+    # Must check BEFORE the market hours guard below, since
+    # is_market_hours() returns False after 15:30 IST.
+    now_ist = datetime.now(IST)
+    is_weekday = now_ist.weekday() < 5  # Mon–Fri
+    if is_weekday and (now_ist.hour > 15 or (now_ist.hour == 15 and now_ist.minute >= 25)):
+        # Load portfolio from API for EOD snapshot
+        try:
+            import urllib.request as _ur
+            api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+            with _ur.urlopen(f"{api_url}/portfolio/live", timeout=15) as r:
+                eod_portfolio = json.loads(r.read())
+            capture_eod_snapshot(eod_portfolio)
+        except Exception as e:
+            print(f"  ⚠️  Could not load portfolio for EOD snapshot: {e}")
+
     # ── Market hours guard ────────────────────────────────────
     if not force_run and not test_mode and not is_market_hours():
         now_ist = datetime.now(IST).strftime("%d %B %Y, %I:%M %p IST")
@@ -937,11 +953,6 @@ def check_and_alert(
 
     with open(portfolio_path) as f:
         portfolio = json.load(f)
-
-    # ── EOD snapshot — capture once per day after 15:25 IST ──
-    now_ist = datetime.now(IST)
-    if now_ist.hour > 15 or (now_ist.hour == 15 and now_ist.minute >= 25):
-        capture_eod_snapshot(portfolio)
 
     # ── Detect all triggered alerts ───────────────────────────
     all_alerts = detect_alerts(portfolio)
