@@ -2420,12 +2420,11 @@ function renderPerfChart() {
     return result;
   }
 
-  const chartLabels = labels;
-
   const labels   = filtered.map(r => {
     const d = new Date(r.date);
     return d.toLocaleDateString('en-IN', {day:'numeric', month:'short'});
   });
+  const chartLabels = labels;
   const portVals  = toCumulative(filtered, 'portfolio_pct');
   const n50Vals   = toCumulative(filtered, 'nifty50_pct');
   const n500Vals  = toCumulative(filtered, 'nifty500_pct');
