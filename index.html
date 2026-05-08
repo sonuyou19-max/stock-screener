@@ -2413,9 +2413,13 @@ function renderPerfChart() {
   function toCumulative(arr, field) {
     const result = [];
     let cum = 0;
-    for (const r of arr) {
-      result.push(parseFloat(cum.toFixed(2)));
-      cum += (r[field] ?? 0);
+    for (let i = 0; i < arr.length; i++) {
+      if (i === 0) {
+        result.push(0); // baseline day always 0
+      } else {
+        cum += (arr[i][field] ?? 0);
+        result.push(parseFloat(cum.toFixed(2)));
+      }
     }
     return result;
   }
