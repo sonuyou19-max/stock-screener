@@ -2408,17 +2408,20 @@ function renderPerfChart() {
     return;
   }
 
-  // Convert to cumulative % from first point
+  // Convert to cumulative % — always starts at 0 on first day
   function toCumulative(arr, field) {
-    const vals = arr.map(r => r[field]);
-    const result = [];
+    const result = [0]; // first point always 0 (baseline)
     let cum = 0;
-    for (const v of vals) {
-      cum += (v ?? 0);
+    for (let i = 0; i < arr.length - 1; i++) {
+      cum += (arr[i][field] ?? 0);
       result.push(parseFloat(cum.toFixed(2)));
     }
     return result;
   }
+
+  // Labels: prepend "Start" or use first date as baseline
+  const baseLabel = labels[0] ? `${labels[0]} (start)` : 'Start';
+  const chartLabels = [baseLabel, ...labels.slice(1)];
 
   const labels   = filtered.map(r => {
     const d = new Date(r.date);
@@ -2431,10 +2434,12 @@ function renderPerfChart() {
   const ctx = document.getElementById('perfChart').getContext('2d');
   if (_perfChart) _perfChart.destroy();
 
+  const singlePoint = filtered.length === 1;
+
   _perfChart = new Chart(ctx, {
     type: 'line',
     data: {
-      labels,
+      labels: chartLabels,
       datasets: [
         {
           label: 'My Portfolio',
@@ -2442,8 +2447,8 @@ function renderPerfChart() {
           borderColor: '#2563eb',
           backgroundColor: 'rgba(37,99,235,0.08)',
           borderWidth: 2.5,
-          pointRadius: filtered.length > 30 ? 0 : 3,
-          pointHoverRadius: 5,
+          pointRadius: singlePoint ? 6 : (filtered.length > 30 ? 0 : 3),
+          pointHoverRadius: 6,
           fill: true,
           tension: 0.3,
         },
@@ -2453,9 +2458,8 @@ function renderPerfChart() {
           borderColor: '#059669',
           backgroundColor: 'transparent',
           borderWidth: 2,
-          pointRadius: 0,
-          pointHoverRadius: 4,
-          borderDash: [],
+          pointRadius: singlePoint ? 6 : (filtered.length > 30 ? 0 : 3),
+          pointHoverRadius: 5,
           tension: 0.3,
         },
         {
@@ -2464,8 +2468,8 @@ function renderPerfChart() {
           borderColor: '#d97706',
           backgroundColor: 'transparent',
           borderWidth: 2,
-          pointRadius: 0,
-          pointHoverRadius: 4,
+          pointRadius: singlePoint ? 6 : (filtered.length > 30 ? 0 : 3),
+          pointHoverRadius: 5,
           borderDash: [4, 3],
           tension: 0.3,
         },
