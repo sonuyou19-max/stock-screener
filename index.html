@@ -2408,20 +2408,19 @@ function renderPerfChart() {
     return;
   }
 
-  // Convert to cumulative % — always starts at 0 on first day
+  // Convert to cumulative % — first record is always the baseline (0%)
+  // Each subsequent point adds that day's change to the running total
   function toCumulative(arr, field) {
-    const result = [0]; // first point always 0 (baseline)
+    const result = [];
     let cum = 0;
-    for (let i = 0; i < arr.length - 1; i++) {
-      cum += (arr[i][field] ?? 0);
+    for (const r of arr) {
       result.push(parseFloat(cum.toFixed(2)));
+      cum += (r[field] ?? 0);
     }
     return result;
   }
 
-  // Labels: prepend "Start" or use first date as baseline
-  const baseLabel = labels[0] ? `${labels[0]} (start)` : 'Start';
-  const chartLabels = [baseLabel, ...labels.slice(1)];
+  const chartLabels = labels;
 
   const labels   = filtered.map(r => {
     const d = new Date(r.date);
