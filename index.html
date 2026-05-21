@@ -1160,9 +1160,49 @@ main{
 .closed-summary-label{font-size:12px;color:var(--slate-500);font-weight:600;text-transform:uppercase;letter-spacing:.04em;}
 .closed-summary-val{font-size:18px;font-weight:700;}
 
-/* ── PERFORMANCE CHART ───────────────────────────── */
-.perf-filter-row{display:flex;gap:8px;margin-bottom:16px;}
-.perf-filter{
+/* ── MARKET TOGGLE ───────────────────────────────── */
+.mkt-toggle-wrap{
+  display:flex;justify-content:center;
+  padding:16px 20px 0;
+}
+.mkt-toggle{
+  display:flex;background:white;border:1px solid var(--border);
+  border-radius:30px;padding:4px;gap:4px;box-shadow:var(--shadow-sm);
+}
+.mkt-btn{
+  padding:10px 28px;border-radius:26px;border:none;
+  font-size:14px;font-weight:600;font-family:var(--sans);
+  cursor:pointer;transition:all .2s;color:var(--slate-500);background:transparent;
+  -webkit-tap-highlight-color:transparent;
+}
+.mkt-btn.active{
+  background:var(--blue-600);color:white;
+  box-shadow:0 2px 8px rgba(37,99,235,.3);
+}
+
+/* ── COMBINED OVERVIEW ───────────────────────────── */
+.combined-overview{
+  display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;
+}
+.combined-card{
+  background:white;border:1px solid var(--border);border-radius:14px;
+  padding:14px 16px;
+}
+.combined-flag{ font-size:18px;margin-bottom:6px; }
+.combined-label{ font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--slate-500); }
+.combined-pnl{ font-size:18px;font-weight:700;margin:4px 0 2px; }
+.combined-pnl.up{ color:#059669; }
+.combined-pnl.down{ color:#dc2626; }
+.combined-pnl.neutral{ color:var(--slate-500); }
+.combined-sub{ font-size:11px;color:var(--slate-400); }
+.combined-day{ font-size:12px;font-weight:600;margin-top:4px; }
+
+/* ── US SECTIONS (hidden by default) ────────────── */
+.us-section{ display:none; }
+.ind-section{ display:block; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+</head>
   padding:6px 14px;border-radius:20px;border:1.5px solid var(--border);
   background:white;color:var(--slate-500);font-size:12px;font-weight:500;
   cursor:pointer;font-family:var(--sans);transition:all .15s;
@@ -1311,9 +1351,21 @@ document.addEventListener('keydown', e => {
 <!-- Hero -->
 <div class="hero">
   <div class="hero-inner">
-    <div class="hero-label">Indian Equity · Systematic · ₹1,00,000</div>
+    <div class="hero-label">Global Equity · Systematic · ₹1,00,000 + $1,000</div>
     <div class="hero-title">Portfolio Dashboard</div>
-    <div class="hero-subtitle">Nifty 500 · Monthly Screener · Zerodha Kite</div>
+    <div class="hero-subtitle">NSE + NYSE · Monthly Screener · Zerodha + Bolero</div>
+  </div>
+</div>
+
+<!-- Market Toggle -->
+<div class="mkt-toggle-wrap">
+  <div class="mkt-toggle" id="mktToggle">
+    <button class="mkt-btn active" id="btnIND" onclick="switchMarket('IND')">
+      🇮🇳 India
+    </button>
+    <button class="mkt-btn" id="btnUS" onclick="switchMarket('US')">
+      🇺🇸 US
+    </button>
   </div>
 </div>
 
@@ -1330,12 +1382,33 @@ document.addEventListener('keydown', e => {
     <div class="loading-wrap" style="grid-column:1/-1"><div class="spinner"></div> Loading markets…</div>
   </div>
 
-  <!-- Stats -->
+  <!-- Combined Overview (always visible) -->
   <div class="section-label">
     <div class="section-dot"></div>
     <div class="section-title">Overview</div>
     <div class="section-line"></div>
   </div>
+
+  <!-- Combined P&L Cards -->
+  <div class="combined-overview">
+    <div class="combined-card">
+      <div class="combined-flag">🇮🇳</div>
+      <div class="combined-label">India All-Time P&L</div>
+      <div class="combined-pnl neutral" id="combinedIndPnl">–</div>
+      <div class="combined-sub" id="combinedIndPnlSub">Waiting for prices…</div>
+      <div class="combined-day" id="combinedIndDay">–</div>
+    </div>
+    <div class="combined-card">
+      <div class="combined-flag">🇺🇸</div>
+      <div class="combined-label">US All-Time P&L</div>
+      <div class="combined-pnl neutral" id="combinedUsPnl">–</div>
+      <div class="combined-sub" id="combinedUsPnlSub">Waiting for prices…</div>
+      <div class="combined-day" id="combinedUsDay">–</div>
+    </div>
+  </div>
+
+  <!-- INDIA SECTIONS -->
+  <div class="ind-section" id="indSections">
 
   <!-- Overall P&L Banner -->
   <div class="pnl-banner" id="pnlBanner">
@@ -1443,6 +1516,94 @@ document.addEventListener('keydown', e => {
   <div class="card card-pad" id="fiidiiSection">
     <div class="loading-wrap"><div class="spinner"></div></div>
   </div>
+
+</div><!-- end .ind-section -->
+
+<!-- US SECTIONS -->
+<div class="us-section" id="usSections">
+
+  <!-- US Stats -->
+  <div class="section-label">
+    <div class="section-dot"></div>
+    <div class="section-title">Portfolio Stats</div>
+    <div class="section-line"></div>
+  </div>
+  <div class="stats-grid" id="usStatsGrid">
+    <div class="loading-wrap" style="grid-column:1/-1"><div class="spinner"></div> Loading…</div>
+  </div>
+
+  <!-- US P&L Banner -->
+  <div class="pnl-banner" id="usPnlBanner">
+    <div class="pnl-card neutral" id="usPnlAllTime">
+      <div class="pnl-label">All-Time P&L</div>
+      <div class="pnl-value" id="usPnlAllTimeVal">–</div>
+      <div class="pnl-sub" id="usPnlAllTimePct">Waiting for prices…</div>
+    </div>
+    <div class="pnl-card neutral" id="usPnlDaily">
+      <div class="pnl-label">Today's P&L</div>
+      <div class="pnl-value" id="usPnlDailyVal">–</div>
+      <div class="pnl-sub" id="usPnlDailyPct">Across all positions</div>
+    </div>
+  </div>
+
+  <!-- US Stock Picks -->
+  <div class="section-label">
+    <div class="section-dot"></div>
+    <div class="section-title">Stock Picks</div>
+    <div class="section-line"></div>
+  </div>
+  <div id="usStockTable">
+    <div class="loading-wrap"><div class="spinner"></div> Loading…</div>
+  </div>
+
+  <!-- US Performance Chart -->
+  <div class="section-label">
+    <div class="section-dot"></div>
+    <div class="section-title">Performance vs Benchmark</div>
+    <div class="section-line"></div>
+  </div>
+  <div class="card card-pad">
+    <div class="perf-filter-row">
+      <button class="perf-filter active" onclick="setUsPerfFilter('1W',this)">1W</button>
+      <button class="perf-filter" onclick="setUsPerfFilter('1M',this)">1M</button>
+      <button class="perf-filter" onclick="setUsPerfFilter('3M',this)">3M</button>
+      <button class="perf-filter" onclick="setUsPerfFilter('1Y',this)">1Y</button>
+      <button class="perf-filter" onclick="setUsPerfFilter('ALL',this)">All</button>
+    </div>
+    <div class="perf-chart-wrap">
+      <canvas id="usPerfChart"></canvas>
+    </div>
+    <div class="perf-legend">
+      <span class="perf-legend-item"><span class="perf-dot" style="background:#2563eb"></span>My Portfolio</span>
+      <span class="perf-legend-item"><span class="perf-dot" style="background:#059669"></span>S&P 500</span>
+      <span class="perf-legend-item"><span class="perf-dot" style="background:#d97706"></span>Nasdaq</span>
+    </div>
+    <div id="usPerfNoData" style="display:none;text-align:center;padding:30px;color:var(--slate-400);font-size:13px;">
+      No US performance data yet — builds after first US market close.
+    </div>
+  </div>
+
+  <!-- US Closed Positions -->
+  <div class="section-label">
+    <div class="section-dot"></div>
+    <div class="section-title">Closed Positions</div>
+    <div class="section-line"></div>
+  </div>
+  <div id="usClosedSection">
+    <div class="loading-wrap"><div class="spinner"></div> Loading…</div>
+  </div>
+
+  <!-- US Screener Recommendations -->
+  <div class="section-label">
+    <div class="section-dot"></div>
+    <div class="section-title">Screener Recommendations</div>
+    <div class="section-line"></div>
+  </div>
+  <div class="swap-section" id="usSwapSection">
+    <div class="loading-wrap"><div class="spinner"></div> Loading…</div>
+  </div>
+
+</div><!-- end .us-section -->
 
 </main>
 
@@ -1752,7 +1913,9 @@ function renderStocks() {
 }
 
 function toggleBucket(bKey) {
-  document.getElementById('bsec-'+bKey)?.classList.toggle('collapsed');
+  // Supports both 'BFSI_IT' (India) and 'us-bsec-AI_CLOUD' (US, full ID)
+  const id = bKey.startsWith('us-bsec-') ? bKey : 'bsec-' + bKey;
+  document.getElementById(id)?.classList.toggle('collapsed');
 }
 
 
@@ -2058,15 +2221,18 @@ function closeSellModal() {
 async function fillMarketPrice() {
   const btn = document.getElementById('sellMktBtn');
   const ticker = _sellState?.sellTicker;
+  const isUS   = _sellState?.isUS;
   if (!ticker) return;
   btn.textContent = '⏳ Fetching…';
   btn.disabled = true;
   try {
-    const data = await fetchData('/prices');
+    const endpoint = isUS ? '/us/prices' : '/prices';
+    const data = await fetchData(endpoint);
     const info  = data?.prices?.[ticker];
     if (info?.price) {
       document.getElementById('sellPriceInput').value = info.price.toFixed(2);
-      btn.textContent = `✅ Fetched: ₹${info.price.toLocaleString('en-IN',{minimumFractionDigits:2})}`;
+      const sym = isUS ? '$' : '₹';
+      btn.textContent = `✅ Fetched: ${sym}${info.price.toFixed(2)}`;
     } else {
       btn.textContent = '⚠️ Could not fetch — enter manually';
     }
@@ -2085,7 +2251,13 @@ async function confirmSell() {
   }
   const state = { ..._sellState };
   closeSellModal();
-  await executeTrade(state.buyTicker, state.sellTicker, state.buyPrice, sellPriceRaw, state.sellStock);
+  // Reset sell modal label back to INR for next India use
+  document.querySelector('.modal-label').textContent = 'Sell Price (₹)';
+  if (state.isUS) {
+    await executeUsTrade(state.buyTicker, state.sellTicker, state.buyPrice, sellPriceRaw, state.sellStock);
+  } else {
+    await executeTrade(state.buyTicker, state.sellTicker, state.buyPrice, sellPriceRaw, state.sellStock);
+  }
 }
 
 async function executeTrade(buyTicker, sellTicker, buyPrice, sellPrice, sellStock) {
@@ -2340,6 +2512,19 @@ async function fetchLivePrices() {
         dayVal.className    = `pnl-value ${totalDayChg >= 0 ? 'up' : 'down'}`;
         dayCard.className   = `pnl-card ${totalDayChg > 0 ? 'gain' : totalDayChg < 0 ? 'loss' : 'neutral'}`;
       }
+
+      // ── Update combined India overview card ───────────────
+      const ciEl = document.getElementById('combinedIndPnl');
+      const csEl = document.getElementById('combinedIndPnlSub');
+      const cdEl = document.getElementById('combinedIndDay');
+      if (ciEl) {
+        const sign = allTimePnl>=0?'+':'';
+        ciEl.textContent = `${sign}₹${Math.abs(allTimePnl).toLocaleString('en-IN',{maximumFractionDigits:0})}`;
+        ciEl.className   = `combined-pnl ${allTimePnl>=0?'up':'down'}`;
+        csEl.textContent = `${sign}${allTimePct.toFixed(2)}% all-time`;
+        cdEl.textContent = `Today: ${totalDayChg>=0?'+':''}₹${Math.abs(totalDayChg).toLocaleString('en-IN',{maximumFractionDigits:0})}`;
+        cdEl.style.color = totalDayChg>=0?'#059669':'#dc2626';
+      }
     }
     console.log(`✅ Live prices updated at ${ts} — ${populated} card(s) populated`);
   } catch(e) {
@@ -2507,6 +2692,451 @@ function renderPerfChart() {
 }
 
 
+// ── MARKET TOGGLE ─────────────────────────────────────────────
+let _activeMkt = 'IND';
+
+function switchMarket(mkt) {
+  _activeMkt = mkt;
+  document.getElementById('btnIND').classList.toggle('active', mkt === 'IND');
+  document.getElementById('btnUS').classList.toggle('active',  mkt === 'US');
+  document.querySelectorAll('.ind-section').forEach(el => el.style.display = mkt === 'IND' ? 'block' : 'none');
+  document.querySelectorAll('.us-section').forEach(el  => el.style.display = mkt === 'US'  ? 'block' : 'none');
+  if (mkt === 'US' && !_usLoaded) {
+    loadUS();
+    _usLoaded = true;
+  }
+}
+
+// ── US STATE ───────────────────────────────────────────────────
+let _usPortfolio  = null;
+let _usPrices     = {};
+let _usLoaded     = false;
+let _usPerfData   = [];
+let _usPerfFilter = '1W';
+let _usPerfChart  = null;
+
+async function loadUS() {
+  try {
+    const [port, picks, swaps] = await Promise.all([
+      fetchData('/us/portfolio/live'),
+      fetchData('/us/portfolio/picks'),
+      fetchData('/us/portfolio/swap'),
+    ]);
+    if (port) _usPortfolio = port;
+    renderUsStats();
+    renderUsStocks();
+    renderUsSwaps(swaps);
+    await fetchUsPrices();
+    await loadUsPerfChart();
+    await loadUsClosedPositions();
+  } catch(e) {
+    console.warn('US load error:', e);
+  }
+}
+
+function renderUsStats() {
+  const el = document.getElementById('usStatsGrid');
+  if (!_usPortfolio) return;
+  let totalStocks = 0, totalDeployed = 0;
+  for (const b of Object.values(_usPortfolio)) {
+    totalStocks   += (b.stocks||[]).length;
+    totalDeployed += (b.stocks||[]).reduce((s,x) => s + (x.allocation_usd||0), 0);
+  }
+  el.innerHTML = `
+    <div class="stat-card"><div class="stat-label">Deployed</div>
+      <div class="stat-value">$${totalDeployed.toLocaleString('en-US',{maximumFractionDigits:0})}</div>
+      <div class="stat-sub">${totalStocks} stocks · 4 buckets</div></div>
+    <div class="stat-card"><div class="stat-label">Universe</div>
+      <div class="stat-value">S&P 500</div>
+      <div class="stat-sub">Monthly screener</div></div>
+    <div class="stat-card"><div class="stat-label">Cash Buffer</div>
+      <div class="stat-value">$${Math.max(0,1000-totalDeployed).toLocaleString('en-US',{maximumFractionDigits:0})}</div>
+      <div class="stat-sub">Available capital</div></div>
+    <div class="stat-card"><div class="stat-label">Broker</div>
+      <div class="stat-value">Bolero</div>
+      <div class="stat-sub">Belgium · Manual</div></div>`;
+}
+
+function renderUsStocks() {
+  const el = document.getElementById('usStockTable');
+  if (!_usPortfolio) { el.innerHTML = '<p style="color:var(--slate-400);padding:16px;font-size:13px;">No US portfolio yet. Run screener_us.py first.</p>'; return; }
+
+  const BUCKET_TAGS = {
+    AI_CLOUD:'AI + Cloud · 30%', SEMICONDUCTORS:'Semiconductors · 25%',
+    HIGH_GROWTH_TECH:'High Growth Tech · 25%', DEFENSIVE_DIV:'Defensive + Dividend · 20%',
+  };
+
+  el.innerHTML = Object.entries(_usPortfolio).map(([bk, bucket]) => {
+    const stocks = bucket.stocks || [];
+    const tag = BUCKET_TAGS[bk] || bk;
+    const label = (bucket.label||bk).replace(/High Conviction\s*—\s*/i,'').replace(/Growth\s*—\s*/i,'').replace(/Mid Cap\s*—\s*/i,'').replace(/Defensive\s*—\s*/i,'').trim();
+    const cards = stocks.map((s,i) => {
+      const key = `${bk}_${i}_US`;
+      const tkey = s.ticker?.replace('.','_');
+      const scoreClass = s.final_score >= 70 ? 'score-high' : s.final_score >= 50 ? 'score-mid' : 'score-low';
+      const price = s.price || 0;
+      const t1 = (price*1.20).toFixed(2), t2 = (price*1.35).toFixed(2), t3 = (price*1.50).toFixed(2);
+      return `
+        <div class="stock-card">
+          <div class="stock-card-header">
+            <div class="stock-id"><div>
+              <div class="ticker">${s.ticker||''}</div>
+              <div class="company-name" title="${s.name||''}">${s.name||''}</div>
+            </div></div>
+            <div class="score-badge">
+              <div class="score-num ${scoreClass}">${(s.final_score||0).toFixed(1)}</div>
+              <div class="score-label">Score</div>
+            </div>
+          </div>
+          <div class="stock-metrics">
+            <div class="metric"><div class="metric-label">Buy Price</div><div class="metric-val">$${price.toFixed(2)}</div></div>
+            <div class="metric"><div class="metric-label">Allocation</div><div class="metric-val">$${(s.allocation_usd||0).toFixed(0)}</div></div>
+            <div class="metric"><div class="metric-label">Qty</div><div class="metric-val">${s.approx_shares||0} sh</div></div>
+          </div>
+          <div class="live-strip" id="us-live-${tkey}">
+            <div class="live-dot"></div>
+            <div><div class="live-label">Current</div><div class="live-price" id="us-lp-${tkey}">—</div></div>
+            <div><div class="live-label">Day Chg</div><div class="live-change flat" id="us-lc-${tkey}">—</div></div>
+            <div><div class="live-label">P&L</div><div class="live-change flat" id="us-ll-${tkey}">—</div></div>
+          </div>
+          <div class="gtt-row">
+            <div class="gtt-icon">🛑</div>
+            <div class="gtt-info">
+              <div class="gtt-label">Stop-Loss</div>
+              <div class="gtt-val">$${(s.stop_loss_price||0).toFixed(2)} <span style="font-size:11px;color:var(--slate-400)">(${(s.stop_loss_pct||0).toFixed(1)}% below)</span></div>
+              <div class="gtt-trail">Trail $${(s.trailing_stop_dist||0).toFixed(2)} below each new high</div>
+            </div>
+          </div>
+          <div class="profit-targets">
+            <div class="pt-box"><div class="pt-label">+20% → Sell 30%</div><div class="pt-val">$${t1}</div></div>
+            <div class="pt-box"><div class="pt-label">+35% → Sell 30%</div><div class="pt-val">$${t2}</div></div>
+            <div class="pt-box"><div class="pt-label">+50% → Sell 40%</div><div class="pt-val">$${t3}</div></div>
+          </div>
+        </div>`;
+    }).join('');
+    const empty = '<p style="color:var(--slate-400);padding:16px;font-size:13px;text-align:center;">No picks yet.</p>';
+    return `
+      <div class="bucket-section" id="us-bsec-${bk}">
+        <div class="bucket-header" onclick="toggleBucket('us-bsec-${bk}')">
+          <div class="bucket-header-left">
+            <div class="bucket-header-tag">${tag}</div>
+            <div class="bucket-header-name">${label}</div>
+          </div>
+          <div class="bucket-header-right">
+            <span class="bucket-stock-count">${stocks.length} stock${stocks.length!==1?'s':''}</span>
+            <span class="bucket-chevron">▾</span>
+          </div>
+        </div>
+        <div class="bucket-body">
+          <div class="stock-list">${stocks.length ? cards : empty}</div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+function renderUsSwaps(data) {
+  const el = document.getElementById('usSwapSection');
+  if (!el) return;
+  const swaps = data?.swaps || [];
+  if (!swaps.length) {
+    el.innerHTML = '<div class="verdict-card" style="border-left:4px solid #059669"><strong>✅ No changes recommended this month</strong><p style="font-size:13px;color:var(--slate-500);margin-top:4px;">Hold your current US positions.</p></div>';
+    return;
+  }
+  el.innerHTML = swaps.filter(s => s.action !== 'KEEP').map(s => `
+    <div class="verdict-card" style="border-left:4px solid ${s.action==='SWAP'?'#d97706':'#2563eb'}">
+      <div style="font-size:12px;font-weight:700;color:var(--slate-500);text-transform:uppercase;letter-spacing:.05em">${s.action} · ${s.conviction||''}</div>
+      ${s.action==='SWAP' ? `
+        <div style="margin-top:6px;font-size:14px">
+          <span style="color:#dc2626">Sell ${s.sell_ticker}</span> (score ${s.sell_score?.toFixed(0)})
+          → <span style="color:#059669">Buy ${s.buy_ticker}</span> (score ${s.buy_score?.toFixed(0)})
+        </div>
+        <div style="font-size:12px;color:var(--slate-500);margin-top:4px">Score improvement: +${s.score_diff}</div>
+        <button onclick="markUsBought('${s.buy_ticker}','${s.sell_ticker}',${s.buy_score})" style="margin-top:10px;padding:8px 14px;background:var(--blue-600);color:white;border:none;border-radius:8px;font-size:12px;cursor:pointer;">✅ Mark as Executed on Bolero</button>
+      ` : `
+        <div style="margin-top:6px;font-size:14px;color:#059669">New Buy: ${s.buy_ticker} (score ${s.buy_score?.toFixed(0)})</div>
+        <button onclick="markUsBought('${s.buy_ticker}',null,${s.buy_score})" style="margin-top:10px;padding:8px 14px;background:var(--blue-600);color:white;border:none;border-radius:8px;font-size:12px;cursor:pointer;">✅ Mark as Executed on Bolero</button>
+      `}
+    </div>`).join('');
+}
+
+async function fetchUsPrices() {
+  if (!_usPortfolio) return;
+  try {
+    const data = await fetchData('/us/prices');
+    _usPrices = data?.prices || {};
+    let totalInv = 0, totalCur = 0, totalDay = 0, posCount = 0;
+
+    for (const bucket of Object.values(_usPortfolio)) {
+      for (const s of (bucket.stocks||[])) {
+        const tkey = s.ticker?.replace('.','_');
+        const info = _usPrices[s.ticker];
+        if (!info) continue;
+        const { price, change_pct } = info;
+        const shares   = s.approx_shares || 0;
+        const buyPrice = s.price || 0;
+        const prevClose = price / (1 + change_pct/100);
+        const pnlAbs   = (price - buyPrice) * shares;
+        const pnlPct   = buyPrice ? ((price - buyPrice)/buyPrice*100) : 0;
+        const dayInr   = (price - prevClose) * shares;
+
+        totalInv += buyPrice * shares;
+        totalCur += price * shares;
+        totalDay += dayInr;
+        posCount++;
+
+        const lpEl = document.getElementById(`us-lp-${tkey}`);
+        if (lpEl) lpEl.textContent = `$${price.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2})}`;
+
+        const lcEl = document.getElementById(`us-lc-${tkey}`);
+        if (lcEl) {
+          const dayStr = `${dayInr>=0?'+':''}$${Math.abs(dayInr).toFixed(0)}`;
+          lcEl.textContent = `${change_pct>=0?'+':''}${change_pct.toFixed(2)}%  ${dayStr}`;
+          lcEl.className = `live-change ${change_pct>0?'up':change_pct<0?'down':'flat'}`;
+        }
+        const llEl = document.getElementById(`us-ll-${tkey}`);
+        if (llEl) {
+          llEl.textContent = `${pnlPct>=0?'+':''}${pnlPct.toFixed(2)}%`;
+          llEl.className = `live-change ${pnlPct>0?'up':pnlPct<0?'down':'flat'}`;
+        }
+      }
+    }
+
+    // Update US P&L banner
+    if (posCount > 0) {
+      const allTime = totalCur - totalInv;
+      const atPct   = totalInv ? (allTime/totalInv*100) : 0;
+      const dayPct  = (totalCur-totalDay) ? (totalDay/(totalCur-totalDay)*100) : 0;
+
+      const atCard = document.getElementById('usPnlAllTime');
+      const atVal  = document.getElementById('usPnlAllTimeVal');
+      const atSub  = document.getElementById('usPnlAllTimePct');
+      if (atVal) {
+        const sign = allTime>=0?'+':'';
+        atVal.textContent = `${sign}$${Math.abs(allTime).toFixed(0)}`;
+        atVal.className   = `pnl-value ${allTime>=0?'up':'down'}`;
+        atSub.textContent = `${sign}${atPct.toFixed(2)}% on $${totalInv.toFixed(0)} invested`;
+        atCard.className  = `pnl-card ${allTime>0?'gain':allTime<0?'loss':'neutral'}`;
+      }
+
+      const dayCard = document.getElementById('usPnlDaily');
+      const dayVal  = document.getElementById('usPnlDailyVal');
+      const daySub  = document.getElementById('usPnlDailyPct');
+      if (dayVal) {
+        const sign = totalDay>=0?'+':'';
+        dayVal.textContent = `${sign}$${Math.abs(totalDay).toFixed(0)}`;
+        dayVal.className   = `pnl-value ${totalDay>=0?'up':'down'}`;
+        daySub.textContent = `${sign}${dayPct.toFixed(2)}% across ${posCount} position${posCount!==1?'s':''}`;
+        dayCard.className  = `pnl-card ${totalDay>0?'gain':totalDay<0?'loss':'neutral'}`;
+      }
+
+      // Update combined overview US card
+      const cuEl = document.getElementById('combinedUsPnl');
+      const csEl = document.getElementById('combinedUsPnlSub');
+      const cdEl = document.getElementById('combinedUsDay');
+      if (cuEl) {
+        const sign = allTime>=0?'+':'';
+        cuEl.textContent  = `${sign}$${Math.abs(allTime).toFixed(0)}`;
+        cuEl.className    = `combined-pnl ${allTime>=0?'up':'down'}`;
+        csEl.textContent  = `${sign}${atPct.toFixed(2)}% all-time`;
+        cdEl.textContent  = `Today: ${totalDay>=0?'+':''}$${Math.abs(totalDay).toFixed(0)}`;
+        cdEl.style.color  = totalDay>=0?'#059669':'#dc2626';
+      }
+    }
+  } catch(e) {
+    console.warn('US prices fetch failed:', e);
+  }
+}
+
+async function markUsBought(buyTicker, sellTicker, buyPrice) {
+  if (sellTicker) {
+    let sellStock = null;
+    for (const bucket of Object.values(_usPortfolio||{})) {
+      const s = (bucket.stocks||[]).find(s=>s.ticker===sellTicker);
+      if (s) { sellStock = s; break; }
+    }
+    _sellState = { buyTicker, sellTicker, buyPrice, sellStock, isUS: true };
+    document.getElementById('sellModalTitle').textContent = `Sell ${sellTicker} → Buy ${buyTicker}`;
+    document.getElementById('sellModalSub').textContent   = `Buy price was $${(sellStock?.price||0).toFixed(2)} · ${sellStock?.approx_shares||0} shares`;
+    document.getElementById('sellPriceInput').value = '';
+    document.querySelector('.modal-label').textContent = 'Sell Price ($)';
+    document.getElementById('sellModal').classList.remove('hidden');
+  } else {
+    if (!confirm(`Confirm: Buy ${buyTicker} on Bolero?\n\nThis will add it to your US Live Portfolio.`)) return;
+    await executeUsTrade(buyTicker, null, buyPrice, null);
+  }
+}
+
+async function executeUsTrade(buyTicker, sellTicker, buyPrice, sellPrice, sellStock) {
+  try {
+    const live  = await fetchData('/us/portfolio/live');
+    const picks = await fetchData('/us/portfolio/picks');
+
+    if (sellTicker && sellStock && sellPrice) {
+      const shares = sellStock.approx_shares || 0;
+      const buyAt  = sellStock.price || 0;
+      const pnlInr = (sellPrice - buyAt) * shares;
+      const pnlPct = buyAt ? ((sellPrice - buyAt)/buyAt*100) : 0;
+      let bucketLabel = '';
+      for (const [bk, bucket] of Object.entries(live||{})) {
+        if ((bucket.stocks||[]).find(s=>s.ticker===sellTicker)) { bucketLabel = bucket.label||bk; break; }
+      }
+      await fetch(`${apiBase}/us/portfolio/history/upload`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({
+          ticker: sellTicker, name: sellStock.name||sellTicker,
+          bucket: bucketLabel, buy_price: buyAt, sell_price: sellPrice, shares,
+          buy_date: sellStock.buy_date||'', sell_date: new Date().toISOString().split('T')[0],
+          realised_pnl_inr: parseFloat(pnlInr.toFixed(2)),
+          realised_pnl_pct: parseFloat(pnlPct.toFixed(2)),
+          reason: buyTicker ? `Replaced by ${buyTicker} — screener recommendation` : 'Manual exit',
+        }),
+      });
+    }
+
+    for (const [bk, bucket] of Object.entries(live||{})) {
+      if (sellTicker) {
+        const idx = bucket.stocks.findIndex(s=>s.ticker===sellTicker);
+        if (idx !== -1) {
+          const buyStock = picks?.[bk]?.stocks?.find(s=>s.ticker===buyTicker);
+          if (buyStock) bucket.stocks[idx] = {...buyStock};
+          else bucket.stocks.splice(idx, 1);
+        }
+      } else {
+        const buyStock = picks?.[bk]?.stocks?.find(s=>s.ticker===buyTicker);
+        if (buyStock) bucket.stocks.push({...buyStock});
+      }
+    }
+
+    const resp = await fetch(`${apiBase}/us/portfolio/live/upload`, {
+      method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(live),
+    });
+    const result = await resp.json();
+    if (result.status==='ok') {
+      alert(`✅ US Portfolio updated!\n\nAlerter will track ${buyTicker}.`);
+      loadUS();
+    } else {
+      alert('Error: ' + JSON.stringify(result));
+    }
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function loadUsPerfChart() {
+  try {
+    const data = await fetchData('/us/performance');
+    _usPerfData = (data?.history||[]).sort((a,b) => a.date<b.date?-1:1);
+    renderUsPerfChart();
+  } catch(e) { console.warn('US perf fetch failed:', e); }
+}
+
+function setUsPerfFilter(filter, btn) {
+  _usPerfFilter = filter;
+  document.querySelectorAll('#usSections .perf-filter').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  renderUsPerfChart();
+}
+
+function renderUsPerfChart() {
+  const noDataEl = document.getElementById('usPerfNoData');
+  const wrapEl   = document.querySelector('#usSections .perf-chart-wrap');
+  if (!_usPerfData.length) {
+    if (noDataEl) noDataEl.style.display='block';
+    if (wrapEl)   wrapEl.style.display='none';
+    return;
+  }
+  if (noDataEl) noDataEl.style.display='none';
+  if (wrapEl)   wrapEl.style.display='block';
+
+  const now=new Date(), cutoff=new Date(now);
+  if      (_usPerfFilter==='1W')  cutoff.setDate(now.getDate()-7);
+  else if (_usPerfFilter==='1M')  cutoff.setMonth(now.getMonth()-1);
+  else if (_usPerfFilter==='3M')  cutoff.setMonth(now.getMonth()-3);
+  else if (_usPerfFilter==='1Y')  cutoff.setFullYear(now.getFullYear()-1);
+  else                            cutoff.setFullYear(2000);
+
+  const filtered = _usPerfData.filter(r=>new Date(r.date)>=cutoff);
+  if (!filtered.length) return;
+
+  function toCumulative(arr, field) {
+    const result=[]; let cum=0;
+    for (let i=0;i<arr.length;i++) {
+      if(i===0){result.push(0);}
+      else{cum+=(arr[i][field]??0);result.push(parseFloat(cum.toFixed(2)));}
+    }
+    return result;
+  }
+
+  const labels    = filtered.map(r=>new Date(r.date).toLocaleDateString('en-IN',{day:'numeric',month:'short'}));
+  const portVals  = toCumulative(filtered,'portfolio_pct');
+  const sp500Vals = toCumulative(filtered,'sp500_pct');
+  const nasdaqVals= toCumulative(filtered,'nasdaq_pct');
+  const single    = filtered.length===1;
+
+  const ctx = document.getElementById('usPerfChart').getContext('2d');
+  if (_usPerfChart) _usPerfChart.destroy();
+
+  _usPerfChart = new Chart(ctx, {
+    type:'line',
+    data:{ labels, datasets:[
+      { label:'My Portfolio', data:portVals,   borderColor:'#2563eb', backgroundColor:'rgba(37,99,235,0.08)', borderWidth:2.5, pointRadius:single?6:(filtered.length>30?0:3), fill:true, tension:0.3 },
+      { label:'S&P 500',      data:sp500Vals,  borderColor:'#059669', backgroundColor:'transparent', borderWidth:2, pointRadius:single?6:(filtered.length>30?0:3), tension:0.3 },
+      { label:'Nasdaq',       data:nasdaqVals, borderColor:'#d97706', backgroundColor:'transparent', borderWidth:2, pointRadius:single?6:(filtered.length>30?0:3), borderDash:[4,3], tension:0.3 },
+    ]},
+    options:{ responsive:true, maintainAspectRatio:false,
+      interaction:{mode:'index',intersect:false},
+      plugins:{ legend:{display:false}, tooltip:{callbacks:{label:ctx=>`${ctx.dataset.label}: ${ctx.parsed.y>=0?'+':''}${ctx.parsed.y.toFixed(2)}%`}} },
+      scales:{ x:{grid:{display:false},ticks:{font:{size:10},maxTicksLimit:6,color:'#94a3b8'}},
+               y:{grid:{color:'rgba(0,0,0,0.05)'},ticks:{font:{size:10},color:'#94a3b8',callback:v=>(v>=0?'+':'')+v.toFixed(1)+'%'}} }
+    },
+  });
+}
+
+async function loadUsClosedPositions() {
+  const el = document.getElementById('usClosedSection');
+  try {
+    const data   = await fetchData('/us/portfolio/history');
+    const trades = data?.trades||[];
+    if (!trades.length) {
+      el.innerHTML='<p style="color:var(--slate-400);font-size:13px;padding:16px;text-align:center;">No closed US positions yet.</p>';
+      return;
+    }
+    const totalPnl = trades.reduce((s,t)=>s+(t.realised_pnl_inr||0),0);
+    const winners  = trades.filter(t=>t.realised_pnl_inr>0).length;
+    const winRate  = trades.length?Math.round(winners/trades.length*100):0;
+    const sign     = totalPnl>=0?'+':'';
+    el.innerHTML = `
+      <div class="closed-summary">
+        <div><div class="closed-summary-label">Total Realised P&L</div>
+          <div class="closed-summary-val" style="color:${totalPnl>=0?'#059669':'#dc2626'}">${sign}$${Math.abs(totalPnl).toFixed(0)}</div></div>
+        <div style="text-align:right"><div class="closed-summary-label">Win Rate</div>
+          <div class="closed-summary-val">${winRate}%</div>
+          <div style="font-size:11px;color:var(--slate-400)">${winners}/${trades.length} trades</div></div>
+      </div>
+      <div class="closed-list">${trades.map(t=>{
+        const pnl=t.realised_pnl_inr||0;const s=pnl>=0?'+':'';const cls=pnl>=0?'gain':'loss';
+        return `<div class="closed-card">
+          <div class="closed-left">
+            <div class="closed-ticker">${t.ticker||''}</div>
+            <div class="closed-name">${t.name||''}</div>
+            <div class="closed-dates">$${(t.buy_price||0).toFixed(2)} → $${(t.sell_price||0).toFixed(2)} · ${t.shares||0} sh</div>
+            <div class="closed-dates">${t.buy_date||'—'} → ${t.sell_date||'—'}</div>
+            ${t.reason?`<div class="closed-reason">${t.reason}</div>`:''}
+          </div>
+          <div class="closed-right">
+            <div class="closed-pnl ${cls}">${s}$${Math.abs(pnl).toFixed(0)}</div>
+            <div class="closed-pnl-sub">${s}${(t.realised_pnl_pct||0).toFixed(2)}%</div>
+          </div>
+        </div>`;
+      }).join('')}</div>`;
+  } catch(e) {
+    el.innerHTML='<p style="color:var(--slate-400);font-size:13px;padding:16px;">Could not load US trade history.</p>';
+  }
+}
+
+// ── Update combined India P&L ──────────────────────────────────
+// Hook into existing fetchLivePrices to also update the combined card
+const _origFetchLivePrices = fetchLivePrices;
+
+// ── INIT ──────────────────────────────────────────────────────
 loadAll().then(() => { startPricePolling(); loadPerfChart(); loadClosedPositions(); });
 </script>
 </body>
