@@ -70,6 +70,14 @@ SUBINDUSTRY_BUCKET_OVERRIDE = {
 #   - US tech PEs are naturally higher (growth premium)
 #   - US debt levels reported differently (no crore conversion)
 #   - Market cap in USD millions not INR crore
+# ── Insider/Institution Thresholds ───────────
+# Exported so screener_us.py can import them
+INSIDER_HIGH      = 10.0
+INSIDER_NORMAL    = 3.0
+INSIDER_LOW       = 1.0
+INSTITUTION_HIGH  = 70.0
+INSTITUTION_NORMAL= 40.0
+
 BUCKET_FILTERS = {
     "AI_CLOUD": {
         "min_market_cap_usd_m":  10_000,    # $10B minimum (large cap anchor)
