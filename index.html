@@ -585,6 +585,38 @@ header{
 @keyframes spin{to{transform:rotate(360deg)}}
 .empty{text-align:center;padding:32px 20px;color:var(--text3);font-size:12px;}
 .pb{padding-bottom:max(40px,env(safe-area-inset-bottom));}
+/* US Macro Signal Cards */
+.us-macro-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;padding:0 20px;}
+.us-macro-card{
+  background:rgba(255,255,255,0.04);
+  backdrop-filter:blur(16px);
+  border:1px solid rgba(255,255,255,0.07);
+  border-radius:16px;padding:14px;
+}
+.us-mc-lbl{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:6px;}
+.us-mc-val{font-family:var(--mono);font-size:15px;font-weight:600;color:var(--text);}
+.us-mc-sub{font-size:10px;margin-top:4px;}
+.us-mc-sub.up{color:var(--green);}
+.us-mc-sub.down{color:var(--red);}
+.us-mc-sub.neutral{color:var(--text3);}
+.us-mc-note{font-size:10px;color:var(--text3);margin-top:6px;line-height:1.4;}
+.us-macro-wide{
+  margin:8px 20px 0;
+  background:rgba(255,255,255,0.04);
+  border:1px solid rgba(255,255,255,0.07);
+  border-radius:16px;padding:14px 16px;
+}
+.us-mw-lbl{font-size:9px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:8px;}
+.us-mw-row{display:flex;gap:20px;flex-wrap:wrap;}
+.us-mw-item{}
+.us-mw-k{font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.07em;}
+.us-mw-v{font-family:var(--mono);font-size:13px;font-weight:600;color:var(--text);margin-top:3px;}
+.us-mw-v.up{color:var(--green);}
+.us-mw-v.down{color:var(--red);}
+.vix-badge{display:inline-block;padding:2px 10px;border-radius:20px;font-size:10px;font-weight:700;margin-top:4px;}
+.vix-badge.low{background:rgba(57,217,138,0.15);color:var(--green);}
+.vix-badge.mid{background:rgba(212,168,67,0.15);color:var(--gold2);}
+.vix-badge.high{background:rgba(255,77,106,0.15);color:var(--red);}
 </style>
 </head>
 <body>
@@ -811,6 +843,15 @@ document.addEventListener('keydown',e=>{if(document.getElementById('pinGate').cl
   <div class="closed-wrap" id="usClosed"><div class="spin-wrap"><div class="spinner"></div></div></div>
   <div class="sec"><span class="sec-lbl">Screener Recommendations</span><span class="sec-line"></span></div>
   <div class="swap-wrap" id="usSwaps"><div class="spin-wrap"><div class="spinner"></div></div></div>
+
+  <!-- US MACRO SIGNALS -->
+  <div class="sec"><span class="sec-lbl">US Macro Signals</span><span class="sec-line"></span></div>
+  <div id="usMacroSignals"><div class="spin-wrap"><div class="spinner"></div></div></div>
+
+  <!-- US NEWS SENTIMENT -->
+  <div class="sec"><span class="sec-lbl">News Sentiment</span><span class="sec-line"></span></div>
+  <div class="sig-grid" id="usNewsGrid"><div class="spin-wrap" style="grid-column:1/-1"><div class="spinner"></div></div></div>
+
   <div class="sec"><span class="sec-lbl">AI Macro Verdict</span><span class="sec-line"></span></div>
   <div id="usVerdict"><div class="spin-wrap"><div class="spinner"></div></div></div>
   <div class="pb"></div>
@@ -988,7 +1029,8 @@ async function loadUS(){
   const[port,picks,swaps]=await Promise.all([fd('/us/portfolio/live'),fd('/us/portfolio/picks'),fd('/us/portfolio/swap')]);
   if(port)usPortfolio=port;
   renderBuckets('us',usPortfolio,'usStocks','$');renderUsStats();
-  renderSwaps('usSwaps',swaps,'us');loadPerf('US');loadClosed('us');loadUsVerdict();
+  renderSwaps('usSwaps',swaps,'us');loadPerf('US');loadClosed('us');
+  loadUsMacroSignals();loadUsNewsSignals();loadUsVerdict();
   await fetchUsPrices();
 }
 
@@ -1243,10 +1285,123 @@ function renderIndVerdict(){
   renderVerdict('indVerdict',v,['BFSI_IT','DEFENCE_INFRA','GREEN_ENERGY_EV','FMCG_PHARMA'],{BFSI_IT:'BFSI + IT',DEFENCE_INFRA:'Defence + Infra',GREEN_ENERGY_EV:'Green Energy + EV',FMCG_PHARMA:'FMCG + Pharma'});
 }
 
-async function loadUsVerdict(){
+/* ═══ US MACRO SIGNALS ═══ */
+async function loadUsMacroSignals(){
+  const el=document.getElementById('usMacroSignals');
+  // Fetch market data for Fed proxy (10Y yield via TNX not in /market)
+  // We reuse /market for SP500/Nasdaq/VIX-adjacent data we already have
+  const mktData=await fd('/market');
+  const ind=mktData?.indicators||[];
+  const sp500=ind.find(i=>i.key==='sp500');
+  const usdinr=ind.find(i=>i.key==='usdinr');
+  const bitcoin=ind.find(i=>i.key==='bitcoin'); // proxy for risk appetite
+
+  // Also pull US LLM synthesis for macro context notes
+  const sigData=await fd('/signals');
+  const usMacro=sigData?.us_llm_synthesis?.payload?.macro_summary||{};
+
+  // Build macro cards from available data + LLM context
+  const cards=[
+    {
+      lbl:'Fed Rate Environment',
+      val: usMacro.fed||'No data',
+      icon:'🏦',
+      note: usMacro.fed||'Check US LLM synthesis for Fed rate context',
+      cls:'neutral',
+    },
+    {
+      lbl:'USD Strength (DXY)',
+      val: usdinr?'₹'+usdinr.price.toFixed(2)+' / USD':'—',
+      icon:'💵',
+      chg: usdinr?((usdinr.change_pct>=0?'+':'')+usdinr.change_pct.toFixed(2)+'%'):null,
+      cls: usdinr?(usdinr.change_pct>0?'up':'down'):'neutral',
+      note: usMacro.usd||'USD/INR proxy for dollar strength',
+    },
+    {
+      lbl:'S&P 500 Momentum',
+      val: sp500?sp500.price.toLocaleString('en-US',{maximumFractionDigits:0}):'—',
+      icon:'📈',
+      chg: sp500?((sp500.change_pct>=0?'+':'')+sp500.change_pct.toFixed(2)+'%'):null,
+      cls: sp500?(sp500.change_pct>0?'up':'down'):'neutral',
+      note: usMacro.us_market||'S&P 500 day change signal',
+    },
+    {
+      lbl:'Risk Appetite',
+      val: bitcoin?'$'+bitcoin.price.toLocaleString('en-US',{maximumFractionDigits:0}):'—',
+      icon:'₿',
+      chg: bitcoin?((bitcoin.change_pct>=0?'+':'')+bitcoin.change_pct.toFixed(2)+'%'):null,
+      cls: bitcoin?(bitcoin.change_pct>0?'up':'down'):'neutral',
+      note:'Bitcoin as a proxy for broader risk appetite in US markets',
+    },
+  ];
+
+  el.innerHTML=`<div class="us-macro-grid">${cards.map(c=>`
+    <div class="us-macro-card">
+      <div class="us-mc-lbl">${c.icon} ${c.lbl}</div>
+      <div class="us-mc-val">${c.val}</div>
+      ${c.chg?`<div class="us-mc-sub ${c.cls}">${c.chg}</div>`:''}
+      <div class="us-mc-note">${c.note}</div>
+    </div>`).join('')}</div>
+  ${(usMacro.inst_flows||usMacro.policy)?`<div class="us-macro-wide">
+    <div class="us-mw-lbl">Additional Context</div>
+    <div style="font-size:11px;color:var(--text2);line-height:1.6;">
+      ${usMacro.inst_flows?`<div style="margin-bottom:6px">📊 <strong>Institutional Flows:</strong> ${usMacro.inst_flows}</div>`:''}
+      ${usMacro.policy?`<div>📋 <strong>Policy:</strong> ${usMacro.policy}</div>`:''}
+    </div>
+  </div>`:''}`;
+}
+
+/* ═══ US NEWS SENTIMENT ═══ */
+async function loadUsNewsSignals(){
+  const el=document.getElementById('usNewsGrid');
   const data=await fd('/signals');
-  const v=data?.us_llm_synthesis?.payload?.verdict;
-  renderVerdict('usVerdict',v,['AI_CLOUD','SEMICONDUCTORS','HIGH_GROWTH_TECH','DEFENSIVE_DIV'],{AI_CLOUD:'AI + Cloud',SEMICONDUCTORS:'Semiconductors',HIGH_GROWTH_TECH:'High Growth Tech',DEFENSIVE_DIV:'Defensive + Dividend'});
+  // Try to get news signals from the signals endpoint
+  const usNews=data?.us_news_signals?.payload?.signals||null;
+
+  if(!usNews){
+    el.innerHTML=`<div class="empty" style="grid-column:1/-1">No US news signals yet. Run news_sentiment_us.py first.</div>`;
+    return;
+  }
+
+  const em={positive:'🟢',mild_positive:'🟡',neutral:'⚪',cautious:'🟠',negative:'🔴'};
+  const bucketLabels={AI_CLOUD:'AI + Cloud',SEMICONDUCTORS:'Semiconductors',HIGH_GROWTH_TECH:'High Growth Tech',DEFENSIVE_DIV:'Defensive + Dividend'};
+
+  el.innerHTML=Object.entries(usNews).map(([bk,sig])=>{
+    const ss=typeof sig==='string'?sig:(sig?.signal||'neutral');
+    const score=sig?.score??null;
+    const matches=sig?.matches??null;
+    const reason=sig?.reason||'';
+    return`<div class="sig-c">
+      <div class="sig-bkt">${bucketLabels[bk]||bk.replace(/_/g,' ')}</div>
+      <div class="sig-val">${em[ss]||'⚪'} <span style="font-size:12px;font-weight:700">${ss.replace(/_/g,' ')}</span></div>
+      ${score!==null?`<div style="font-size:10px;color:var(--text3);margin-top:4px">Score: ${score>=0?'+':''}${score} · ${matches} match${matches!==1?'es':''}</div>`:''}
+      ${reason&&reason.length>5?`<div class="sig-note">${reason.split(';')[0].slice(0,80)}</div>`:''}
+    </div>`;
+  }).join('');
+}
+
+async function loadUsVerdict(){
+  const el=document.getElementById('usVerdict');
+  // Try two possible signal paths for the US LLM verdict
+  const data=await fd('/signals');
+  let v=null;
+  if(data){
+    // Path 1: stored directly under us_llm_synthesis key
+    v=data?.us_llm_synthesis?.payload?.verdict||data?.us_llm_synthesis?.verdict||null;
+    // Path 2: any signal with type us_llm_synthesis
+    if(!v&&data?.signals){
+      const sig=Object.values(data.signals||{}).find(s=>s?.type==='us_llm_synthesis');
+      v=sig?.payload?.verdict||null;
+    }
+  }
+  if(!v){
+    el.innerHTML=`<div class="empty">No US AI verdict yet.<br><span style="font-size:10px;color:var(--text3)">Run llm_synthesiser_us.py to generate.</span></div>`;
+    return;
+  }
+  renderVerdict('usVerdict',v,
+    ['AI_CLOUD','SEMICONDUCTORS','HIGH_GROWTH_TECH','DEFENSIVE_DIV'],
+    {AI_CLOUD:'AI + Cloud',SEMICONDUCTORS:'Semiconductors',HIGH_GROWTH_TECH:'High Growth Tech',DEFENSIVE_DIV:'Defensive + Dividend'}
+  );
 }
 
 /* ═══ FII/DII ═══ */
