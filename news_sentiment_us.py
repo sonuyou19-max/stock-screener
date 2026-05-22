@@ -37,7 +37,7 @@ import requests
 # ─────────────────────────────────────────────
 
 IST               = ZoneInfo("Asia/Kolkata")
-NEWS_SIGNALS_FILE = os.path.join(os.path.dirname(__file__), "us_news_signals.json")
+NEWS_SIGNALS_FILE = os.path.join(os.getenv("DATA_DIR", "/data"), "us_news_signals.json")
 SCAN_DAYS         = 2
 MIN_MATCHES       = 2
 MAX_ITEMS         = 50

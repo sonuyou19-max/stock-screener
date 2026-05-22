@@ -31,7 +31,7 @@ import requests
 # ─────────────────────────────────────────────
 
 IST            = ZoneInfo("Asia/Kolkata")
-SYNTHESIS_FILE = os.path.join(os.path.dirname(__file__), "us_llm_synthesis.json")
+SYNTHESIS_FILE = os.path.join(os.getenv("DATA_DIR", "/data"), "us_llm_synthesis.json")
 ANTHROPIC_API  = "https://api.anthropic.com/v1/messages"
 MODEL          = "claude-sonnet-4-20250514"
 MAX_TOKENS     = 1000
