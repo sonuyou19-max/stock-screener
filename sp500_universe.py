@@ -128,12 +128,12 @@ BUCKET_FILTERS = {
 
 def fetch_sp500() -> pd.DataFrame:
     """
-    Fetch S&P 500 constituents from Wikipedia.
-    Caches result for CACHE_MAX_AGE days.
-    Exact equivalent of fetch_nifty500() in nse_universe.py.
-
-    Returns DataFrame with columns:
-      Symbol, Security, GICS Sector, GICS Sub-Industry
+    Fetch S&P 500 constituents.
+    Tries multiple sources in order:
+      1. Local cache (7-day)
+      2. Wikipedia via requests with browser User-Agent
+      3. Alternative: datahub.io CSV (public domain)
+      4. Alternative: GitHub-hosted CSV
     """
     # ── Check cache ───────────────────────────────────────────
     if os.path.exists(CACHE_PATH):
@@ -148,51 +148,87 @@ def fetch_sp500() -> pd.DataFrame:
             except Exception:
                 pass
 
-    # ── Fetch from Wikipedia ──────────────────────────────────
-    print("  🌐 Fetching S&P 500 universe from Wikipedia...")
-    try:
-        tables = pd.read_html(SP500_URL, attrs={"id": "constituents"})
-        df = tables[0]
-
-        # Standardise column names
+    def _standardise(df):
+        """Standardise column names to Symbol/Security/GICS Sector/GICS Sub-Industry."""
         df.columns = [c.strip() for c in df.columns]
-
-        # Rename to match our expected schema
         rename_map = {}
         for col in df.columns:
             cl = col.lower()
             if "symbol" in cl or "ticker" in cl:
                 rename_map[col] = "Symbol"
-            elif "security" in cl or "company" in cl or "name" in cl:
+            elif "security" in cl or "company" in cl or ("name" in cl and "symbol" not in cl):
                 rename_map[col] = "Security"
-            elif "gics sector" == cl or ("gics" in cl and "sector" in cl and "sub" not in cl):
+            elif ("gics sector" == cl) or ("gics" in cl and "sector" in cl and "sub" not in cl):
                 rename_map[col] = "GICS Sector"
             elif "sub-industry" in cl or "subindustry" in cl:
                 rename_map[col] = "GICS Sub-Industry"
-
         df = df.rename(columns=rename_map)
-
-        # Ensure required columns exist
         for col in ["Symbol", "Security", "GICS Sector"]:
             if col not in df.columns:
-                print(f"  ⚠️  Column '{col}' missing from Wikipedia table")
                 df[col] = "Unknown"
-
         if "GICS Sub-Industry" not in df.columns:
             df["GICS Sub-Industry"] = ""
-
-        # Clean symbols — remove dots (BRK.B → BRK-B for yfinance)
         df["Symbol"] = df["Symbol"].str.strip().str.replace(".", "-", regex=False)
-
-        # Save cache
-        df.to_csv(CACHE_PATH, index=False)
-        print(f"  ✅ S&P 500 universe fetched: {len(df)} stocks")
         return df
 
+    # ── Source 1: Wikipedia with browser User-Agent ───────────
+    print("  🌐 Fetching S&P 500 universe from Wikipedia...")
+    try:
+        import requests as _req
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
+            ),
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+        }
+        resp = _req.get(SP500_URL, headers=headers, timeout=20)
+        resp.raise_for_status()
+        tables = pd.read_html(resp.text, attrs={"id": "constituents"})
+        df = _standardise(tables[0])
+        df.to_csv(CACHE_PATH, index=False)
+        print(f"  ✅ S&P 500 universe fetched from Wikipedia: {len(df)} stocks")
+        return df
     except Exception as e:
         print(f"  ⚠️  Wikipedia fetch failed: {e}")
-        # Fallback: return empty DataFrame
-        return pd.DataFrame(columns=["Symbol", "Security", "GICS Sector", "GICS Sub-Industry"])
+
+    # ── Source 2: datahub.io public CSV ───────────────────────
+    print("  🌐 Trying datahub.io fallback...")
+    try:
+        import requests as _req
+        url = "https://pkgstore.datahub.io/core/s-and-p-500-companies/components_csv/data/components_csv.csv"
+        resp = _req.get(url, timeout=20)
+        resp.raise_for_status()
+        from io import StringIO
+        df = pd.read_csv(StringIO(resp.text))
+        df = _standardise(df)
+        df.to_csv(CACHE_PATH, index=False)
+        print(f"  ✅ S&P 500 universe fetched from datahub.io: {len(df)} stocks")
+        return df
+    except Exception as e:
+        print(f"  ⚠️  datahub.io fetch failed: {e}")
+
+    # ── Source 3: GitHub-hosted CSV ───────────────────────────
+    print("  🌐 Trying GitHub CSV fallback...")
+    try:
+        import requests as _req
+        url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
+        resp = _req.get(url, timeout=20)
+        resp.raise_for_status()
+        from io import StringIO
+        df = pd.read_csv(StringIO(resp.text))
+        df = _standardise(df)
+        df.to_csv(CACHE_PATH, index=False)
+        print(f"  ✅ S&P 500 universe fetched from GitHub: {len(df)} stocks")
+        return df
+    except Exception as e:
+        print(f"  ⚠️  GitHub CSV fetch failed: {e}")
+
+    # ── All sources failed ────────────────────────────────────
+    print("  ❌ All S&P 500 sources failed. Returning empty DataFrame.")
+    return pd.DataFrame(columns=["Symbol", "Security", "GICS Sector", "GICS Sub-Industry"])
 
 
 def map_to_buckets(df: pd.DataFrame) -> dict:
