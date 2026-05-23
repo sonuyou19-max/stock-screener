@@ -650,14 +650,21 @@ def portfolio_history_get():
 def portfolio_history_upload():
     """
     Dashboard POSTs a closed trade record here when a stock is sold.
-    Body: { ticker, name, bucket, buy_price, sell_price, shares,
-             buy_date, sell_date, realised_pnl_inr, realised_pnl_pct, reason }
+    Body: single record { ticker, ... } to append
+          OR empty list [] to clear all history
     """
     global _history_cache
     if request.method == "OPTIONS":
         return jsonify({}), 200
     try:
         rec = request.get_json(force=True)
+
+        # Support clearing: POST [] wipes history
+        if isinstance(rec, list):
+            _history_cache = rec  # [] = clear, or full list = replace
+            _save_json(HISTORY_FILE, _history_cache)
+            return jsonify({"ok": True, "total": len(_history_cache), "action": "replaced"})
+
         if not rec.get("ticker"):
             return jsonify({"error": "ticker required"}), 400
 
@@ -666,7 +673,6 @@ def portfolio_history_upload():
             _history_cache = loaded if isinstance(loaded, list) else []
 
         _history_cache.append(rec)
-        # Sort newest first
         _history_cache.sort(key=lambda r: r.get("sell_date", ""), reverse=True)
         _save_json(HISTORY_FILE, _history_cache)
         return jsonify({"ok": True, "total": len(_history_cache)})
@@ -919,6 +925,13 @@ def us_portfolio_history_upload():
         return jsonify({}), 200
     try:
         rec = request.get_json(force=True)
+
+        # Support clearing: POST [] wipes history
+        if isinstance(rec, list):
+            _us_history_cache = rec
+            _save_json(US_HISTORY_FILE, _us_history_cache)
+            return jsonify({"ok": True, "total": len(_us_history_cache), "action": "replaced"})
+
         if not rec.get("ticker"):
             return jsonify({"error": "ticker required"}), 400
         if not _us_history_cache:
