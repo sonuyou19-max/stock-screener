@@ -32,38 +32,53 @@ CACHE_MAX_AGE = 7  # days — refresh universe weekly
 # Maps S&P 500 GICS sector labels to our 4 bucket keys.
 # Exact equivalent of SECTOR_BUCKET_MAP in nse_universe.py
 SECTOR_BUCKET_MAP = {
-    # TECH — AI, Cloud, Software, Semiconductors, Electronics, Hardware, Comms
+    # TECH — full sectors that are entirely tech
     "Information Technology":   "TECH",
-    "Communication Services":   "TECH",
-    "Consumer Discretionary":   "TECH",    # includes Amazon, Netflix, etc.
 
-    # DEFENSIVE — only genuinely defensive sectors
+    # Communication Services — mostly tech (Google, Meta, Netflix)
+    # but excludes telecom/broadcasting via sub-industry override below
+    "Communication Services":   "TECH",
+
+    # Consumer Discretionary intentionally NOT mapped here —
+    # it's too broad (TJX, MCD, GM alongside AMZN).
+    # Tech-adjacent ones are caught via SUBINDUSTRY_BUCKET_OVERRIDE below.
+
+    # DEFENSIVE — genuinely defensive sectors only
     "Health Care":              "DEFENSIVE_DIV",
     "Consumer Staples":         "DEFENSIVE_DIV",
     "Financials":               "DEFENSIVE_DIV",
     "Utilities":                "DEFENSIVE_DIV",
 
-    # Excluded from both buckets — too cyclical/volatile:
-    # "Materials"   → gold miners, steel, chemicals
-    # "Energy"      → oil & gas, highly volatile
-    # "Industrials" → too broad, not defensive
-    # "Real Estate" → interest rate sensitive
+    # Excluded entirely — too cyclical/volatile:
+    # Consumer Discretionary, Materials, Energy, Industrials, Real Estate
 }
 
-# Sub-industry overrides — all chip/memory/quantum sub-industries → TECH
+# Sub-industry overrides — take priority over SECTOR_BUCKET_MAP
 SUBINDUSTRY_BUCKET_OVERRIDE = {
-    "Semiconductors":                           "TECH",
-    "Semiconductor Equipment":                  "TECH",
-    "Semiconductors & Semiconductor Equipment": "TECH",
-    "Electronic Equipment":                     "TECH",
-    "Electronic Manufacturing Services":        "TECH",
-    "Technology Hardware":                      "TECH",
-    "Computer Hardware":                        "TECH",
-    "Data Processing":                          "TECH",
-    "IT Consulting":                            "TECH",
-    "Internet Services":                        "TECH",
-    "Application Software":                     "TECH",
-    "Systems Software":                         "TECH",
+    # Semiconductors + chips + memory + equipment → TECH
+    "Semiconductors":                               "TECH",
+    "Semiconductor Equipment":                      "TECH",
+    "Semiconductors & Semiconductor Equipment":     "TECH",
+    "Electronic Equipment & Instruments":           "TECH",
+    "Electronic Manufacturing Services":            "TECH",
+    "Technology Hardware, Storage & Peripherals":   "TECH",
+    "Computer Hardware":                            "TECH",
+    "Data Processing & Outsourced Services":        "TECH",
+    "IT Consulting & Other Services":               "TECH",
+    "Internet Services & Infrastructure":           "TECH",
+    "Application Software":                         "TECH",
+    "Systems Software":                             "TECH",
+
+    # Tech-adjacent Consumer Discretionary → TECH
+    "Broadline Retail":                             "TECH",   # AMZN, EBAY
+    "Specialized Consumer Services":                "TECH",   # DASH
+
+    # Communication Services — telecom/broadcasting → exclude (not tech)
+    "Integrated Telecommunication Services":        None,
+    "Wireless Telecommunication Services":          None,
+    "Cable & Satellite":                            None,
+    "Broadcasting":                                 None,
+    "Publishing":                                   None,
 }
 
 # ── Fundamental Filters Per Bucket ───────────
@@ -194,21 +209,26 @@ def map_to_buckets(df: pd.DataFrame) -> dict:
         if not symbol:
             continue
 
-        # ── Sub-industry override first (catches semiconductors) ──
-        bucket = None
+        # ── Sub-industry override first — EXACT match, case-insensitive ──
+        # None = explicitly excluded from all buckets
+        bucket = "UNSET"
+        sub_lower = sub_industry.lower()
         for key, bk in SUBINDUSTRY_BUCKET_OVERRIDE.items():
-            if key.lower() in sub_industry.lower():
-                bucket = bk
+            if key.lower() == sub_lower:
+                bucket = bk  # could be None (explicit exclude) or a bucket key
                 break
 
-        # ── Sector-level mapping ──────────────────────────────
-        if bucket is None:
-            bucket = SECTOR_BUCKET_MAP.get(sector)
+        # ── Sector-level mapping if no sub-industry override ─────────────
+        if bucket == "UNSET":
+            bucket = SECTOR_BUCKET_MAP.get(sector)  # None if not mapped
 
-        if bucket:
+        # ── Add to bucket (skip if None = excluded) ───────────────────────
+        if bucket and bucket in buckets:
             buckets[bucket].append(symbol)
+        elif bucket is None:
+            pass  # explicitly excluded
         else:
-            unmapped.append(f"{symbol} ({sector})")
+            unmapped.append(f"{symbol} ({sector} / {sub_industry})")
 
     # Print summary
     print(f"\n  📊 Bucket mapping summary:")
