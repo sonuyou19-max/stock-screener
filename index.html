@@ -45,54 +45,51 @@ body{
 
 /* ═══ 3D ORBS BACKGROUND ═══ */
 #orbs{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden;}
-.orb{position:absolute;border-radius:50%;filter:blur(60px);}
+.orb{position:absolute;border-radius:50%;filter:blur(50px);will-change:transform;}
 .orb-1{
-  width:420px;height:420px;
+  width:380px;height:380px;
   background:radial-gradient(circle at 40% 40%,#4f6ef7 0%,#2a3a9e 50%,transparent 70%);
-  top:-80px;right:-60px;opacity:.55;
-  animation:drift1 18s ease-in-out infinite;
+  top:-80px;right:-60px;opacity:.50;
+  animation:drift1 22s ease-in-out infinite;
 }
 .orb-2{
-  width:380px;height:380px;
+  width:340px;height:340px;
   background:radial-gradient(circle at 50% 40%,#e8623a 0%,#9e3520 50%,transparent 70%);
-  bottom:-60px;left:-80px;opacity:.50;
-  animation:drift2 22s ease-in-out infinite;
+  bottom:-60px;left:-80px;opacity:.45;
+  animation:drift2 26s ease-in-out infinite;
 }
 .orb-3{
-  width:200px;height:200px;
+  width:180px;height:180px;
   background:radial-gradient(circle,#d4a843 0%,#7a5a10 60%,transparent 80%);
-  top:35%;left:5%;opacity:.45;
-  animation:drift3 15s ease-in-out infinite;
+  top:35%;left:5%;opacity:.40;
+  animation:drift3 18s ease-in-out infinite;
 }
 .orb-4{
-  width:160px;height:160px;
+  width:140px;height:140px;
   background:radial-gradient(circle,#e84393 0%,#7a1a50 60%,transparent 80%);
-  top:20%;right:8%;opacity:.40;
-  animation:drift4 20s ease-in-out infinite;
+  top:20%;right:8%;opacity:.35;
+  animation:drift4 24s ease-in-out infinite;
 }
-.orb-5{
-  width:300px;height:300px;
-  background:radial-gradient(circle,#4f6ef7 0%,transparent 70%);
-  bottom:20%;right:15%;opacity:.20;
-  animation:drift1 25s ease-in-out infinite reverse;
-}
-@keyframes drift1{0%,100%{transform:translate(0,0) scale(1)}33%{transform:translate(-40px,30px) scale(1.06)}66%{transform:translate(25px,-35px) scale(.96)}}
-@keyframes drift2{0%,100%{transform:translate(0,0) scale(1)}33%{transform:translate(35px,-25px) scale(1.04)}66%{transform:translate(-20px,30px) scale(.97)}}
-@keyframes drift3{0%,100%{transform:translate(0,0)}50%{transform:translate(20px,-40px)}}
-@keyframes drift4{0%,100%{transform:translate(0,0)}50%{transform:translate(-30px,20px)}}
+.orb-5{display:none;}/* removed — saves paint */
+@keyframes drift1{0%,100%{transform:translate(0,0)}50%{transform:translate(-30px,25px)}}
+@keyframes drift2{0%,100%{transform:translate(0,0)}50%{transform:translate(25px,-20px)}}
+@keyframes drift3{0%,100%{transform:translate(0,0)}50%{transform:translate(15px,-30px)}}
+@keyframes drift4{0%,100%{transform:translate(0,0)}50%{transform:translate(-20px,15px)}}
+/* Reduce motion for accessibility + performance */
+@media(prefers-reduced-motion:reduce){.orb{animation:none;}}
 
 /* ═══ GLASS CARD BASE ═══ */
 .glass{
   background:var(--glass);
-  backdrop-filter:blur(24px) saturate(180%);
-  -webkit-backdrop-filter:blur(24px) saturate(180%);
+  backdrop-filter:blur(12px);
+  -webkit-backdrop-filter:blur(12px);
   border:1px solid var(--border);
   border-radius:20px;
 }
 .glass2{
   background:var(--glass2);
-  backdrop-filter:blur(32px) saturate(200%);
-  -webkit-backdrop-filter:blur(32px) saturate(200%);
+  backdrop-filter:blur(6px);
+  -webkit-backdrop-filter:blur(6px);
   border:1px solid var(--border2);
   border-radius:20px;
 }
@@ -101,7 +98,7 @@ body{
 #pinGate{
   position:fixed;inset:0;z-index:9999;
   display:flex;align-items:center;justify-content:center;flex-direction:column;
-  background:rgba(5,5,8,0.92);backdrop-filter:blur(30px);
+  background:rgba(5,5,8,0.92);backdrop-filter:blur(14px);
 }
 #pinGate.hidden{display:none;}
 .pin-logo{
@@ -112,7 +109,7 @@ body{
 .pin-sub{font-size:11px;color:var(--text3);margin-bottom:48px;letter-spacing:.1em;}
 .pin-glass{
   background:rgba(255,255,255,0.05);
-  backdrop-filter:blur(30px);
+  backdrop-filter:blur(14px);
   border:1px solid rgba(255,255,255,0.14);
   border-radius:28px;padding:40px 28px;
   display:flex;flex-direction:column;align-items:center;gap:28px;
@@ -143,7 +140,7 @@ body{
 .pin-glass.shake{animation:shake .4s ease;}
 
 /* ═══ SELL MODAL ═══ */
-.modal-overlay{position:fixed;inset:0;z-index:9998;background:rgba(0,0,0,.75);backdrop-filter:blur(10px);display:flex;align-items:flex-end;justify-content:center;}
+.modal-overlay{position:fixed;inset:0;z-index:9998;background:rgba(0,0,0,.75);backdrop-filter:blur(8px);display:flex;align-items:flex-end;justify-content:center;}
 .modal-overlay.hidden{display:none;}
 .modal-sheet{
   background:rgba(12,12,20,0.97);
@@ -184,7 +181,7 @@ header{
   position:sticky;top:0;z-index:100;
   padding:12px 20px;
   display:flex;align-items:center;justify-content:space-between;
-  background:rgba(5,5,8,0.80);backdrop-filter:blur(28px);
+  background:rgba(5,5,8,0.80);backdrop-filter:blur(14px);
   border-bottom:1px solid rgba(255,255,255,0.06);
 }
 .brand{display:flex;align-items:center;gap:10px;text-decoration:none;cursor:pointer;}
@@ -262,7 +259,7 @@ header{
 @media(min-width:560px){.mkt-grid{grid-template-columns:repeat(3,1fr);}}
 .mkt-card{
   background:rgba(255,255,255,0.04);
-  backdrop-filter:blur(20px);
+  backdrop-filter:blur(8px);
   border:1px solid rgba(255,255,255,0.07);
   border-radius:16px;padding:14px 14px 12px;
   transition:border-color .2s;
@@ -279,7 +276,7 @@ header{
   border-radius:22px;padding:22px 18px 20px;
   position:relative;overflow:hidden;
   background:rgba(255,255,255,0.05);
-  backdrop-filter:blur(28px);
+  backdrop-filter:blur(14px);
   border:1px solid rgba(255,255,255,0.10);
   box-shadow:0 20px 60px rgba(0,0,0,.5);
 }
@@ -307,7 +304,7 @@ header{
   display:flex;align-items:center;justify-content:space-between;
   padding:20px 18px;border-radius:22px;cursor:pointer;
   background:rgba(255,255,255,0.05);
-  backdrop-filter:blur(20px);
+  backdrop-filter:blur(8px);
   border:1px solid rgba(255,255,255,0.09);
   transition:all .2s;
 }
@@ -324,7 +321,7 @@ header{
   position:sticky;top:57px;z-index:90;
   display:flex;align-items:center;gap:12px;
   padding:14px 20px;
-  background:rgba(5,5,8,0.85);backdrop-filter:blur(20px);
+  background:rgba(5,5,8,0.85);backdrop-filter:blur(8px);
   border-bottom:1px solid rgba(255,255,255,0.05);
 }
 .back-btn{
@@ -341,7 +338,7 @@ header{
 .pnl-c{
   border-radius:18px;padding:18px 16px;
   background:rgba(255,255,255,0.05);
-  backdrop-filter:blur(20px);
+  backdrop-filter:blur(8px);
   border:1px solid rgba(255,255,255,0.08);
 }
 .pnl-c.gain{border-left:3px solid var(--green);background:rgba(57,217,138,0.08);}
@@ -370,7 +367,7 @@ header{
 .bkt-hdr{
   display:flex;align-items:center;justify-content:space-between;
   background:rgba(255,255,255,0.04);
-  backdrop-filter:blur(16px);
+  backdrop-filter:blur(6px);
   border:1px solid rgba(255,255,255,0.07);
   border-radius:16px;padding:14px 16px;
   cursor:pointer;margin-bottom:10px;
@@ -387,7 +384,7 @@ header{
 .stock-list{display:flex;flex-direction:column;gap:10px;}
 .stock-card{
   background:rgba(255,255,255,0.05);
-  backdrop-filter:blur(24px);
+  backdrop-filter:blur(12px);
   border:1px solid rgba(255,255,255,0.09);
   border-radius:18px;padding:18px 16px;
   box-shadow:0 8px 32px rgba(0,0,0,.35);
@@ -475,7 +472,7 @@ header{
 /* Perf chart */
 .perf-card{
   margin:0 20px 16px;
-  background:rgba(255,255,255,0.04);backdrop-filter:blur(20px);
+  background:rgba(255,255,255,0.04);backdrop-filter:blur(8px);
   border:1px solid rgba(255,255,255,0.07);border-radius:20px;padding:18px 16px;
 }
 .perf-filters{display:flex;gap:6px;margin-bottom:16px;}
@@ -589,7 +586,7 @@ header{
 .us-macro-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;padding:0 20px;}
 .us-macro-card{
   background:rgba(255,255,255,0.04);
-  backdrop-filter:blur(16px);
+  backdrop-filter:blur(6px);
   border:1px solid rgba(255,255,255,0.07);
   border-radius:16px;padding:14px;
 }
@@ -659,7 +656,7 @@ header{
 </div>
 <script>
 const CORRECT_PIN='2608',SK='ea_v3';let pe='';
-(()=>{if(sessionStorage.getItem(SK)==='ok'){document.getElementById('pinGate').classList.add('hidden');initApp();}})();
+(()=>{if(sessionStorage.getItem(SK)==='ok'){document.getElementById('pinGate').classList.add('hidden');}})();
 function pinPress(d){if(pe.length>=4)return;pe+=d;ud();if(pe.length===4)setTimeout(cp,120);}
 function pinDel(){if(!pe.length)return;pe=pe.slice(0,-1);ud();document.getElementById('pinError').textContent='';}
 function ud(st){for(let i=0;i<4;i++){const el=document.getElementById('d'+i);el.className='pin-dot';if(st==='err')el.classList.add('error');else if(i<pe.length)el.classList.add('filled');}}
@@ -1531,6 +1528,12 @@ async function execUsTrade(buy,sell,bp,sp,ss){
     else alert('Error: '+JSON.stringify(res));
   }catch(e){alert('Error: '+e.message);}
 }
+// ── INIT — runs after all JS is parsed ──────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  if(sessionStorage.getItem('ea_v3')==='ok'){
+    initApp();
+  }
+});
 </script>
 </body>
 </html>
