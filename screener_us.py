@@ -732,15 +732,27 @@ def build_portfolio(budget=BUDGET):
         corr=calculate_correlation_matrix(scored_tickers)
         top=select_low_correlation_picks(df, n, corr, max_corr=0.75)
 
-        low_shares=[]
+        # Skip stocks we can't afford with whole shares
+        affordable_rows=[]
         for _,row in top.iterrows():
             p=row.get("current_price",0)
-            if p>0 and int(per//p)<1: low_shares.append(f"{row['ticker']} (${p:,.0f} > ${per:.0f} allocation)")
-        if low_shares: print(f"  ⚠️  Insufficient allocation for whole share ({bk}):"); [print(f"      {m}") for m in low_shares]
+            if p>0 and int(per//p)>=1:
+                affordable_rows.append(row)
+            else:
+                print(f"  ⚠️  Skipping {row['ticker']} (${p:,.0f} > ${per:.0f} per-stock budget)")
+
+        # Fallback: find next affordable stock from full ranked list
+        if not affordable_rows and not df.empty:
+            for _,row in df.iterrows():
+                p=row.get("current_price",0)
+                if p>0 and int(per//p)>=1:
+                    affordable_rows.append(row)
+                    print(f"  ✅ Fallback affordable pick: {row['ticker']} (${p:.0f})")
+                    break
 
         portfolio[bk]={"label":cfg["label"],"allocation_pct":round(cfg["allocation_pct"]*100,1),"total_allocation":alloc,"per_stock_allocation":per,"stocks":[]}
 
-        for _,row in top.iterrows():
+        for row in affordable_rows:
             ticker=row["ticker"]; bp=row["current_price"]
             atr=compute_atr_stops(ticker, bp, bk); time.sleep(0.2)
             shares=int(per//bp) if bp>0 else 0; alloc_usd=round(shares*bp,2)

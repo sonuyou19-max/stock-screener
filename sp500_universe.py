@@ -1,14 +1,14 @@
 """
 S&P 500 Universe — Fetcher & Bucket Mapper
 ============================================
-Fetches the live S&P 500 constituent list from Wikipedia
+Fetches the live S&P 500 constituent list from a public GitHub CSV
 and maps each stock to one of the 4 strategy buckets based on
 GICS (Global Industry Classification Standard) sector.
 
-No hardcoded tickers. Universe refreshes every time screener runs.
+No hardcoded tickers. Universe refreshes every 7 days from cache.
 Exact equivalent of nse_universe.py for the US market.
 
-Columns from Wikipedia S&P 500 table:
+Columns from GitHub CSV:
   Symbol | Security | GICS Sector | GICS Sub-Industry | ...
 """
 
@@ -24,7 +24,7 @@ from typing import Optional
 # CONFIG
 # ─────────────────────────────────────────────
 
-SP500_URL     = "https://en.wikipedia.org/wiki/List_of_S%26P_500_companies"
+GITHUB_CSV_URL = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
 CACHE_PATH    = "/tmp/sp500_cache_v2.csv"
 CACHE_MAX_AGE = 7  # days — refresh universe weekly
 
@@ -80,19 +80,20 @@ INSTITUTION_NORMAL= 40.0
 
 BUCKET_FILTERS = {
     "AI_CLOUD": {
-        "min_market_cap_usd_m":  10_000,    # $10B minimum (large cap anchor)
-        "max_pe":                80,         # Higher than India — US tech commands premium
+        "min_market_cap_usd_m":  10_000,
+        "max_pe":                80,
         "max_pb":                20.0,
         "max_52w_proximity":     0.90,
-        "min_roe":               10,         # Many cloud cos reinvest heavily
+        "min_roe":               10,
         "min_revenue_growth":    10,
-        "max_debt_equity":       300,        # yfinance reports D/E as % for US (e.g. 150 = 1.5x)
+        "max_debt_equity":       300,
         "max_peg":               3.0,
-        "min_profit_growth":     5,          # Relaxed — many AI cos still scaling
+        "min_profit_growth":     5,
+        "max_price_usd":         100,
     },
     "SEMICONDUCTORS": {
-        "min_market_cap_usd_m":  5_000,     # $5B minimum
-        "max_market_cap_usd_m":  None,      # No cap — NVDA, AVGO are mega-caps
+        "min_market_cap_usd_m":  5_000,
+        "max_market_cap_usd_m":  None,
         "max_pe":                50,
         "max_pb":                15.0,
         "max_52w_proximity":     0.90,
@@ -101,6 +102,7 @@ BUCKET_FILTERS = {
         "max_debt_equity":       200,
         "max_peg":               3.0,
         "min_profit_growth":     10,
+        "max_price_usd":         100,
     },
     "HIGH_GROWTH_TECH": {
         "min_market_cap_usd_m":  2_000,
@@ -108,9 +110,10 @@ BUCKET_FILTERS = {
         "max_pb":                15.0,
         "max_52w_proximity":     0.92,
         "min_revenue_growth":    12,
-        "max_debt_equity":       400,        # E-commerce/streaming often levered
+        "max_debt_equity":       400,
         "max_peg":               4.0,
-        "min_profit_growth":     0,          # Many growth cos barely profitable
+        "min_profit_growth":     0,
+        "max_price_usd":         100,
     },
     "DEFENSIVE_DIV": {
         "min_market_cap_usd_m":  5_000,
@@ -122,6 +125,7 @@ BUCKET_FILTERS = {
         "max_debt_equity":       250,
         "max_peg":               2.5,
         "min_profit_growth":     3,
+        "max_price_usd":         100,
     },
 }
 
@@ -129,11 +133,9 @@ BUCKET_FILTERS = {
 def fetch_sp500() -> pd.DataFrame:
     """
     Fetch S&P 500 constituents.
-    Tries multiple sources in order:
+    Sources in order:
       1. Local cache (7-day)
-      2. Wikipedia via requests with browser User-Agent
-      3. Alternative: datahub.io CSV (public domain)
-      4. Alternative: GitHub-hosted CSV
+      2. GitHub CSV (datasets/s-and-p-500-companies)
     """
     # ── Check cache ───────────────────────────────────────────
     if os.path.exists(CACHE_PATH):
@@ -171,57 +173,18 @@ def fetch_sp500() -> pd.DataFrame:
         df["Symbol"] = df["Symbol"].str.strip().str.replace(".", "-", regex=False)
         return df
 
-    # ── Source 1: Wikipedia with browser User-Agent ───────────
-    print("  🌐 Fetching S&P 500 universe from Wikipedia...")
+    # ── Fetch from GitHub CSV (reliable, no auth needed) ──────
+    print("  🌐 Fetching S&P 500 universe from GitHub CSV...")
     try:
         import requests as _req
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
-            ),
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.5",
-        }
-        resp = _req.get(SP500_URL, headers=headers, timeout=20)
-        resp.raise_for_status()
-        tables = pd.read_html(resp.text, attrs={"id": "constituents"})
-        df = _standardise(tables[0])
-        df.to_csv(CACHE_PATH, index=False)
-        print(f"  ✅ S&P 500 universe fetched from Wikipedia: {len(df)} stocks")
-        return df
-    except Exception as e:
-        print(f"  ⚠️  Wikipedia fetch failed: {e}")
-
-    # ── Source 2: datahub.io public CSV ───────────────────────
-    print("  🌐 Trying datahub.io fallback...")
-    try:
-        import requests as _req
-        url = "https://pkgstore.datahub.io/core/s-and-p-500-companies/components_csv/data/components_csv.csv"
-        resp = _req.get(url, timeout=20)
-        resp.raise_for_status()
-        from io import StringIO
-        df = pd.read_csv(StringIO(resp.text))
-        df = _standardise(df)
-        df.to_csv(CACHE_PATH, index=False)
-        print(f"  ✅ S&P 500 universe fetched from datahub.io: {len(df)} stocks")
-        return df
-    except Exception as e:
-        print(f"  ⚠️  datahub.io fetch failed: {e}")
-
-    # ── Source 3: GitHub-hosted CSV ───────────────────────────
-    print("  🌐 Trying GitHub CSV fallback...")
-    try:
-        import requests as _req
+        from io import StringIO as _SIO
         url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/main/data/constituents.csv"
         resp = _req.get(url, timeout=20)
         resp.raise_for_status()
-        from io import StringIO
-        df = pd.read_csv(StringIO(resp.text))
+        df = pd.read_csv(_SIO(resp.text))
         df = _standardise(df)
         df.to_csv(CACHE_PATH, index=False)
-        print(f"  ✅ S&P 500 universe fetched from GitHub: {len(df)} stocks")
+        print(f"  ✅ S&P 500 universe fetched: {len(df)} stocks")
         return df
     except Exception as e:
         print(f"  ⚠️  GitHub CSV fetch failed: {e}")
@@ -300,6 +263,11 @@ def passes_fundamental_filters(data: dict, bucket_key: str) -> tuple[bool, str]:
     peg         = data.get("peg_ratio")
     profit_g    = data.get("earnings_growth_pct") # already in %
     price_pos   = data.get("price_position_52w")
+
+    # ── Price cap filter (ensures whole share fits in allocation) ─
+    max_price = filters.get("max_price_usd")
+    if max_price and data.get("current_price", 0) > max_price:
+        return False, f"Price ${data['current_price']:.0f} > max ${max_price} (insufficient for whole share)"
 
     # ── Market cap filter ─────────────────────────────────────
     min_cap = filters.get("min_market_cap_usd_m", 0)
