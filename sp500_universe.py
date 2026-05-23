@@ -73,8 +73,11 @@ SUBINDUSTRY_BUCKET_OVERRIDE = {
     "Broadline Retail":                             "TECH",   # AMZN, EBAY
     "Specialized Consumer Services":                "TECH",   # DASH
 
-    # Communication Services — telecom/broadcasting → exclude (not tech)
-    "Integrated Telecommunication Services":        None,
+    # Exclude speculative Health Care sub-industries from DEFENSIVE_DIV
+    # Biotechs, drug discovery, life sciences tools = not defensive
+    "Biotechnology":                                None,
+    "Life Sciences Tools & Services":              None,
+    "Health Care Technology":                      None,
     "Wireless Telecommunication Services":          None,
     "Cable & Satellite":                            None,
     "Broadcasting":                                 None,
@@ -109,7 +112,7 @@ BUCKET_FILTERS = {
         "max_price_usd":         200,
     },
     "DEFENSIVE_DIV": {
-        "min_market_cap_usd_m":  5_000,
+        "min_market_cap_usd_m":  20_000,    # $20B+ only — large stable companies
         "max_pe":                30,
         "max_pb":                8.0,
         "max_52w_proximity":     0.90,
@@ -119,6 +122,8 @@ BUCKET_FILTERS = {
         "max_peg":               2.5,
         "min_profit_growth":     3,
         "max_price_usd":         200,
+        "min_profit_margin":     0.05,      # must have 5%+ net margin (excludes loss-makers)
+        "max_beta":              1.2,       # low volatility — true defensive characteristic
     },
 }
 
@@ -259,6 +264,20 @@ def passes_fundamental_filters(data: dict, bucket_key: str) -> tuple[bool, str]:
     peg         = data.get("peg_ratio")
     profit_g    = data.get("earnings_growth_pct") # already in %
     price_pos   = data.get("price_position_52w")
+
+    # ── Profit margin filter (excludes loss-makers / biotech) ────
+    min_pm = filters.get("min_profit_margin")
+    if min_pm is not None:
+        pm = data.get("profit_margin")
+        if pm is None or pm < min_pm:
+            return False, f"Profit margin {(pm or 0)*100:.1f}% < min {min_pm*100:.0f}%"
+
+    # ── Beta filter (ensures true defensive low-volatility) ───────
+    max_beta = filters.get("max_beta")
+    if max_beta is not None:
+        beta = data.get("beta")
+        if beta is not None and beta > max_beta:
+            return False, f"Beta {beta:.2f} > max {max_beta} (too volatile for defensive)"
 
     # ── Price cap filter (ensures whole share fits in allocation) ─
     max_price = filters.get("max_price_usd")
