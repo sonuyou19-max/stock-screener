@@ -626,7 +626,7 @@ const CORRECT_PIN='2608',SK='ea_v3';let pe='';
 function pinPress(d){if(pe.length>=4)return;pe+=d;ud();if(pe.length===4)setTimeout(cp,120);}
 function pinDel(){if(!pe.length)return;pe=pe.slice(0,-1);ud();document.getElementById('pinError').textContent='';}
 function ud(st){for(let i=0;i<4;i++){const el=document.getElementById('d'+i);el.className='pin-dot';if(st==='err')el.classList.add('error');else if(i<pe.length)el.classList.add('filled');}}
-function cp(){if(pe===CORRECT_PIN){sessionStorage.setItem(SK,'ok');document.getElementById('pinGate').classList.add('hidden');initApp();}else{ud('err');document.getElementById('pinBox').classList.add('shake');document.getElementById('pinError').textContent='Incorrect PIN';setTimeout(()=>{document.getElementById('pinBox').classList.remove('shake');pe='';ud();document.getElementById('pinError').textContent='';},650);}}
+function cp(){if(pe===CORRECT_PIN){sessionStorage.setItem(SK,'ok');document.getElementById('pinGate').classList.add('hidden');if(typeof initApp==='function')initApp();}else{ud('err');document.getElementById('pinBox').classList.add('shake');document.getElementById('pinError').textContent='Incorrect PIN';setTimeout(()=>{document.getElementById('pinBox').classList.remove('shake');pe='';ud();document.getElementById('pinError').textContent='';},650);}}
 document.addEventListener('keydown',e=>{if(document.getElementById('pinGate').classList.contains('hidden'))return;if(e.key>='0'&&e.key<='9')pinPress(e.key);else if(e.key==='Backspace')pinDel();});
 </script>
 
