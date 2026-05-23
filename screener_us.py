@@ -6,10 +6,8 @@ Every function, every pipeline step, every adjustment is identical.
 Only market-specific values change.
 
 Buckets (equiv. India buckets):
-  AI_CLOUD         30%  (equiv. BFSI_IT)
-  SEMICONDUCTORS   25%  (equiv. DEFENCE_INFRA)
-  HIGH_GROWTH_TECH 25%  (equiv. GREEN_ENERGY_EV)
-  DEFENSIVE_DIV    20%  (equiv. FMCG_PHARMA)
+  TECH             80%  — AI · Cloud · Semiconductors · Chips · Quantum
+  DEFENSIVE_DIV    20%  — Dividend + Stability
 
 Schedule: 30 2 3 * *
 """
@@ -74,62 +72,34 @@ BUDGET = 1_000
 MONTHLY_REFRESH = True
 
 ATR_MULTIPLIERS = {
-    "AI_CLOUD":         2.5,
-    "SEMICONDUCTORS":   3.0,
-    "HIGH_GROWTH_TECH": 2.5,
-    "DEFENSIVE_DIV":    2.0,
+    "TECH":          2.5,
+    "DEFENSIVE_DIV": 2.0,
 }
 ATR_PERIOD = 14
 ATR_TRAIL_MULT = 1.5
 
 MIN_ADV = {
-    "AI_CLOUD":         1_000_000,
-    "SEMICONDUCTORS":     500_000,
-    "HIGH_GROWTH_TECH":   300_000,
-    "DEFENSIVE_DIV":      200_000,
+    "TECH":          500_000,
+    "DEFENSIVE_DIV": 200_000,
 }
 MIN_ADTV_USD_M = 10.0
 
 BUCKETS = {
-    "AI_CLOUD": {
-        "label": "AI + Cloud",
-        "allocation_pct": 0.30,
-        "picks": 2,
-        "scoring_weights": {
-            "peg_score":           0.20,
-            "roe_score":           0.25,
-            "revenue_growth_score":0.20,
-            "debt_score":          0.15,
-            "momentum_score":      0.20,
-        },
-    },
-    "SEMICONDUCTORS": {
-        "label": "Semiconductors",
-        "allocation_pct": 0.25,
-        "picks": 2,
+    "TECH": {
+        "label": "🚀 Technology — AI · Cloud · Semiconductors · Chips · Quantum",
+        "allocation_pct": 0.80,   # 80% in tech
+        "picks": 4,               # up to 4 stocks (~$200 each)
         "scoring_weights": {
             "peg_score":           0.15,
             "roe_score":           0.20,
-            "revenue_growth_score":0.30,
-            "debt_score":          0.15,
+            "revenue_growth_score":0.35,
+            "debt_score":          0.10,
             "momentum_score":      0.20,
         },
     },
-    "HIGH_GROWTH_TECH": {
-        "label": "High Growth Tech",
-        "allocation_pct": 0.25,
-        "picks": 2,
-        "scoring_weights": {
-            "peg_score":           0.10,
-            "roe_score":           0.15,
-            "revenue_growth_score":0.40,
-            "debt_score":          0.10,
-            "momentum_score":      0.25,
-        },
-    },
     "DEFENSIVE_DIV": {
-        "label": "Defensive + Dividend",
-        "allocation_pct": 0.20,
+        "label": "🌾 Defensive — Dividend + Stability",
+        "allocation_pct": 0.20,   # 20% defensive
         "picks": 1,
         "scoring_weights": {
             "peg_score":           0.25,
@@ -162,8 +132,7 @@ def calculate_atr(ticker, period=ATR_PERIOD):
 
 def compute_atr_stops(ticker, buy_price, bucket_key):
     FALLBACK_PCT = {
-        "AI_CLOUD":0.12,"SEMICONDUCTORS":0.15,
-        "HIGH_GROWTH_TECH":0.15,"DEFENSIVE_DIV":0.10,
+        "TECH":0.12,"DEFENSIVE_DIV":0.10,
     }
     atr = calculate_atr(ticker)
     mult = ATR_MULTIPLIERS.get(bucket_key, 3.0)
@@ -587,7 +556,7 @@ def generate_audit_trail(row, bucket_key):
         if val and val!=0:
             direction="-" if key in ("freshness_penalty","circuit_penalty") else "+"
             adjs.append(f"{label2}: {direction}{abs(val):.0f} pts")
-    de_lim={"AI_CLOUD":300,"SEMICONDUCTORS":200,"HIGH_GROWTH_TECH":400,"DEFENSIVE_DIV":250}
+    de_lim={"TECH":400,"DEFENSIVE_DIV":250}
     limit=de_lim.get(bucket_key,300)
     if debt is not None and debt>limit*0.75: risks.append(f"D/E {debt:.0f} elevated (limit {limit})")
     pp=row.get("price_position_52w")
@@ -622,7 +591,7 @@ BUCKET_BETA_WARNING=1.8; STRESS_SCENARIO_PCT=15.0
 def assess_portfolio_volatility(portfolio):
     result={"weighted_beta":None,"beta_label":"unknown","est_max_drawdown":None,"bucket_betas":{},"warnings":[],"health_summary":""}
     total_alloc=0.0; wb=0.0
-    DEFAULTS={"AI_CLOUD":1.20,"SEMICONDUCTORS":1.30,"HIGH_GROWTH_TECH":1.15,"DEFENSIVE_DIV":0.70}
+    DEFAULTS={"TECH":1.25,"DEFENSIVE_DIV":0.70}
     for bk,bucket in portfolio.items():
         bbetas=[]
         for s in bucket.get("stocks",[]):

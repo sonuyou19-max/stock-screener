@@ -1079,9 +1079,9 @@ async function fetchUsPrices(){
 
 /* ═══ BUCKET/STOCK RENDERER ═══ */
 const IT={BFSI_IT:{min_rev:10,max_pe:35,max_pb:5,min_roe:15,max_de:2,max_peg:2.5},DEFENCE_INFRA:{min_rev:12,max_pe:50,max_pb:8,min_roe:12,max_de:1.5,max_peg:3},GREEN_ENERGY_EV:{min_rev:20,max_pe:80,max_pb:10,max_de:6},FMCG_PHARMA:{min_rev:8,max_pe:65,max_pb:12,min_roe:16,max_de:1.5}};
-const UT={AI_CLOUD:{min_rev:10,max_pe:80,max_pb:20,min_roe:10,max_de:300,max_peg:3},SEMICONDUCTORS:{min_rev:8,max_pe:50,max_pb:15,min_roe:12,max_de:200,max_peg:3},HIGH_GROWTH_TECH:{min_rev:12,max_pe:60,max_pb:15,max_de:400,max_peg:4},DEFENSIVE_DIV:{min_rev:3,max_pe:30,max_pb:8,min_roe:12,max_de:250,max_peg:2.5}};
+const UT={TECH:{min_rev:8,max_pe:80,max_pb:20,max_de:400,max_peg:4},DEFENSIVE_DIV:{min_rev:3,max_pe:30,max_pb:8,min_roe:12,max_de:250,max_peg:2.5}};
 const IBT={BFSI_IT:'BFSI + IT · 30%',DEFENCE_INFRA:'Defence + Infra · 30%',GREEN_ENERGY_EV:'Green Energy + EV · 20%',FMCG_PHARMA:'FMCG + Pharma · 20%'};
-const UBT={AI_CLOUD:'AI + Cloud · 30%',SEMICONDUCTORS:'Semiconductors · 25%',HIGH_GROWTH_TECH:'High Growth Tech · 25%',DEFENSIVE_DIV:'Defensive + Dividend · 20%'};
+const UBT={TECH:'Technology · 80%',DEFENSIVE_DIV:'Defensive + Dividend · 20%'};
 
 function mr(label,val,fmt,req,reqFmt,pw){
   const hv=val!==null&&val!==undefined&&val!=='N/A'&&!isNaN(parseFloat(val));
@@ -1371,7 +1371,7 @@ async function loadUsNewsSignals(){
   }
 
   const em={positive:'🟢',mild_positive:'🟡',neutral:'⚪',cautious:'🟠',negative:'🔴'};
-  const bucketLabels={AI_CLOUD:'AI + Cloud',SEMICONDUCTORS:'Semiconductors',HIGH_GROWTH_TECH:'High Growth Tech',DEFENSIVE_DIV:'Defensive + Dividend'};
+  const bucketLabels={TECH:'Technology',DEFENSIVE_DIV:'Defensive + Dividend'};
 
   el.innerHTML=Object.entries(usNews).map(([bk,sig])=>{
     const ss=typeof sig==='string'?sig:(sig?.signal||'neutral');
@@ -1406,8 +1406,8 @@ async function loadUsVerdict(){
     return;
   }
   renderVerdict('usVerdict',v,
-    ['AI_CLOUD','SEMICONDUCTORS','HIGH_GROWTH_TECH','DEFENSIVE_DIV'],
-    {AI_CLOUD:'AI + Cloud',SEMICONDUCTORS:'Semiconductors',HIGH_GROWTH_TECH:'High Growth Tech',DEFENSIVE_DIV:'Defensive + Dividend'}
+    ['TECH','DEFENSIVE_DIV'],
+    {TECH:'Technology',DEFENSIVE_DIV:'Defensive + Dividend'}
   );
 }
 

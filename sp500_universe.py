@@ -32,36 +32,36 @@ CACHE_MAX_AGE = 7  # days — refresh universe weekly
 # Maps S&P 500 GICS sector labels to our 4 bucket keys.
 # Exact equivalent of SECTOR_BUCKET_MAP in nse_universe.py
 SECTOR_BUCKET_MAP = {
-    # AI + Cloud (equivalent of BFSI_IT)
-    "Information Technology":           "AI_CLOUD",
-    "Communication Services":           "AI_CLOUD",
+    # TECH — AI, Cloud, Software, Semiconductors, Electronics, Hardware, Comms
+    "Information Technology":   "TECH",
+    "Communication Services":   "TECH",
+    "Consumer Discretionary":   "TECH",    # includes Amazon, Netflix, etc.
 
-    # Semiconductors (equivalent of DEFENCE_INFRA)
-    # Note: semiconductors are a sub-industry of IT
-    # We catch them via GICS Sub-Industry mapping below
-
-    # High Growth Tech (equivalent of GREEN_ENERGY_EV)
-    # Consumer Discretionary includes e-commerce, streaming, etc.
-    "Consumer Discretionary":           "HIGH_GROWTH_TECH",
-
-    # Defensive + Dividend (equivalent of FMCG_PHARMA)
-    "Health Care":                      "DEFENSIVE_DIV",
-    "Consumer Staples":                 "DEFENSIVE_DIV",
-    "Financials":                       "DEFENSIVE_DIV",
-    "Industrials":                      "DEFENSIVE_DIV",
-    "Energy":                           "DEFENSIVE_DIV",
-    "Utilities":                        "DEFENSIVE_DIV",
-    "Real Estate":                      "DEFENSIVE_DIV",
-    "Materials":                        "DEFENSIVE_DIV",
+    # DEFENSIVE — everything else
+    "Health Care":              "DEFENSIVE_DIV",
+    "Consumer Staples":         "DEFENSIVE_DIV",
+    "Financials":               "DEFENSIVE_DIV",
+    "Industrials":              "DEFENSIVE_DIV",
+    "Energy":                   "DEFENSIVE_DIV",
+    "Utilities":                "DEFENSIVE_DIV",
+    "Real Estate":              "DEFENSIVE_DIV",
+    "Materials":                "DEFENSIVE_DIV",
 }
 
-# ── GICS Sub-Industry overrides ───────────────
-# Semiconductors are part of IT sector but belong in their own bucket.
-# This mirrors how India's Defence/Infra was carved out of Capital Goods.
+# Sub-industry overrides — all chip/memory/quantum sub-industries → TECH
 SUBINDUSTRY_BUCKET_OVERRIDE = {
-    "Semiconductors":                   "SEMICONDUCTORS",
-    "Semiconductor Equipment":          "SEMICONDUCTORS",
-    "Semiconductors & Semiconductor Equipment": "SEMICONDUCTORS",
+    "Semiconductors":                           "TECH",
+    "Semiconductor Equipment":                  "TECH",
+    "Semiconductors & Semiconductor Equipment": "TECH",
+    "Electronic Equipment":                     "TECH",
+    "Electronic Manufacturing Services":        "TECH",
+    "Technology Hardware":                      "TECH",
+    "Computer Hardware":                        "TECH",
+    "Data Processing":                          "TECH",
+    "IT Consulting":                            "TECH",
+    "Internet Services":                        "TECH",
+    "Application Software":                     "TECH",
+    "Systems Software":                         "TECH",
 }
 
 # ── Fundamental Filters Per Bucket ───────────
@@ -79,41 +79,17 @@ INSTITUTION_HIGH  = 70.0
 INSTITUTION_NORMAL= 40.0
 
 BUCKET_FILTERS = {
-    "AI_CLOUD": {
-        "min_market_cap_usd_m":  10_000,
+    "TECH": {
+        "min_market_cap_usd_m":  2_000,
         "max_pe":                80,
         "max_pb":                20.0,
-        "max_52w_proximity":     0.90,
-        "min_roe":               10,
-        "min_revenue_growth":    10,
-        "max_debt_equity":       300,
-        "max_peg":               3.0,
-        "min_profit_growth":     5,
-        "max_price_usd":         100,
-    },
-    "SEMICONDUCTORS": {
-        "min_market_cap_usd_m":  5_000,
-        "max_market_cap_usd_m":  None,
-        "max_pe":                50,
-        "max_pb":                15.0,
-        "max_52w_proximity":     0.90,
-        "min_roe":               12,
-        "min_revenue_growth":    8,
-        "max_debt_equity":       200,
-        "max_peg":               3.0,
-        "min_profit_growth":     10,
-        "max_price_usd":         100,
-    },
-    "HIGH_GROWTH_TECH": {
-        "min_market_cap_usd_m":  2_000,
-        "max_pe":                60,
-        "max_pb":                15.0,
         "max_52w_proximity":     0.92,
-        "min_revenue_growth":    12,
+        "min_roe":               None,       # many growth cos reinvest
+        "min_revenue_growth":    8,
         "max_debt_equity":       400,
         "max_peg":               4.0,
-        "min_profit_growth":     0,
-        "max_price_usd":         100,
+        "min_profit_growth":     None,
+        "max_price_usd":         200,
     },
     "DEFENSIVE_DIV": {
         "min_market_cap_usd_m":  5_000,
@@ -125,7 +101,7 @@ BUCKET_FILTERS = {
         "max_debt_equity":       250,
         "max_peg":               2.5,
         "min_profit_growth":     3,
-        "max_price_usd":         100,
+        "max_price_usd":         200,
     },
 }
 
@@ -202,10 +178,8 @@ def map_to_buckets(df: pd.DataFrame) -> dict:
     Returns {bucket_key: [list of ticker strings]}
     """
     buckets = {
-        "AI_CLOUD":         [],
-        "SEMICONDUCTORS":   [],
-        "HIGH_GROWTH_TECH": [],
-        "DEFENSIVE_DIV":    [],
+        "TECH":          [],
+        "DEFENSIVE_DIV": [],
     }
 
     unmapped = []
