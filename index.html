@@ -1365,11 +1365,59 @@ function markUsBought(buy,sell,bp){if(sell){openSellModal(buy,sell,bp,true,usPor
 async function execTrade(buy,sell,bp,sp,ss){
   try{
     const live=await fd('/portfolio/live');const picks=await fd('/portfolio/picks');
-    if(sell&&ss&&sp){const sh=ss.approx_shares||0,ba=ss.price||0,pnl=(sp-ba)*sh,pct=ba?((sp-ba)/ba*100):0;let bl='';for(const[bk,b]of Object.entries(live||{})){if((b.stocks||[]).find(s=>s.ticker===sell)){bl=b.label||bk;break;}}
-      await fetch(`${API}/portfolio/history/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ticker:sell,name:ss.name||sell.replace('.NS',''),bucket:bl,buy_price:ba,sell_price:sp,shares:sh,buy_date:ss.buy_date||'',sell_date:new Date().toISOString().split('T')[0],realised_pnl_inr:parseFloat(pnl.toFixed(2)),realised_pnl_pct:parseFloat(pct.toFixed(2)),reason:buy?`Replaced by ${buy.replace('.NS','')} — screener`:'Manual exit'})});}
-    for(const[bk,b]of Object.entries(live||{})){if(sell){const idx=b.stocks.findIndex(s=>s.ticker===sell);if(idx!==-1){const bs=picks?.[bk]?.stocks?.find(s=>s.ticker===buy);if(bs)b.stocks[idx]={...bs};else b.stocks.splice(idx,1);}}else{const bs=picks?.[bk]?.stocks?.find(s=>s.ticker===buy);if(bs)b.stocks.push({...bs});}}
-    const r=await fetch(`${API}/portfolio/live/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(live)});const res=await r.json();
-    if(res.status==='ok'){alert(`✅ Updated! Alerter tracks ${buy.replace('.NS','')}.`);loadIndia();}else alert('Error: '+JSON.stringify(res));
+    if(!live||!picks){alert('Could not load portfolio data');return;}
+
+    // Record closed position
+    if(sell&&ss&&sp){
+      const sh=ss.approx_shares||0,ba=ss.price||0,pnl=(sp-ba)*sh,pct=ba?((sp-ba)/ba*100):0;
+      let bl='';
+      for(const[bk,b]of Object.entries(live||{})){if((b.stocks||[]).find(s=>s.ticker===sell)){bl=b.label||bk;break;}}
+      await fetch(`${API}/portfolio/history/upload`,{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({ticker:sell,name:ss.name||sell.replace('.NS',''),bucket:bl,buy_price:ba,sell_price:sp,shares:sh,
+          buy_date:ss.buy_date||'',sell_date:new Date().toISOString().split('T')[0],
+          realised_pnl_inr:parseFloat(pnl.toFixed(2)),realised_pnl_pct:parseFloat(pct.toFixed(2)),
+          reason:buy?`Replaced by ${buy.replace('.NS','')} — screener`:'Manual exit'})});
+    }
+
+    // Find buy stock across ALL buckets in picks
+    let buyStock=null,buyBucket=null;
+    for(const[bk,b]of Object.entries(picks||{})){
+      const found=(b.stocks||[]).find(s=>s.ticker===buy);
+      if(found){buyStock={...found};buyBucket=bk;break;}
+    }
+
+    if(sell){
+      let found=false;
+      for(const[bk,b]of Object.entries(live||{})){
+        const idx=b.stocks.findIndex(s=>s.ticker===sell);
+        if(idx!==-1){
+          if(buyStock)b.stocks[idx]=buyStock;
+          else b.stocks.splice(idx,1);
+          found=true;
+          // Auto-add any extra NEW_BUY picks from same bucket not yet in live
+          if(buyBucket){
+            const liveTickers=b.stocks.map(s=>s.ticker);
+            for(const ps of picks[buyBucket]?.stocks||[]){
+              if(!liveTickers.includes(ps.ticker)){
+                b.stocks.push({...ps});
+              }
+            }
+          }
+          break;
+        }
+      }
+      if(!found)console.warn(`Sell ticker ${sell} not found`);
+    } else if(buyStock&&buyBucket){
+      if(live[buyBucket])live[buyBucket].stocks.push(buyStock);
+      else live[buyBucket]={...picks[buyBucket],stocks:[buyStock]};
+    } else {
+      alert(`⚠️ Could not find ${buy} in screener picks.`);return;
+    }
+
+    const r=await fetch(`${API}/portfolio/live/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(live)});
+    const res=await r.json();
+    if(res.status==='ok'){alert(`✅ Updated! Alerter now tracks ${buy.replace('.NS','')}.`);loadIndia();}
+    else alert('Error: '+JSON.stringify(res));
   }catch(e){alert('Error: '+e.message);}
 }
 
@@ -1390,40 +1438,53 @@ async function execUsTrade(buy,sell,bp,sp,ss){
           reason:buy?`Replaced by ${buy} — screener`:'Manual exit'})});
     }
 
-    // Find buy stock across ALL buckets in picks (not just same bucket)
-    let buyStock=null, buyBucket=null;
+    // Find buy stock across ALL buckets in picks
+    let buyStock=null,buyBucket=null;
     for(const[bk,b]of Object.entries(picks||{})){
       const found=(b.stocks||[]).find(s=>s.ticker===buy);
       if(found){buyStock={...found};buyBucket=bk;break;}
     }
 
     if(sell){
-      // Find which bucket the sell stock is in
+      // Replace sell with buy in live
       let found=false;
       for(const[bk,b]of Object.entries(live||{})){
         const idx=b.stocks.findIndex(s=>s.ticker===sell);
         if(idx!==-1){
-          if(buyStock) b.stocks[idx]=buyStock;
+          if(buyStock)b.stocks[idx]=buyStock;
           else b.stocks.splice(idx,1);
-          found=true;break;
+          found=true;
+
+          // Also add any NEW_BUY stocks from picks that aren't in live yet for this bucket
+          if(buyBucket){
+            const liveTickers=b.stocks.map(s=>s.ticker);
+            const pickStocks=picks[buyBucket]?.stocks||[];
+            for(const ps of pickStocks){
+              if(!liveTickers.includes(ps.ticker)){
+                b.stocks.push({...ps});
+                console.log(`Auto-added NEW_BUY: ${ps.ticker} to ${buyBucket}`);
+              }
+            }
+          }
+          break;
         }
       }
-      if(!found) console.warn(`Sell ticker ${sell} not found in live portfolio`);
+      if(!found)console.warn(`Sell ticker ${sell} not found in live portfolio`);
     } else if(buyStock&&buyBucket){
-      // New buy — add to correct bucket in live
-      if(live[buyBucket]) live[buyBucket].stocks.push(buyStock);
-      else{
-        // Bucket doesn't exist in live yet — create it from picks
-        live[buyBucket]={...picks[buyBucket],stocks:[buyStock]};
-      }
+      // New buy — add to correct bucket
+      if(live[buyBucket])live[buyBucket].stocks.push(buyStock);
+      else live[buyBucket]={...picks[buyBucket],stocks:[buyStock]};
     } else {
       alert(`⚠️ Could not find ${buy} in screener picks. Run the US screener first.`);return;
     }
 
     const r=await fetch(`${API}/us/portfolio/live/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(live)});
     const res=await r.json();
-    if(res.status==='ok'){alert(`✅ Portfolio updated!\n${buy} is now being tracked.`);loadUS();}
-    else alert('Error: '+JSON.stringify(res));
+    if(res.status==='ok'){
+      const addedMsg=buyBucket&&picks[buyBucket]?.stocks?.length>1?' All bucket picks added.':'';
+      alert(`✅ Portfolio updated!${addedMsg}`);
+      loadUS();
+    } else alert('Error: '+JSON.stringify(res));
   }catch(e){alert('Error: '+e.message);}
 }
 // ── INIT — runs after all JS is parsed ──────────────────────
