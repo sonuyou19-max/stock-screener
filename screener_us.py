@@ -100,13 +100,13 @@ BUCKETS = {
     "DEFENSIVE_DIV": {
         "label": "🌾 Defensive — Dividend + Stability",
         "allocation_pct": 0.20,   # 20% defensive
-        "picks": 1,
+        "picks": 2,               # 2 stocks (~$100 each)
         "scoring_weights": {
-            "peg_score":           0.25,
-            "roe_score":           0.30,
+            "peg_score":           0.20,
+            "roe_score":           0.25,
             "revenue_growth_score":0.15,
-            "debt_score":          0.20,
-            "momentum_score":      0.10,
+            "debt_score":          0.15,
+            "momentum_score":      0.25,  # increased — avoid downtrending stocks
         },
     },
 }

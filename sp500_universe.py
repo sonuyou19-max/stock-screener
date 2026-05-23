@@ -37,15 +37,17 @@ SECTOR_BUCKET_MAP = {
     "Communication Services":   "TECH",
     "Consumer Discretionary":   "TECH",    # includes Amazon, Netflix, etc.
 
-    # DEFENSIVE — everything else
+    # DEFENSIVE — only genuinely defensive sectors
     "Health Care":              "DEFENSIVE_DIV",
     "Consumer Staples":         "DEFENSIVE_DIV",
     "Financials":               "DEFENSIVE_DIV",
-    "Industrials":              "DEFENSIVE_DIV",
-    "Energy":                   "DEFENSIVE_DIV",
     "Utilities":                "DEFENSIVE_DIV",
-    "Real Estate":              "DEFENSIVE_DIV",
-    "Materials":                "DEFENSIVE_DIV",
+
+    # Excluded from both buckets — too cyclical/volatile:
+    # "Materials"   → gold miners, steel, chemicals
+    # "Energy"      → oil & gas, highly volatile
+    # "Industrials" → too broad, not defensive
+    # "Real Estate" → interest rate sensitive
 }
 
 # Sub-industry overrides — all chip/memory/quantum sub-industries → TECH
