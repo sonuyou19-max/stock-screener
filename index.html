@@ -1261,7 +1261,7 @@ async function loadUsNewsSignals(){
   const el=document.getElementById('usNewsGrid');
   const data=await fd('/signals');
   // Try to get news signals from the signals endpoint
-  const usNews=data?.us_news_signals?.payload?.signals||null;
+  const usNews=data?.us_news_signals?.signals||data?.us_news_signals?.payload?.signals||null;
 
   if(!usNews){
     el.innerHTML=`<div class="empty" style="grid-column:1/-1">No US news signals yet. Run news_sentiment_us.py first.</div>`;
@@ -1291,8 +1291,8 @@ async function loadUsVerdict(){
   const data=await fd('/signals');
   let v=null;
   if(data){
-    // Path 1: stored directly under us_llm_synthesis key
-    v=data?.us_llm_synthesis?.payload?.verdict||data?.us_llm_synthesis?.verdict||null;
+    // API stores payload directly — no extra .payload wrapper
+    v=data?.us_llm_synthesis?.verdict||data?.us_llm_synthesis?.payload?.verdict||null;
     // Path 2: any signal with type us_llm_synthesis
     if(!v&&data?.signals){
       const sig=Object.values(data.signals||{}).find(s=>s?.type==='us_llm_synthesis');
