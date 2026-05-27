@@ -470,7 +470,7 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
     else:
         print("  Fetching Nifty 500 universe...")
         nifty_df = fetch_nifty500()
-        tickers  = nifty_df["Symbol"].tolist() if not nifty_df.empty else []
+        tickers  = nifty_df["nse_ticker"].tolist() if not nifty_df.empty else []
         print(f"  Universe: {len(tickers)} stocks")
 
     # ── Step 2: Fetch FII data once ───────────────────────────
