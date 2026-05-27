@@ -585,6 +585,73 @@ header{
 @keyframes spin{to{transform:rotate(360deg)}}
 .empty{text-align:center;padding:32px 20px;color:var(--text3);font-size:12px;}
 .pb{padding-bottom:max(40px,env(safe-area-inset-bottom));}
+/* Swing snap card */
+.swing-snap-card{
+  margin:0 20px 8px;
+  background:rgba(255,255,255,0.55);
+  backdrop-filter:blur(14px);
+  border:1px solid rgba(255,255,255,0.85);
+  border-radius:22px;padding:20px 18px;
+  border-top:2px solid var(--purple);
+  box-shadow:0 4px 20px rgba(139,159,212,0.15);
+}
+/* Swing explore button */
+.exp-btn.swing{
+  border-color:rgba(139,159,212,0.40);
+  background:rgba(139,159,212,0.10);
+}
+/* Swing candidate card */
+.sw-cand-card{
+  background:rgba(255,255,255,0.55);
+  backdrop-filter:blur(12px);
+  border:1px solid rgba(255,255,255,0.80);
+  border-radius:18px;padding:16px;
+  margin-bottom:10px;
+  border-left:3px solid var(--purple);
+}
+.sw-cand-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px;}
+.sw-tkr{font-family:var(--display);font-size:16px;font-weight:900;color:var(--text);}
+.sw-name{font-size:10px;color:var(--text3);margin-top:2px;}
+.sw-score{text-align:right;}
+.sw-score-num{font-family:var(--mono);font-size:20px;font-weight:700;color:var(--purple);}
+.sw-score-lbl{font-size:9px;color:var(--text3);text-align:right;text-transform:uppercase;letter-spacing:.07em;}
+.sw-levels{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:12px;}
+.sw-level{background:rgba(255,255,255,0.40);border:1px solid rgba(91,141,238,0.15);border-radius:10px;padding:8px 6px;text-align:center;}
+.sw-level-lbl{font-size:8px;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;}
+.sw-level-val{font-family:var(--mono);font-size:11px;font-weight:600;margin-top:3px;}
+.sw-level-val.stop{color:#c04040;}
+.sw-level-val.t1{color:#2d8a6a;}
+.sw-level-val.t2{color:#2d6a9a;}
+.sw-signals{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px;}
+.sw-sig{font-size:9px;font-weight:600;padding:3px 9px;border-radius:20px;text-transform:uppercase;letter-spacing:.05em;}
+.sw-sig.pass{background:rgba(76,175,138,0.15);color:#2d7a5a;border:1px solid rgba(76,175,138,0.25);}
+.sw-sig.fail{background:rgba(255,255,255,0.30);color:var(--text3);border:1px solid rgba(0,0,0,0.06);}
+.sw-rr{font-size:10px;color:var(--text2);display:flex;align-items:center;gap:6px;}
+.sw-enter-btn{
+  display:block;width:100%;padding:10px;text-align:center;
+  background:rgba(139,159,212,0.15);border:1px solid rgba(139,159,212,0.35);
+  border-radius:12px;color:var(--purple2);font-size:12px;font-weight:600;
+  cursor:pointer;font-family:var(--sans);margin-top:10px;
+}
+/* Swing open position card */
+.sw-pos-card{
+  background:rgba(255,255,255,0.55);
+  backdrop-filter:blur(12px);
+  border:1px solid rgba(255,255,255,0.80);
+  border-radius:18px;padding:16px;
+  margin-bottom:10px;
+  border-left:3px solid var(--blue2);
+}
+.sw-exit-btn{
+  display:block;width:100%;padding:10px;text-align:center;
+  background:rgba(224,112,112,0.12);border:1px solid rgba(224,112,112,0.30);
+  border-radius:12px;color:#b84040;font-size:12px;font-weight:600;
+  cursor:pointer;font-family:var(--sans);margin-top:10px;
+}
+.sw-conv{font-size:9px;font-weight:700;padding:3px 10px;border-radius:20px;text-transform:uppercase;letter-spacing:.06em;}
+.sw-conv.HIGH{background:rgba(76,175,138,0.15);color:#2d7a5a;}
+.sw-conv.MEDIUM{background:rgba(232,184,75,0.15);color:#8a6800;}
+.sw-conv.LOW{background:rgba(139,159,212,0.15);color:var(--purple2);}
 </style>
 <body>
 
@@ -706,6 +773,24 @@ document.addEventListener('keydown',e=>{if(document.getElementById('pinGate').cl
     </div>
   </div>
 
+  <!-- SWING SNAPSHOT -->
+  <div class="sec"><span class="sec-lbl">Swing Trading</span><span class="sec-line"></span></div>
+  <div class="swing-snap-card" id="swingSnapCard">
+    <div style="display:flex;align-items:center;justify-content:space-between;">
+      <div>
+        <div style="font-size:18px;margin-bottom:6px;">⚡</div>
+        <div class="snap-mkt">India · NSE · 1-2 weeks</div>
+        <div class="snap-pnl neu" id="snapSwingPnl">—</div>
+        <div class="snap-pct neu" id="snapSwingPct" style="font-size:11px;margin-top:4px;">No open positions</div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-family:var(--mono);font-size:22px;font-weight:700;color:var(--purple)" id="snapSwingCandidates">—</div>
+        <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin-top:2px;">Today's picks</div>
+        <div style="font-size:10px;color:var(--text2);margin-top:6px;" id="snapSwingScan">Waiting for scan…</div>
+      </div>
+    </div>
+  </div>
+
   <!-- EXPLORE -->
   <div class="sec"><span class="sec-lbl">Explore</span><span class="sec-line"></span></div>
   <div class="explore-grid">
@@ -715,6 +800,12 @@ document.addEventListener('keydown',e=>{if(document.getElementById('pinGate').cl
     </button>
     <button class="exp-btn us" onclick="showUS()">
       <div><span class="exp-emoji">🇺🇸</span><div class="exp-name">US</div><div class="exp-sub">Bolero · $1,000</div></div>
+      <span class="exp-arrow">›</span>
+    </button>
+  </div>
+  <div style="padding:0 20px 48px;">
+    <button class="exp-btn swing" onclick="showSwing()" style="width:100%;">
+      <div><span class="exp-emoji">⚡</span><div class="exp-name">Swing Trading</div><div class="exp-sub">India · NSE · 1-2 weeks · Technical signals</div></div>
       <span class="exp-arrow">›</span>
     </button>
   </div>
@@ -819,6 +910,28 @@ document.addEventListener('keydown',e=>{if(document.getElementById('pinGate').cl
   <div class="pb"></div>
 </div>
 
+<!-- ══════════ SWING VIEW ══════════ -->
+<div id="swingView" class="view">
+  <div class="back-bar">
+    <button class="back-btn" onclick="showHome()">‹</button>
+    <span style="font-size:18px;">⚡</span>
+    <span class="back-ttl">Swing Trading — India NSE</span>
+  </div>
+  <div class="stats-row">
+    <div class="stat-c"><div class="stat-lbl">Open Positions</div><div class="stat-val" id="sw-openCount">—</div><div class="stat-sub">Active swings</div></div>
+    <div class="stat-c"><div class="stat-lbl">Today's P&L</div><div class="stat-val" id="sw-dayPnl">—</div><div class="stat-sub">Open positions</div></div>
+    <div class="stat-c"><div class="stat-lbl">Win Rate</div><div class="stat-val" id="sw-winRate">—</div><div class="stat-sub">Closed trades</div></div>
+    <div class="stat-c"><div class="stat-lbl">Today's Picks</div><div class="stat-val" id="sw-candCount">—</div><div class="stat-sub" id="sw-scanTime">Last scan: —</div></div>
+  </div>
+  <div class="sec"><span class="sec-lbl">Open Positions</span><span class="sec-line"></span></div>
+  <div style="padding:0 20px;" id="swOpenPositions"><div class="spin-wrap"><div class="spinner"></div></div></div>
+  <div class="sec"><span class="sec-lbl">Today's Candidates</span><span class="sec-line"></span></div>
+  <div style="padding:0 20px;" id="swCandidates"><div class="spin-wrap"><div class="spinner"></div></div></div>
+  <div class="sec"><span class="sec-lbl">Closed Swing Trades</span><span class="sec-line"></span></div>
+  <div class="closed-wrap" id="swClosed"><div class="spin-wrap"><div class="spinner"></div></div></div>
+  <div class="pb"></div>
+</div>
+
 </div><!-- #app -->
 
 <script>
@@ -841,7 +954,7 @@ async function fd(ep){
 /* ═══ ROUTING ═══ */
 let _cv='home';
 function showView(id){
-  ['homeView','indView','usView'].forEach(v=>{const el=document.getElementById(v);el.classList.remove('active');});
+  ['homeView','indView','usView','swingView'].forEach(v=>{const el=document.getElementById(v);if(el)el.classList.remove('active');});
   const el=document.getElementById(id);el.classList.add('active');
   _cv=id;window.scrollTo(0,0);
 }
@@ -850,13 +963,14 @@ function showIndia(){showView('indView');if(!_iL){loadIndia();_iL=true;}else fet
 function showUS(){showView('usView');if(!_uL){loadUS();_uL=true;}else fetchUsPrices();}
 function refreshAll(){
   document.getElementById('lastUpdated').textContent='Refreshing…';
-  fetchMarket();fetchIndSnap();fetchUsSnap();
+  fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();
   if(_cv==='indView')loadIndia();
   else if(_cv==='usView')loadUS();
+  else if(_cv==='swingView')loadSwing();
 }
 
 /* ═══ INIT ═══ */
-function initApp(){showView('homeView');fetchMarket();fetchIndSnap();fetchUsSnap();setInterval(fetchMarket,5*60*1000);}
+function initApp(){showView('homeView');fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();setInterval(fetchMarket,5*60*1000);}
 
 /* ═══ MARKET DATA ═══ */
 async function fetchMarket(){
@@ -1496,6 +1610,286 @@ document.addEventListener('DOMContentLoaded', () => {
     initApp();
   }
 });
+
+/* ═══ SWING STATE ═══ */
+let _swL=false, _swCandidates=null, _swLive=[], _swHistory=null;
+
+/* ═══ SWING ROUTING ═══ */
+function showSwing(){
+  ['homeView','indView','usView','swingView'].forEach(v=>{
+    const el=document.getElementById(v);
+    if(el) el.classList.remove('active');
+  });
+  const el=document.getElementById('swingView');
+  el.classList.add('active');
+  _cv='swingView'; window.scrollTo(0,0);
+  if(!_swL){loadSwing();_swL=true;}else fetchSwingPrices();
+}
+
+/* ═══ SWING DATA LOADER ═══ */
+async function loadSwing(){
+  const[live, cands, hist] = await Promise.all([
+    fd('/swing/live'),
+    fd('/swing/candidates'),
+    fd('/swing/history'),
+  ]);
+  _swLive    = Array.isArray(live) ? live : [];
+  _swCandidates = cands;
+  _swHistory = hist;
+  renderSwingStats();
+  renderSwingOpen();
+  renderSwingCandidates();
+  renderSwingClosed();
+  fetchSwingPrices();
+  loadSwingSnap();
+}
+
+/* ═══ SWING HOME SNAPSHOT ═══ */
+async function loadSwingSnap(){
+  const[live,cands]=await Promise.all([fd('/swing/live'),fd('/swing/candidates')]);
+  const positions=Array.isArray(live)?live:[];
+  const count=cands?.total_candidates||cands?.candidates?.length||0;
+  const scanDate=cands?.scan_date||cands?.generated_at||'';
+
+  document.getElementById('snapSwingCandidates').textContent=count>0?count:'—';
+  document.getElementById('snapSwingScan').textContent=scanDate?`Scanned ${scanDate.split(' ')[0]}`:'Run swing_scanner.py';
+
+  if(positions.length===0){
+    document.getElementById('snapSwingPnl').textContent='₹0';
+    document.getElementById('snapSwingPnl').className='snap-pnl neu';
+    document.getElementById('snapSwingPct').textContent='No open positions';
+    return;
+  }
+  document.getElementById('snapSwingPnl').textContent=`${positions.length} open`;
+  document.getElementById('snapSwingPct').textContent='Tap to view positions';
+}
+
+/* ═══ SWING STATS ═══ */
+function renderSwingStats(){
+  document.getElementById('sw-openCount').textContent=_swLive.length||'0';
+  const trades=_swHistory?.trades||[];
+  const winners=_swHistory?.winners||0;
+  const wr=trades.length?Math.round(winners/trades.length*100)+'%':'—';
+  document.getElementById('sw-winRate').textContent=wr;
+  const count=_swCandidates?.total_candidates||_swCandidates?.candidates?.length||0;
+  document.getElementById('sw-candCount').textContent=count||'—';
+  const scanAt=_swCandidates?.generated_at||_swCandidates?.scan_date||'';
+  document.getElementById('sw-scanTime').textContent=scanAt?`Scanned ${scanAt.split(' ')[0]}`:'—';
+}
+
+/* ═══ SWING OPEN POSITIONS ═══ */
+function renderSwingOpen(){
+  const el=document.getElementById('swOpenPositions');
+  if(!_swLive.length){
+    el.innerHTML=`<div class="empty">No open swing positions.<br><span style="font-size:11px;color:var(--text3)">Enter a trade by tapping "Enter Trade" on a candidate below.</span></div>`;
+    return;
+  }
+  el.innerHTML=_swLive.map((p,i)=>{
+    const bp=p.buy_price||p.price||0;
+    const t1=p.target1||0, t2=p.target2||0;
+    const sl=p.stop_loss||p.stop_loss_price||0;
+    const trail=p.trailing_stop||p.trailing_stop_dist||0;
+    const edate=p.entry_date||p.buy_date||'';
+    const key=(p.ticker||'').replace('.','_');
+    return`<div class="sw-pos-card">
+      <div class="sc-top">
+        <div>
+          <div class="sw-tkr">${(p.ticker||'').replace('.NS','')}</div>
+          <div class="sw-name">${p.name||''}</div>
+          ${edate?`<div style="font-size:10px;color:var(--text3);margin-top:3px;">Entered ${edate}</div>`:''}
+        </div>
+        <div class="sc-score">
+          <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--blue2)" id="swlp-${key}">—</div>
+          <div class="sc-score-lbl">Current</div>
+        </div>
+      </div>
+      <div class="sc-metrics">
+        <div><div class="sc-m-lbl">Buy Price</div><div class="sc-m-val">₹${bp.toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
+        <div><div class="sc-m-lbl">Today P&L</div><div class="sc-m-val" id="swlc-${key}">—</div></div>
+        <div><div class="sc-m-lbl">My P&L</div><div class="sc-m-val" id="swll-${key}">—</div></div>
+      </div>
+      <div class="sw-levels">
+        <div class="sw-level"><div class="sw-level-lbl">🛑 Stop</div><div class="sw-level-val stop">₹${sl.toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
+        <div class="sw-level"><div class="sw-level-lbl">🎯 T1 +5%</div><div class="sw-level-val t1">₹${t1.toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
+        <div class="sw-level"><div class="sw-level-lbl">🎯 T2 +8%</div><div class="sw-level-val t2">₹${t2.toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
+      </div>
+      ${trail?`<div style="font-size:10px;color:var(--text2);margin-bottom:10px;">📈 Trail ₹${trail.toFixed(2)} below each new high</div>`:''}
+      <button class="sw-exit-btn" onclick="exitSwingTrade('${p.ticker}','${bp}')">🚪 Mark as Exited on Kite</button>
+    </div>`;
+  }).join('');
+}
+
+/* ═══ SWING CANDIDATES ═══ */
+function renderSwingCandidates(){
+  const el=document.getElementById('swCandidates');
+  const candidates=_swCandidates?.candidates||[];
+  if(!candidates.length){
+    el.innerHTML=`<div class="empty">No candidates today.<br><span style="font-size:11px;color:var(--text3)">Run swing_scanner.py after market close (8 PM IST).</span></div>`;
+    return;
+  }
+  el.innerHTML=candidates.map((c,i)=>{
+    const sigs=c.signals||{};
+    const sigPills=Object.entries(sigs).map(([k,v])=>
+      `<span class="sw-sig ${v.pass?'pass':'fail'}">${v.pass?'✓':''} ${k}</span>`
+    ).join('');
+    const conv=c.conviction||'LOW';
+    return`<div class="sw-cand-card">
+      <div class="sw-cand-top">
+        <div>
+          <div class="sw-tkr">${(c.ticker||'').replace('.NS','')}</div>
+          <div class="sw-name">${c.name||''}</div>
+          <div style="margin-top:6px;"><span class="sw-conv ${conv}">${conv}</span></div>
+        </div>
+        <div class="sw-score">
+          <div class="sw-score-num">${c.score||0}/6</div>
+          <div class="sw-score-lbl">Signals</div>
+        </div>
+      </div>
+      <div class="sw-levels">
+        <div class="sw-level">
+          <div class="sw-level-lbl">Entry</div>
+          <div class="sw-level-val" style="color:var(--text)">₹${(c.current_price||0).toLocaleString('en-IN',{minimumFractionDigits:2})}</div>
+        </div>
+        <div class="sw-level">
+          <div class="sw-level-lbl">🛑 Stop</div>
+          <div class="sw-level-val stop">₹${(c.stop_loss||0).toLocaleString('en-IN',{minimumFractionDigits:2})}<br><span style="font-size:8px;color:#c04040">${c.stop_pct||0}% below</span></div>
+        </div>
+        <div class="sw-level">
+          <div class="sw-level-lbl">R/R Ratio</div>
+          <div class="sw-level-val" style="color:var(--purple2)">${(c.rr_ratio||0).toFixed(2)}×</div>
+        </div>
+      </div>
+      <div class="sw-levels">
+        <div class="sw-level"><div class="sw-level-lbl">T1 +5%</div><div class="sw-level-val t1">₹${(c.target1||0).toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
+        <div class="sw-level"><div class="sw-level-lbl">T2 +8%</div><div class="sw-level-val t2">₹${(c.target2||0).toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
+        <div class="sw-level"><div class="sw-level-lbl">Max days</div><div class="sw-level-val" style="color:var(--text2)">${c.max_days||10}d</div></div>
+      </div>
+      <div class="sw-signals">${sigPills}</div>
+      <div class="sw-rr">
+        <span>RSI: ${(c.rsi||0).toFixed(0)}</span>
+        <span>·</span>
+        <span>Vol: ${(c.vol_ratio||0).toFixed(1)}×</span>
+        <span>·</span>
+        <span>ATR: ${c.atr_source||'ATR'}</span>
+        ${c.adtv_cr?`<span>· ADTV ₹${c.adtv_cr}Cr</span>`:''}
+      </div>
+      <button class="sw-enter-btn" onclick="enterSwingTrade(${JSON.stringify(c).replace(/"/g,'&quot;')})">✅ Enter Trade on Kite</button>
+    </div>`;
+  }).join('');
+}
+
+/* ═══ SWING CLOSED ═══ */
+function renderSwingClosed(){
+  const el=document.getElementById('swClosed');
+  const trades=_swHistory?.trades||[];
+  if(!trades.length){el.innerHTML=`<div class="empty">No closed swing trades yet.</div>`;return;}
+  const totalPnl=_swHistory?.total_pnl||0;
+  const winners=_swHistory?.winners||0;
+  const wr=trades.length?Math.round(winners/trades.length*100):0;
+  const sign=totalPnl>=0?'+':'';
+  el.innerHTML=`<div class="cs-summary">
+    <div><div class="cs-lbl">Total Swing P&L</div><div class="cs-val ${totalPnl>=0?'up':'down'}">${sign}₹${Math.abs(totalPnl).toLocaleString('en-IN',{maximumFractionDigits:0})}</div></div>
+    <div style="text-align:right"><div class="cs-lbl">Win Rate</div><div class="cs-val" style="color:var(--text)">${wr}%</div><div style="font-size:10px;color:var(--text3)">${winners}/${trades.length} trades</div></div>
+  </div>
+  ${trades.map(t=>{const p=t.realised_pnl_inr||0,s=p>=0?'+':'',c=p>=0?'up':'down';return`<div class="cc">
+    <div>
+      <div class="cc-tkr">${(t.ticker||'').replace('.NS','')}</div>
+      <div class="cc-name">${t.name||''}</div>
+      <div class="cc-dates">₹${(t.buy_price||0).toFixed(2)} → ₹${(t.sell_price||0).toFixed(2)} · ${t.shares||0} sh</div>
+      <div class="cc-dates">${t.entry_date||t.buy_date||'—'} → ${t.exit_date||t.sell_date||'—'}</div>
+      ${t.exit_reason?`<div class="cc-reason">${t.exit_reason.replace(/_/g,' ')}</div>`:''}
+    </div>
+    <div><div class="cc-pnl ${c}">${s}₹${Math.abs(p).toLocaleString('en-IN',{maximumFractionDigits:0})}</div><div class="cc-pct">${s}${(t.realised_pnl_pct||0).toFixed(2)}%</div></div>
+  </div>`;}).join('')}`;
+}
+
+/* ═══ SWING LIVE PRICES ═══ */
+async function fetchSwingPrices(){
+  if(!_swLive.length)return;
+  const data=await fd('/swing/prices');
+  if(!data?.prices)return;
+  let dayPnl=0,cnt=0;
+  for(const pos of _swLive){
+    const key=(pos.ticker||'').replace('.','_');
+    const info=data.prices[pos.ticker];
+    if(!info)continue;
+    const bp=pos.buy_price||pos.price||0;
+    const {price,change_pct}=info;
+    const prev=price/(1+(change_pct||0)/100);
+    const di=(price-prev)*(pos.shares||1);
+    const pp=bp?((price-bp)/bp*100):0;
+    dayPnl+=di;cnt++;
+    const lpEl=document.getElementById(`swlp-${key}`);if(lpEl)lpEl.textContent='₹'+price.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+    const lcEl=document.getElementById(`swlc-${key}`);if(lcEl){lcEl.textContent=`${change_pct>=0?'+':''}${change_pct.toFixed(2)}%`;lcEl.className=`sc-m-val ${change_pct>=0?'up':'down'}`;}
+    const llEl=document.getElementById(`swll-${key}`);if(llEl){llEl.textContent=`${pp>=0?'+':''}${pp.toFixed(2)}%`;llEl.className=`sc-m-val ${pp>=0?'up':'down'}`;}
+  }
+  if(cnt){
+    const ds=dayPnl>=0?'+':'';
+    document.getElementById('sw-dayPnl').textContent=`${ds}₹${Math.abs(dayPnl).toLocaleString('en-IN',{maximumFractionDigits:0})}`;
+    document.getElementById('sw-dayPnl').className=`stat-val ${dayPnl>=0?'up':'down'}`;
+  }
+}
+
+/* ═══ SWING TRADE ENTRY ═══ */
+async function enterSwingTrade(candidate){
+  const ticker=candidate.ticker||'';
+  const name=candidate.name||ticker.replace('.NS','');
+  if(!confirm(`Enter swing trade:\n${ticker.replace('.NS','')} at ₹${candidate.current_price}\nStop: ₹${candidate.stop_loss} | T1: ₹${candidate.target1} | T2: ₹${candidate.target2}`))return;
+  const position={
+    ticker,name,
+    buy_price:   candidate.current_price,
+    price:       candidate.current_price,
+    stop_loss:   candidate.stop_loss,
+    stop_loss_price: candidate.stop_loss,
+    stop_pct:    candidate.stop_pct,
+    target1:     candidate.target1,
+    target2:     candidate.target2,
+    trailing_stop: candidate.trailing_stop||candidate.atr,
+    rr_ratio:    candidate.rr_ratio,
+    conviction:  candidate.conviction,
+    score:       candidate.score,
+    atr:         candidate.atr,
+    entry_date:  new Date().toISOString().split('T')[0],
+    buy_date:    new Date().toISOString().split('T')[0],
+    shares:      1,
+    signals:     candidate.signals,
+  };
+  const r=await fetch(`${API}/swing/live/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(position)});
+  const res=await r.json();
+  if(res.status==='ok'||res.positions>=0){
+    alert(`✅ ${ticker.replace('.NS','')} added to swing positions!\nSet GTT stop at ₹${candidate.stop_loss} on Kite.`);
+    _swL=false;loadSwing();
+  }else alert('Error: '+JSON.stringify(res));
+}
+
+/* ═══ SWING TRADE EXIT ═══ */
+async function exitSwingTrade(ticker,buyPrice){
+  const price=prompt(`Exit price for ${ticker.replace('.NS','')}?\n(Leave blank for current market price)`);
+  if(price===null)return; // cancelled
+  const sellPrice=parseFloat(price)||0;
+  if(!sellPrice||isNaN(sellPrice)||sellPrice<=0){alert('Please enter a valid price');return;}
+  const pos=_swLive.find(p=>p.ticker===ticker);
+  if(!pos){alert('Position not found');return;}
+  const bp=pos.buy_price||pos.price||0;
+  const sh=pos.shares||1;
+  const pnl=(sellPrice-bp)*sh;
+  const pct=bp?((sellPrice-bp)/bp*100):0;
+  // Record to history
+  await fetch(`${API}/swing/history/upload`,{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({ticker,name:pos.name||ticker.replace('.NS',''),
+      buy_price:bp,sell_price:sellPrice,shares:sh,
+      entry_date:pos.entry_date||pos.buy_date||'',
+      exit_date:new Date().toISOString().split('T')[0],
+      realised_pnl_inr:parseFloat(pnl.toFixed(2)),
+      realised_pnl_pct:parseFloat(pct.toFixed(2)),
+      exit_reason:'MANUAL_EXIT',
+    })});
+  // Remove from live
+  const newLive=_swLive.filter(p=>p.ticker!==ticker);
+  await fetch(`${API}/swing/live/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(newLive)});
+  alert(`✅ ${ticker.replace('.NS','')} closed.\nP&L: ${pnl>=0?'+':''}₹${Math.abs(pnl).toFixed(0)} (${pct>=0?'+':''}${pct.toFixed(2)}%)`);
+  _swL=false;loadSwing();
+}
 </script>
 </body>
 </html>
