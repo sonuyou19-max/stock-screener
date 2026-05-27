@@ -34,12 +34,21 @@ _us_picks_cache:   dict = {}
 _us_perf_cache:    list = []
 _us_history_cache: list = []
 
+# ── Swing trading caches ─────────────────────────────────────────
+_swing_candidates_cache: dict = {}   # today's scan candidates
+_swing_live_cache:       list = []   # open swing positions
+_swing_history_cache:    list = []   # closed swing trades
+
 PERF_FILE      = os.path.join(os.getenv("DATA_DIR", "/data"), "performance_history.json")
 HISTORY_FILE   = os.path.join(os.getenv("DATA_DIR", "/data"), "trade_history.json")
 US_LIVE_FILE   = os.path.join(os.getenv("DATA_DIR", "/data"), "us_portfolio_live.json")
 US_PICKS_FILE  = os.path.join(os.getenv("DATA_DIR", "/data"), "us_portfolio_picks.json")
 US_PERF_FILE   = os.path.join(os.getenv("DATA_DIR", "/data"), "us_performance_history.json")
 US_HISTORY_FILE= os.path.join(os.getenv("DATA_DIR", "/data"), "us_trade_history.json")
+
+SWING_CANDIDATES_FILE = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_candidates.json")
+SWING_LIVE_FILE       = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_live.json")
+SWING_HISTORY_FILE    = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_history.json")
 
 
 def _load_json(path: str):
@@ -226,7 +235,7 @@ def fiidii():
 def signals():
     result = {}
     for name in ["policy_signals", "news_signals", "llm_synthesis",
-                  "us_news_signals", "us_llm_synthesis"]:
+                  "us_news_signals", "us_llm_synthesis", "swing_candidates"]:
         # Try in-memory cache first
         if name in _signals_cache:
             result[name] = _signals_cache[name]
@@ -969,6 +978,199 @@ def index():
             "GET  /health",
         ],
     })
+
+
+
+# ═══════════════════════════════════════════════════════════
+# SWING TRADING ENDPOINTS
+# ═══════════════════════════════════════════════════════════
+
+# ── GET /swing/candidates ────────────────────────────────────────
+@app.route("/swing/candidates", methods=["GET", "OPTIONS"])
+def swing_candidates_get():
+    """Today's swing trade candidates from swing_scanner.py."""
+    global _swing_candidates_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    if not _swing_candidates_cache:
+        loaded = _load_json(SWING_CANDIDATES_FILE)
+        if loaded:
+            _swing_candidates_cache = loaded
+    return jsonify(_sanitise(_swing_candidates_cache or {
+        "candidates": [],
+        "generated_at": None,
+        "total_candidates": 0,
+    }))
+
+
+# ── POST /swing/candidates/upload ────────────────────────────────
+@app.route("/swing/candidates/upload", methods=["POST", "OPTIONS"])
+def swing_candidates_upload():
+    """swing_scanner.py posts today's candidates here."""
+    global _swing_candidates_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        data = request.get_json(force=True)
+        # Accept direct payload or signals-style {type, payload}
+        if "type" in data and "payload" in data:
+            data = data["payload"]
+        _swing_candidates_cache = data
+        _save_json(SWING_CANDIDATES_FILE, data)
+        count = len(data.get("candidates", []))
+        return jsonify({"status": "ok", "candidates": count})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── GET /swing/live ──────────────────────────────────────────────
+@app.route("/swing/live", methods=["GET", "OPTIONS"])
+def swing_live_get():
+    """Currently open swing positions (entered on Kite)."""
+    global _swing_live_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    if not _swing_live_cache:
+        loaded = _load_json(SWING_LIVE_FILE)
+        _swing_live_cache = loaded if isinstance(loaded, list) else []
+    return jsonify(_sanitise(_swing_live_cache))
+
+
+# ── POST /swing/live/upload ──────────────────────────────────────
+@app.route("/swing/live/upload", methods=["POST", "OPTIONS"])
+def swing_live_upload():
+    """
+    Dashboard POSTs when user marks a swing trade as entered.
+    Body: single trade record OR full list to replace.
+    """
+    global _swing_live_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        data = request.get_json(force=True)
+
+        # Full list replace (e.g. [] to clear)
+        if isinstance(data, list):
+            _swing_live_cache = data
+            _save_json(SWING_LIVE_FILE, _swing_live_cache)
+            return jsonify({"status": "ok", "positions": len(_swing_live_cache)})
+
+        # Single trade append
+        if not data.get("ticker"):
+            return jsonify({"error": "ticker required"}), 400
+        if not _swing_live_cache:
+            loaded = _load_json(SWING_LIVE_FILE)
+            _swing_live_cache = loaded if isinstance(loaded, list) else []
+
+        # Update if exists, else append
+        existing_idx = next(
+            (i for i, p in enumerate(_swing_live_cache)
+             if p.get("ticker") == data["ticker"]), None
+        )
+        if existing_idx is not None:
+            _swing_live_cache[existing_idx] = data
+        else:
+            _swing_live_cache.append(data)
+
+        _save_json(SWING_LIVE_FILE, _swing_live_cache)
+        return jsonify({"status": "ok", "positions": len(_swing_live_cache)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── GET /swing/history ───────────────────────────────────────────
+@app.route("/swing/history", methods=["GET", "OPTIONS"])
+def swing_history_get():
+    """All closed swing trades with P&L."""
+    global _swing_history_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    if not _swing_history_cache:
+        loaded = _load_json(SWING_HISTORY_FILE)
+        _swing_history_cache = loaded if isinstance(loaded, list) else []
+    return jsonify({
+        "trades":       _sanitise(_swing_history_cache),
+        "total_trades": len(_swing_history_cache),
+        "winners":      sum(1 for t in _swing_history_cache if t.get("realised_pnl_inr", 0) > 0),
+        "total_pnl":    round(sum(t.get("realised_pnl_inr", 0) for t in _swing_history_cache), 2),
+    })
+
+
+# ── POST /swing/history/upload ───────────────────────────────────
+@app.route("/swing/history/upload", methods=["POST", "OPTIONS"])
+def swing_history_upload():
+    """
+    Dashboard POSTs a closed swing trade here.
+    Body: single trade record to append, OR [] to clear.
+    """
+    global _swing_history_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        data = request.get_json(force=True)
+
+        # Clear/replace with list
+        if isinstance(data, list):
+            _swing_history_cache = data
+            _save_json(SWING_HISTORY_FILE, _swing_history_cache)
+            return jsonify({"ok": True, "total": len(_swing_history_cache), "action": "replaced"})
+
+        if not data.get("ticker"):
+            return jsonify({"error": "ticker required"}), 400
+        if not _swing_history_cache:
+            loaded = _load_json(SWING_HISTORY_FILE)
+            _swing_history_cache = loaded if isinstance(loaded, list) else []
+
+        _swing_history_cache.append(data)
+        _swing_history_cache.sort(
+            key=lambda r: r.get("exit_date", ""), reverse=True
+        )
+        _save_json(SWING_HISTORY_FILE, _swing_history_cache)
+        return jsonify({"ok": True, "total": len(_swing_history_cache)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── GET /swing/prices ────────────────────────────────────────────
+@app.route("/swing/prices", methods=["GET", "OPTIONS"])
+def swing_prices():
+    """
+    Live prices for all open swing positions.
+    Same pattern as /prices but reads from swing/live.
+    """
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        global _swing_live_cache
+        if not _swing_live_cache:
+            loaded = _load_json(SWING_LIVE_FILE)
+            _swing_live_cache = loaded if isinstance(loaded, list) else []
+
+        if not _swing_live_cache:
+            return jsonify({"prices": {}})
+
+        import yfinance as yf
+        import math
+
+        tickers = list({p["ticker"] for p in _swing_live_cache if p.get("ticker")})
+        prices  = {}
+
+        for ticker in tickers:
+            try:
+                fi = yf.Ticker(ticker).fast_info
+                price = getattr(fi, "last_price", None) or getattr(fi, "regular_market_price", None)
+                chg   = getattr(fi, "regular_market_change_percent", None)
+                if price and not math.isnan(float(price)):
+                    prices[ticker] = {
+                        "price":      round(float(price), 2),
+                        "change_pct": round(float(chg) if chg and not math.isnan(float(chg)) else 0, 2),
+                    }
+            except Exception:
+                pass
+
+        return jsonify({"prices": _sanitise(prices)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
