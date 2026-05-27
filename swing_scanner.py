@@ -52,18 +52,18 @@ CANDIDATES_FILE = os.path.join(DATA_DIR, "swing_candidates.json")
 
 # Signal parameters
 RSI_PERIOD       = 14
-RSI_MIN          = 40      # not oversold/overbought zone
-RSI_MAX          = 65      # not overbought — room to run
+RSI_MIN          = 35      # widen — accept stocks building from mild oversold
+RSI_MAX          = 70      # widen — allow momentum to be already running
 MACD_FAST        = 12
 MACD_SLOW        = 26
 MACD_SIGNAL      = 9
-MACD_CROSS_DAYS  = 3       # crossover must have happened within last N days
+MACD_CROSS_DAYS  = 5       # crossover within last 5 days
 BB_PERIOD        = 20
 BB_STD           = 2.0
-VOL_SURGE_MULT   = 2.0     # volume > 2× 20-day avg
-BREAKOUT_PCT     = 0.03    # within 3% of 52-week high
+VOL_SURGE_MULT   = 1.5     # volume > 1.5× 20-day avg (2x is too rare)
+BREAKOUT_PCT     = 0.08    # within 8% of 52-week high or broke 20d resistance
 FII_LOOKBACK     = 3       # days of FII data to check
-FII_MIN_POSITIVE = 2       # FII positive in at least 2 of last 3 days
+FII_MIN_POSITIVE = 1       # FII positive in at least 1 of last 3 days
 
 MIN_SIGNALS      = 3       # minimum signals to qualify as candidate
 MAX_CANDIDATES   = 10      # max candidates to report
@@ -79,8 +79,8 @@ SWING_TARGET_2   = 0.08   # +8%  → book remaining 50%
 SWING_MAX_DAYS   = 10     # force exit after 10 trading days
 
 # Liquidity — swing needs more liquidity than long-term
-SWING_MIN_ADV    = 500_000   # 5 lakh shares/day minimum
-SWING_MIN_ADTV   = 10.0      # ₹10 crore/day minimum
+SWING_MIN_ADV    = 300_000   # 3 lakh shares/day minimum
+SWING_MIN_ADTV   = 5.0       # ₹5 crore/day minimum
 
 
 # ─────────────────────────────────────────────
@@ -343,7 +343,7 @@ def analyse_stock(ticker: str, fii_data: list) -> Optional[dict]:
             "note":  f"RSI {rsi:.1f} ({'✅ momentum zone' if RSI_MIN <= rsi <= RSI_MAX else '❌ outside 40-65'})",
         },
         "macd": {
-            "pass":  macd["bullish_cross"] or (macd["macd_above"] and macd["histogram"] > 0),
+            "pass":  macd["bullish_cross"] or macd["macd_above"] or macd["histogram"] > 0,
             "value": macd["histogram"],
             "note":  f"MACD {'✅ bullish cross' if macd['bullish_cross'] else ('✅ above signal' if macd['macd_above'] else '❌ bearish')}",
         },
