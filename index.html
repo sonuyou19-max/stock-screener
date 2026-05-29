@@ -1188,6 +1188,7 @@ function buildCard(s,i,bk,prefix,cur){
   const t1=(bp*1.2).toFixed(prefix==='us'?2:0),t2=(bp*1.35).toFixed(prefix==='us'?2:0),t3=(bp*1.5).toFixed(prefix==='us'?2:0);
   const cid=`${prefix}-${bk}-${i}`;
   const m1=s.momentum_1m,m3=s.momentum_3m;
+  const yfUrl=`https://finance.yahoo.com/quote/${s.ticker}`;
   const mt=`
     <div class="m-title">Fundamentals vs Filter Criteria</div>
     <table class="m-table"><thead><tr><th>Metric</th><th>Stock</th><th>Min/Max</th><th>✓</th></tr></thead><tbody>
@@ -1202,8 +1203,16 @@ function buildCard(s,i,bk,prefix,cur){
     </tbody></table>`;
   return`<div class="stock-card">
     <div class="sc-top">
-      <div><div class="sc-tkr">${tkr}</div><div class="sc-name" title="${s.name||''}">${s.name||''}</div></div>
-      <div><div class="sc-score-num ${sc}">${(s.final_score||0).toFixed(1)}</div><div class="sc-score-lbl">Score</div></div>
+      <div>
+        <a href="${yfUrl}" target="_blank" rel="noopener" style="text-decoration:none;">
+          <div class="sc-tkr">${tkr} <span style="font-size:10px;color:var(--blue2);font-weight:500;vertical-align:middle;">↗</span></div>
+        </a>
+        <div class="sc-name" title="${s.name||''}">${s.name||''}</div>
+      </div>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
+        <div style="text-align:right;"><div class="sc-score-num ${sc}">${(s.final_score||0).toFixed(1)}</div><div class="sc-score-lbl">Score</div></div>
+        <button onclick="editBuyPrice('${s.ticker}','${prefix}','${bk}',${bp})" style="font-size:9px;padding:3px 8px;border-radius:8px;border:1px solid rgba(91,141,238,0.35);background:rgba(91,141,238,0.10);color:var(--blue2);cursor:pointer;font-family:var(--sans);font-weight:600;">✏️ Edit</button>
+      </div>
     </div>
     <div class="sc-metrics">
       <div><div class="sc-m-lbl">Buy Price</div><div class="sc-m-val">${bpS}</div></div>
@@ -1611,7 +1620,57 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 });
 
-/* ═══ SWING STATE ═══ */
+/* ═══ EDIT BUY PRICE ═══ */
+async function editBuyPrice(ticker, prefix, bucket, currentBp){
+  const cur=prefix==='ind'?'₹':'$';
+  const newPrice=prompt(
+    `Edit buy price for ${ticker.replace('.NS','')}\n`+
+    `Current recorded: ${cur}${currentBp}\n\n`+
+    `Enter correct buy price from your broker:`
+  );
+  if(newPrice===null)return; // cancelled
+  const parsed=parseFloat(newPrice);
+  if(!parsed||isNaN(parsed)||parsed<=0){alert('Invalid price. Please enter a number.');return;}
+
+  const ep=prefix==='ind'?'/portfolio/live':'/us/portfolio/live';
+  const live=await fd(ep);
+  if(!live){alert('Could not load portfolio');return;}
+
+  let found=false;
+  for(const[bk,b]of Object.entries(live)){
+    const idx=(b.stocks||[]).findIndex(s=>s.ticker===ticker);
+    if(idx!==-1){
+      const old=b.stocks[idx];
+      const shares=old.approx_shares||0;
+      // Recompute allocation and stop-loss pct with new price
+      b.stocks[idx]={
+        ...old,
+        price:       parsed,
+        buy_price:   parsed,
+        allocation_inr: prefix==='ind'?Math.round(parsed*shares):undefined,
+        allocation_usd: prefix==='us'?parseFloat((parsed*shares).toFixed(2)):undefined,
+        stop_loss_price: old.stop_loss_pct
+          ? parseFloat((parsed*(1-old.stop_loss_pct/100)).toFixed(2))
+          : old.stop_loss_price,
+      };
+      found=true;
+      break;
+    }
+  }
+
+  if(!found){alert(`${ticker.replace('.NS','')} not found in live portfolio`);return;}
+
+  const uploadEp=prefix==='ind'?'/portfolio/live/upload':'/us/portfolio/live/upload';
+  const r=await fetch(`${API}${uploadEp}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(live)});
+  const res=await r.json();
+  if(res.status==='ok'||res.buckets>=0){
+    alert(`✅ Buy price updated!\n${ticker.replace('.NS','')} → ${cur}${parsed.toFixed(2)}`);
+    if(prefix==='ind'){_iL=false;loadIndia();}
+    else{_uL=false;loadUS();}
+  }else{
+    alert('Error updating: '+JSON.stringify(res));
+  }
+}
 let _swL=false, _swCandidates=null, _swLive=[], _swHistory=null;
 
 /* ═══ SWING ROUTING ═══ */
@@ -1694,7 +1753,7 @@ function renderSwingOpen(){
     return`<div class="sw-pos-card">
       <div class="sc-top">
         <div>
-          <div class="sw-tkr">${(p.ticker||'').replace('.NS','')}</div>
+          <a href="https://finance.yahoo.com/quote/${p.ticker}" target="_blank" rel="noopener" style="text-decoration:none;"><div class="sw-tkr">${(p.ticker||'').replace('.NS','')} <span style="font-size:10px;color:var(--blue2);">↗</span></div></a>
           <div class="sw-name">${p.name||''}</div>
           ${edate?`<div style="font-size:10px;color:var(--text3);margin-top:3px;">Entered ${edate}</div>`:''}
         </div>
@@ -1736,7 +1795,7 @@ function renderSwingCandidates(){
     return`<div class="sw-cand-card">
       <div class="sw-cand-top">
         <div>
-          <div class="sw-tkr">${(c.ticker||'').replace('.NS','')}</div>
+          <a href="https://finance.yahoo.com/quote/${c.ticker}" target="_blank" rel="noopener" style="text-decoration:none;"><div class="sw-tkr">${(c.ticker||'').replace('.NS','')} <span style="font-size:10px;color:var(--blue2);">↗</span></div></a>
           <div class="sw-name">${c.name||''}</div>
           <div style="margin-top:6px;"><span class="sw-conv ${conv}">${conv}</span></div>
         </div>
