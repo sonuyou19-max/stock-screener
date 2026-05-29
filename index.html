@@ -1865,7 +1865,8 @@ function renderSwingClosed(){
 /* ═══ SWING LIVE PRICES ═══ */
 async function fetchSwingPrices(){
   if(!_swLive.length)return;
-  const data=await fd('/swing/prices');
+  let data=await fd('/swing/prices');
+  if(!data?.prices||Object.keys(data.prices).length===0) data=await fd('/prices');
   if(!data?.prices)return;
   let dayPnl=0,cnt=0;
   for(const pos of _swLive){
@@ -1873,14 +1874,25 @@ async function fetchSwingPrices(){
     const info=data.prices[pos.ticker];
     if(!info)continue;
     const bp=pos.buy_price||pos.price||0;
+    const sh=pos.shares||1;
     const {price,change_pct}=info;
     const prev=price/(1+(change_pct||0)/100);
-    const di=(price-prev)*(pos.shares||1);
+    const di=(price-prev)*sh;
+    const pnlAbs=(price-bp)*sh;
     const pp=bp?((price-bp)/bp*100):0;
     dayPnl+=di;cnt++;
-    const lpEl=document.getElementById(`swlp-${key}`);if(lpEl)lpEl.textContent='₹'+price.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
-    const lcEl=document.getElementById(`swlc-${key}`);if(lcEl){lcEl.textContent=`${change_pct>=0?'+':''}${change_pct.toFixed(2)}%`;lcEl.className=`sc-m-val ${change_pct>=0?'up':'down'}`;}
-    const llEl=document.getElementById(`swll-${key}`);if(llEl){llEl.textContent=`${pp>=0?'+':''}${pp.toFixed(2)}%`;llEl.className=`sc-m-val ${pp>=0?'up':'down'}`;}
+    const lpEl=document.getElementById(`swlp-${key}`);
+    if(lpEl)lpEl.textContent='₹'+price.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+    const lcEl=document.getElementById(`swlc-${key}`);
+    if(lcEl){
+      lcEl.textContent=`${change_pct>=0?'+':''}${change_pct.toFixed(2)}%`;
+      lcEl.className=`sc-m-val ${change_pct>=0?'up':'down'}`;
+    }
+    const llEl=document.getElementById(`swll-${key}`);
+    if(llEl){
+      llEl.textContent=`${pp>=0?'+':''}${pp.toFixed(2)}%`;
+      llEl.className=`sc-m-val ${pp>=0?'up':'down'}`;
+    }
   }
   if(cnt){
     const ds=dayPnl>=0?'+':'';
