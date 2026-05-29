@@ -61,40 +61,6 @@ def is_market_hours() -> bool:
 
 
 # ─────────────────────────────────────────────
-# US MARKET HOURS (NYSE/NASDAQ)
-# 9:30 AM – 4:00 PM ET = 7:00 PM – 1:30 AM IST (next day)
-# ─────────────────────────────────────────────
-
-US_OPEN_HOUR_IST  = 19   # 7:00 PM IST
-US_OPEN_MIN_IST   = 0
-US_CLOSE_HOUR_IST = 1    # 1:30 AM IST (next day)
-US_CLOSE_MIN_IST  = 30
-
-def is_us_market_hours() -> bool:
-    """
-    Returns True if current IST time is within NYSE/NASDAQ hours.
-    Spans midnight: 7:00 PM IST to 1:30 AM IST next day.
-    """
-    now = datetime.now(IST)
-    if now.weekday() >= 5:
-        return False
-    # After 7 PM IST or before 1:30 AM IST
-    hour, minute = now.hour, now.minute
-    after_open  = (hour > US_OPEN_HOUR_IST) or (hour == US_OPEN_HOUR_IST and minute >= US_OPEN_MIN_IST)
-    before_close = (hour < US_CLOSE_HOUR_IST) or (hour == US_CLOSE_HOUR_IST and minute <= US_CLOSE_MIN_IST)
-    midnight_span = hour >= US_OPEN_HOUR_IST or hour < US_CLOSE_HOUR_IST
-    return midnight_span and (after_open or before_close)
-
-
-def is_us_eod() -> bool:
-    """True for ~30 min window after US market close (1:30–2:00 AM IST)."""
-    now = datetime.now(IST)
-    if now.weekday() >= 5:
-        return False
-    return (now.hour == 1 and now.minute >= 30) or (now.hour == 2 and now.minute < 0)
-
-
-# ─────────────────────────────────────────────
 # ALERT DEDUPLICATION
 # ─────────────────────────────────────────────
 
@@ -605,6 +571,7 @@ def format_email_body(alerts: dict) -> tuple[str, str]:
         <p>These are informational alerts — no immediate trade action required unless combined with stop-loss hits.</p>
         {macro_rows}
         """
+    rows_sl     = _build_alert_rows(alerts["stop_loss"], urgent=True)
     rows_profit = _build_alert_rows(alerts["profit"],    urgent=False)
     rows_ok     = _build_ok_rows(alerts["ok"])
 
@@ -958,9 +925,12 @@ def check_and_alert(
       test_mode  : send email even with no alerts
     """
     # ── EOD snapshot — runs even outside market hours ─────────
+    # Must check BEFORE the market hours guard below, since
+    # is_market_hours() returns False after 15:30 IST.
     now_ist = datetime.now(IST)
     is_weekday = now_ist.weekday() < 5  # Mon–Fri
     if is_weekday and (now_ist.hour > 15 or (now_ist.hour == 15 and now_ist.minute >= 25)):
+        # Load portfolio from API for EOD snapshot
         try:
             import urllib.request as _ur
             api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
@@ -969,23 +939,6 @@ def check_and_alert(
             capture_eod_snapshot(eod_portfolio)
         except Exception as e:
             print(f"  ⚠️  Could not load portfolio for EOD snapshot: {e}")
-
-    # ── US market hours — run US checks ──────────────────────
-    if is_weekday and is_us_market_hours():
-        print("\n  🇺🇸 US market open — running US portfolio checks...")
-        check_us_alerts()
-
-    # ── US EOD snapshot — after 1:30 AM IST ──────────────────
-    if is_weekday and (now_ist.hour == 1 and now_ist.minute >= 30) or (now_ist.hour == 2 and now_ist.minute < 30):
-        try:
-            import urllib.request as _ur
-            api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
-            with _ur.urlopen(f"{api_url}/us/portfolio/live", timeout=15) as r:
-                us_portfolio = json.loads(r.read())
-            if us_portfolio:
-                capture_us_eod_snapshot(us_portfolio)
-        except Exception as e:
-            print(f"  ⚠️  US EOD snapshot failed: {e}")
 
     # ── Market hours guard ────────────────────────────────────
     if not force_run and not test_mode and not is_market_hours():
@@ -1062,187 +1015,6 @@ def check_and_alert(
         print(f"\n  📧 No new alerts — email suppressed.")
 
     return new_alerts
-
-
-
-# ════════════════════════════════════════════════════════════════
-#  US PORTFOLIO — ALERT CHECKER + EOD SNAPSHOT
-# ════════════════════════════════════════════════════════════════
-
-def capture_us_eod_snapshot(portfolio: dict) -> None:
-    """Capture US portfolio EOD performance vs SP500 and Nasdaq."""
-    import urllib.request as _ur
-    import math
-
-    today_str = date.today().isoformat()
-    api_url   = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
-
-    dedup_file = os.path.join(DATA_DIR, "us_perf_snapshot_dedup.txt")
-    if os.path.exists(dedup_file):
-        with open(dedup_file) as f:
-            if f.read().strip() == today_str:
-                print("  📊 US EOD snapshot already captured today — skipping.")
-                return
-
-    print(f"\n  📊 Capturing US EOD performance snapshot for {today_str}...")
-
-    try:
-        sp500_pct  = None
-        nasdaq_pct = None
-        try:
-            sp  = yf.Ticker("^GSPC")
-            nq  = yf.Ticker("^IXIC")
-            fsp = sp.fast_info;  fnq = nq.fast_info
-            psp = getattr(fsp, "last_price", None); prsp = getattr(fsp, "previous_close", None)
-            pnq = getattr(fnq, "last_price", None); prnq = getattr(fnq, "previous_close", None)
-            if psp and prsp: sp500_pct  = round(((psp - prsp) / prsp) * 100, 2)
-            if pnq and prnq: nasdaq_pct = round(((pnq - prnq) / prnq) * 100, 2)
-        except Exception as e:
-            print(f"  ⚠️  US index fetch failed: {e}")
-
-        total_prev = 0.0; total_chg = 0.0; portfolio_pct = None
-        for bucket in portfolio.values():
-            for s in bucket.get("stocks", []):
-                ticker = s.get("ticker"); shares = s.get("approx_shares", 0)
-                if not ticker or not shares: continue
-                try:
-                    fi    = yf.Ticker(ticker).fast_info
-                    price = getattr(fi, "last_price",     None)
-                    prev  = getattr(fi, "previous_close", None)
-                    if price and prev:
-                        total_chg  += (float(price) - float(prev)) * shares
-                        total_prev += float(prev) * shares
-                except Exception:
-                    pass
-        if total_prev > 0:
-            portfolio_pct = round((total_chg / total_prev) * 100, 2)
-
-        rec = {"date": today_str, "portfolio_pct": portfolio_pct,
-               "sp500_pct": sp500_pct, "nasdaq_pct": nasdaq_pct}
-        payload = json.dumps(rec).encode()
-        req = _ur.Request(f"{api_url}/us/performance/upload", data=payload,
-                          headers={"Content-Type": "application/json"}, method="POST")
-        with _ur.urlopen(req, timeout=15) as r:
-            json.loads(r.read())
-            print(f"  ✅ US snapshot: portfolio={portfolio_pct}%, SP500={sp500_pct}%, Nasdaq={nasdaq_pct}%")
-
-        with open(dedup_file, "w") as f:
-            f.write(today_str)
-
-    except Exception as e:
-        print(f"  ⚠️  US EOD snapshot failed: {e}")
-
-
-def check_us_alerts() -> None:
-    """
-    Check US portfolio for stop-loss and profit target breaches.
-    Sends Telegram alert with 🇺🇸 prefix.
-    Runs during US market hours (7 PM – 1:30 AM IST).
-    """
-    import urllib.request as _ur
-
-    api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
-    bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    chat_id   = os.getenv("TELEGRAM_CHAT_ID", "")
-
-    if not bot_token or not chat_id:
-        print("  ⚠️  US alerts: TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set")
-        return
-
-    # Load US portfolio from API
-    try:
-        with _ur.urlopen(f"{api_url}/us/portfolio/live", timeout=15) as r:
-            portfolio = json.loads(r.read())
-    except Exception as e:
-        print(f"  ⚠️  US portfolio load failed: {e}")
-        return
-
-    if not portfolio:
-        return
-
-    today_str = date.today().isoformat()
-    us_dedup_file = os.path.join(DATA_DIR, f"us_alerts_{today_str}.json")
-    sent_today = {}
-    if os.path.exists(us_dedup_file):
-        try:
-            with open(us_dedup_file) as f:
-                sent_today = json.load(f)
-        except Exception:
-            pass
-
-    alerts = []
-
-    for bk, bucket in portfolio.items():
-        for s in bucket.get("stocks", []):
-            ticker    = s.get("ticker")
-            name      = s.get("name", ticker)
-            buy_price = s.get("price", 0)
-            sl_price  = s.get("stop_loss_price", 0)
-            shares    = s.get("approx_shares", 0)
-
-            if not ticker:
-                continue
-
-            try:
-                fi    = yf.Ticker(ticker).fast_info
-                price = getattr(fi, "last_price", None)
-                prev  = getattr(fi, "previous_close", None)
-                if not price:
-                    continue
-                price  = float(price)
-                prev   = float(prev) if prev else price
-                chg    = round(((price - prev) / prev) * 100, 2) if prev else 0
-                pnl_pct = round(((price - buy_price) / buy_price) * 100, 2) if buy_price else 0
-
-                # Stop-loss check
-                sl_key = f"{ticker}_stop_loss"
-                if price <= sl_price and sl_key not in sent_today:
-                    msg = (f"🇺🇸🔴 *STOP-LOSS TRIGGERED*\n"
-                           f"`{ticker}` — {name}\n"
-                           f"Buy: ${buy_price:.2f} | Now: ${price:.2f} ({chg:+.2f}%)\n"
-                           f"GTT Stop: ${sl_price:.2f} | ⚠️ EXIT ON BOLERO NOW")
-                    alerts.append((sl_key, msg))
-
-                # Profit targets
-                STAGES = [(0.20, "Stage 1 — Sell 30% 🟡"), (0.35, "Stage 2 — Sell 30% 🟡"), (0.50, "Stage 3 — Sell 40% 🟢")]
-                for pct, label in STAGES:
-                    pt_key = f"{ticker}_profit_{int(pct*100)}"
-                    if pnl_pct >= pct * 100 and pt_key not in sent_today:
-                        msg = (f"🇺🇸🎯 *PROFIT TARGET*\n"
-                               f"`{ticker}` — {name}\n"
-                               f"Buy: ${buy_price:.2f} | Now: ${price:.2f} (+{pnl_pct:.2f}%)\n"
-                               f"{label} at ${price:.2f}")
-                        alerts.append((pt_key, msg))
-                        break
-
-            except Exception as e:
-                print(f"  ⚠️  US price check failed for {ticker}: {e}")
-
-    # Send Telegram alerts
-    for key, msg in alerts:
-        try:
-            url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-            payload = json.dumps({
-                "chat_id": chat_id, "text": msg, "parse_mode": "Markdown"
-            }).encode()
-            req = _ur.Request(url, data=payload, headers={"Content-Type": "application/json"})
-            with _ur.urlopen(req, timeout=10) as r:
-                resp = json.loads(r.read())
-                if resp.get("ok"):
-                    sent_today[key] = datetime.now(IST).isoformat()
-                    print(f"  ✅ US Telegram alert sent: {key}")
-        except Exception as e:
-            print(f"  ⚠️  US Telegram send failed: {e}")
-
-    # Save dedup
-    if alerts:
-        try:
-            with open(us_dedup_file, "w") as f:
-                json.dump(sent_today, f)
-        except Exception:
-            pass
-    else:
-        print("  ✅ US portfolio: no alerts triggered")
 
 
 if __name__ == "__main__":
