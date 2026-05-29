@@ -296,6 +296,30 @@ def fetch_stock_data(ticker: str, bucket_key: str = "") -> Optional[dict]:
         if not current_price:
             return None  # Cannot determine price — skip stock
 
+        # ── PRICE SANITY CHECK ────────────────────────────────────
+        # Validate fetched price against 52-week range from yfinance info.
+        # Catches cases where fast_info returns stale/adjusted prices
+        # that don't match actual market price (known yfinance bug on NSE).
+        high_52w_check = info.get("fiftyTwoWeekHigh")
+        low_52w_check  = info.get("fiftyTwoWeekLow")
+        if high_52w_check and low_52w_check:
+            # Allow 10% buffer above/below 52w range (for intraday moves)
+            price_upper = float(high_52w_check) * 1.10
+            price_lower = float(low_52w_check)  * 0.90
+            if current_price > price_upper or current_price < price_lower:
+                # Price is outside plausible range — likely bad data
+                # Try history close as fallback
+                hist_close = hist["Close"].dropna().iloc[-1] if not hist["Close"].dropna().empty else None
+                if hist_close and price_lower <= float(hist_close) <= price_upper:
+                    print(f"  ⚠️  {ticker}: price ₹{current_price:.2f} outside 52w range "
+                          f"[₹{low_52w_check:.2f}-₹{high_52w_check:.2f}] — "
+                          f"using hist close ₹{hist_close:.2f}")
+                    current_price = float(hist_close)
+                else:
+                    print(f"  ❌ {ticker}: price ₹{current_price:.2f} outside 52w range "
+                          f"[₹{low_52w_check:.2f}-₹{high_52w_check:.2f}] — skipping")
+                    return None
+
         # ── LIQUIDITY FILTER (1.2) ────────────────────────────────
         # Check 1: Minimum Average Daily Volume (30-day)
         adv_30d = hist["Volume"].iloc[-30:].mean() if len(hist) >= 30 else hist["Volume"].mean()
