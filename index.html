@@ -1885,8 +1885,10 @@ async function fetchSwingPrices(){
     if(lpEl)lpEl.textContent='₹'+price.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
     const lcEl=document.getElementById(`swlc-${key}`);
     if(lcEl){
-      lcEl.textContent=`${change_pct>=0?'+':''}${change_pct.toFixed(2)}%`;
-      lcEl.className=`sc-m-val ${change_pct>=0?'up':'down'}`;
+      const dayChg=change_pct||0;
+      const dayChgCls=dayChg>0?'up':dayChg<0?'down':'';
+      lcEl.textContent=`${dayChg>=0?'+':''}${dayChg.toFixed(2)}%`;
+      lcEl.className=`sc-m-val ${dayChgCls}`;
     }
     const llEl=document.getElementById(`swll-${key}`);
     if(llEl){
@@ -1896,7 +1898,9 @@ async function fetchSwingPrices(){
   }
   if(cnt){
     const ds=dayPnl>=0?'+':'';
-    document.getElementById('sw-dayPnl').textContent=`${ds}₹${Math.abs(dayPnl).toLocaleString('en-IN',{maximumFractionDigits:0})}`;
+    const totalBp=_swLive.reduce((s,p)=>{const bp=p.buy_price||p.price||0;return s+bp*(p.shares||1);},0);
+    const dayPct=totalBp>0?((dayPnl/totalBp)*100):0;
+    document.getElementById('sw-dayPnl').textContent=`${ds}${Math.abs(dayPct).toFixed(2)}%`;
     document.getElementById('sw-dayPnl').className=`stat-val ${dayPnl>=0?'up':'down'}`;
   }
 }

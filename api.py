@@ -1159,10 +1159,15 @@ def swing_prices():
             try:
                 fi = yf.Ticker(ticker).fast_info
                 price = getattr(fi, "last_price", None) or getattr(fi, "regular_market_price", None)
+                prev  = getattr(fi, "previous_close", None)
                 chg   = getattr(fi, "regular_market_change_percent", None)
                 if price and not math.isnan(float(price)):
+                    p = float(price)
+                    # Calculate change_pct from previous_close if fast_info chg is 0/None
+                    if (not chg or math.isnan(float(chg)) or float(chg) == 0) and prev:
+                        chg = (p - float(prev)) / float(prev) * 100
                     prices[ticker] = {
-                        "price":      round(float(price), 2),
+                        "price":      round(p, 2),
                         "change_pct": round(float(chg) if chg and not math.isnan(float(chg)) else 0, 2),
                     }
             except Exception:
