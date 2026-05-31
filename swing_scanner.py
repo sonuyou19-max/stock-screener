@@ -82,6 +82,52 @@ SWING_MAX_DAYS   = 10     # force exit after 10 trading days
 SWING_MIN_ADV    = 300_000   # 3 lakh shares/day minimum
 SWING_MIN_ADTV   = 5.0       # ₹5 crore/day minimum
 
+# ── Sector → Bucket mapping (from nse_universe.py) ───────────
+NSE_SECTOR_BUCKET = {
+    "Financial Services":               "BFSI_IT",
+    "Information Technology":           "BFSI_IT",
+    "IT":                               "BFSI_IT",
+    "Capital Goods":                    "DEFENCE_INFRA",
+    "Construction":                     "DEFENCE_INFRA",
+    "Construction Materials":           "DEFENCE_INFRA",
+    "Industrial Manufacturing":         "DEFENCE_INFRA",
+    "Defence":                          "DEFENCE_INFRA",
+    "Aerospace & Defence":              "DEFENCE_INFRA",
+    "Power":                            "GREEN_ENERGY_EV",
+    "Automobile and Auto Components":   "GREEN_ENERGY_EV",
+    "Automobiles":                      "GREEN_ENERGY_EV",
+    "Consumer Durables":                "GREEN_ENERGY_EV",
+    "Electrical Equipment":             "GREEN_ENERGY_EV",
+    "Fast Moving Consumer Goods":       "FMCG_PHARMA",
+    "FMCG":                             "FMCG_PHARMA",
+    "Pharmaceuticals & Biotechnology":  "FMCG_PHARMA",
+    "Pharmaceuticals":                  "FMCG_PHARMA",
+    "Healthcare Services":              "FMCG_PHARMA",
+    "Healthcare":                       "FMCG_PHARMA",
+    "Metals & Mining":                  "DEFENCE_INFRA",
+    "Oil Gas & Consumable Fuels":       "GREEN_ENERGY_EV",
+    "Chemicals":                        "FMCG_PHARMA",
+    "Telecom":                          "BFSI_IT",
+    "Media Entertainment & Publication":"FMCG_PHARMA",
+    "Realty":                           "DEFENCE_INFRA",
+    "Services":                         "BFSI_IT",
+    "Diversified":                      "BFSI_IT",
+}
+
+# ── Sentiment scoring ─────────────────────────────────────────
+# negative  → HARD EXCLUDE (overrides all technical signals)
+# cautious  → −1 from signal score
+# neutral   → no effect
+# mild_positive → +0.5 signal
+# positive  → +1 full signal pass
+SENTIMENT_SCORE = {
+    "negative":      -99,   # sentinel for hard exclude
+    "cautious":      -1,
+    "neutral":        0,
+    "mild_positive":  0.5,
+    "positive":       1,
+}
+
 
 # ─────────────────────────────────────────────
 # DATA FETCHER — one call per stock
@@ -310,7 +356,7 @@ def compute_swing_levels(hist: pd.DataFrame, buy_price: float) -> dict:
 # SINGLE STOCK ANALYSER
 # ─────────────────────────────────────────────
 
-def analyse_stock(ticker: str, fii_data: list) -> Optional[dict]:
+def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict) -> Optional[dict]:
     """
     Run all 6 signals on a single stock.
     Returns candidate dict if ≥ MIN_SIGNALS pass, else None.
@@ -371,6 +417,51 @@ def analyse_stock(ticker: str, fii_data: list) -> Optional[dict]:
 
     score = sum(1 for s in signals.values() if s["pass"])
 
+    # ── Signal 7: Sector Sentiment ────────────────────────────
+    # Map stock's sector to bucket, fetch sentiment for that bucket
+    sector_raw = ""
+    try:
+        info_s = yf.Ticker(ticker).info
+        sector_raw = info_s.get("sector","") or info_s.get("industry","") or ""
+    except Exception:
+        pass
+
+    # Try matching sector to bucket
+    bucket_key = None
+    for sec_name, bkt in NSE_SECTOR_BUCKET.items():
+        if sec_name.lower() in sector_raw.lower() or sector_raw.lower() in sec_name.lower():
+            bucket_key = bkt
+            break
+
+    sentiment_val = "neutral"
+    sentiment_score_adj = 0
+    excluded_by_sentiment = False
+
+    if bucket_key and sentiment_signals:
+        sentiment_val = sentiment_signals.get(bucket_key, "neutral")
+        adj = SENTIMENT_SCORE.get(sentiment_val, 0)
+
+        if adj == -99:
+            # HARD EXCLUDE — negative sentiment overrides everything
+            excluded_by_sentiment = True
+        else:
+            sentiment_score_adj = adj
+
+    signals["sentiment"] = {
+        "pass":  sentiment_score_adj > 0,
+        "value": sentiment_val,
+        "note":  f"{'✅' if sentiment_score_adj > 0 else ('❌ HARD EXCLUDE' if excluded_by_sentiment else '➖')} "
+                 f"Sector: {sector_raw or 'Unknown'} → {bucket_key or 'unmapped'} = {sentiment_val}",
+    }
+
+    # Hard exclude on negative sentiment — no matter how good technicals are
+    if excluded_by_sentiment:
+        print(f"  🚫 {ticker} EXCLUDED — negative sector sentiment ({bucket_key})")
+        return None
+
+    # Apply sentiment score adjustment (fractional allowed)
+    score = sum(1 for s in signals.values() if s.get("pass")) + sentiment_score_adj
+
     if score < MIN_SIGNALS:
         return None
 
@@ -399,11 +490,14 @@ def analyse_stock(ticker: str, fii_data: list) -> Optional[dict]:
         "sector":        sector,
         "scanned_at":    datetime.now(IST).strftime("%Y-%m-%d %H:%M IST"),
         "current_price": round(curr, 2),
-        "score":         score,
-        "max_score":     6,
+        "score":         round(score, 1),
+        "max_score":     7,
         "conviction":    conviction,
         # Signals detail
         "signals":       signals,
+        # Sentiment
+        "sentiment_val": sentiment_val,
+        "sentiment_bucket": bucket_key or "unmapped",
         # Technical values
         "rsi":           rsi,
         "macd_hist":     macd["histogram"],
@@ -430,6 +524,62 @@ def analyse_stock(ticker: str, fii_data: list) -> Optional[dict]:
 # ─────────────────────────────────────────────
 # FII DATA FETCHER
 # ─────────────────────────────────────────────
+
+
+def fetch_sentiment_signals() -> dict:
+    """
+    Fetch news sentiment signals from /signals endpoint.
+    Returns per-bucket sentiment: {BFSI_IT: "positive", DEFENCE_INFRA: "cautious", ...}
+    """
+    try:
+        req = _urllib.Request(
+            f"{API_URL}/signals",
+            headers={"Accept": "application/json"}
+        )
+        with _urllib.urlopen(req, timeout=10) as r:
+            data = json.loads(r.read().decode())
+
+        # Try news_signals first, fallback to llm_synthesis verdict
+        signals = {}
+
+        # Path 1: news_signals per bucket
+        news = data.get("news_signals", {})
+        if isinstance(news, dict):
+            bucket_sigs = news.get("signals", news)
+            for bucket, val in bucket_sigs.items():
+                if isinstance(val, str):
+                    signals[bucket] = val
+                elif isinstance(val, dict):
+                    signals[bucket] = val.get("signal", "neutral")
+
+        # Path 2: llm_synthesis verdict (stronger signal — overrides if available)
+        llm = data.get("llm_synthesis", {})
+        if isinstance(llm, dict):
+            verdict = llm.get("verdict", {})
+            for bucket, bv in verdict.items():
+                if isinstance(bv, dict):
+                    v = bv.get("verdict", "").lower()
+                    # Map LLM verdict to sentiment scale
+                    mapping = {
+                        "positive": "positive",
+                        "cautious": "cautious",
+                        "neutral":  "neutral",
+                        "negative": "negative",
+                    }
+                    if v in mapping:
+                        signals[bucket] = mapping[v]
+
+        if signals:
+            print(f"  ✅ Sentiment signals: {signals}")
+        else:
+            print("  ⚠️  No sentiment signals available — sentiment check skipped")
+
+        return signals
+
+    except Exception as e:
+        print(f"  ⚠️  Could not fetch sentiment signals: {e}")
+        return {}
+
 
 def fetch_fii_data() -> list:
     """Fetch FII/DII data from API. Returns list sorted newest first."""
@@ -458,7 +608,7 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
     print(f"\n{'='*58}")
     print(f"  📈 SWING SCANNER — INDIA NSE")
     print(f"  {datetime.now(IST).strftime('%d %B %Y, %I:%M %p IST')}")
-    print(f"  Min signals: {MIN_SIGNALS}/6  |  Max candidates: {MAX_CANDIDATES}")
+    print(f"  Min signals: {MIN_SIGNALS}/7  |  Max candidates: {MAX_CANDIDATES}")
     print(f"  Holding: 1-2 weeks  |  Targets: +{SWING_TARGET_1*100:.0f}% / +{SWING_TARGET_2*100:.0f}%")
     print(f"{'='*58}\n")
 
@@ -478,6 +628,14 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
     fii_data = fetch_fii_data()
     print(f"  FII data: {len(fii_data)} days available")
 
+    # ── Step 3: Fetch sentiment signals once ──────────────────
+    print("  Fetching sentiment signals...")
+    sentiment_signals = fetch_sentiment_signals()
+    if sentiment_signals:
+        for bkt, sent in sentiment_signals.items():
+            excl = " ← 🚫 HARD EXCLUDE for this bucket's stocks" if sent == "negative" else ""
+            print(f"    {bkt}: {sent}{excl}")
+
     # ── Step 3: Scan each stock ───────────────────────────────
     candidates  = []
     scanned     = 0
@@ -488,7 +646,7 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
 
     for ticker in tickers:
         try:
-            result = analyse_stock(ticker, fii_data)
+            result = analyse_stock(ticker, fii_data, sentiment_signals)
             scanned += 1
 
             if result is None:
@@ -497,10 +655,11 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
                 candidates.append(result)
                 conv = result["conviction"]
                 emoji = "🔥" if conv == "HIGH" else "⚡" if conv == "MEDIUM" else "✳️"
-                print(f"  {emoji} {ticker:<20} Score:{result['score']}/6  "
+                print(f"  {emoji} {ticker:<20} Score:{result['score']}/7  "
                       f"RSI:{result['rsi']:.0f}  "
                       f"Vol:{result['vol_ratio']:.1f}×  "
                       f"52w:{result['pct_from_52w']:.1f}%  "
+                      f"Sentiment:{result.get('sentiment_val','—')}  "
                       f"{conv}")
 
             if scanned % 50 == 0:
@@ -571,13 +730,14 @@ def save_candidates(candidates: list):
             {"type": "swing_candidates", "payload": output},
             default=str
         ).encode("utf-8")
-        req = _urllib.Request(
-            f"{API_URL}/signals/upload",
+        # Post to swing/candidates/upload (primary)
+        req1 = _urllib.Request(
+            f"{API_URL}/swing/candidates/upload",
             data=payload,
             headers={"Content-Type": "application/json"},
             method="POST"
         )
-        with _urllib.urlopen(req, timeout=15) as r:
+        with _urllib.urlopen(req1, timeout=15) as r:
             print(f"  ✅ Candidates POSTed to API: {r.read().decode()}")
     except Exception as e:
         print(f"  ⚠️  Could not POST to API (non-fatal): {e}")
