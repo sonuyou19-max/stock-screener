@@ -1682,7 +1682,7 @@ function showSwing(){
   const el=document.getElementById('swingView');
   el.classList.add('active');
   _cv='swingView'; window.scrollTo(0,0);
-  if(!_swL){loadSwing();_swL=true;}else fetchSwingPrices();
+  loadSwing();  // always reload — candidates change daily
 }
 
 /* ═══ SWING DATA LOADER ═══ */
@@ -1733,7 +1733,12 @@ function renderSwingStats(){
   const count=_swCandidates?.total_candidates||_swCandidates?.candidates?.length||0;
   document.getElementById('sw-candCount').textContent=count||'—';
   const scanAt=_swCandidates?.generated_at||_swCandidates?.scan_date||'';
-  document.getElementById('sw-scanTime').textContent=scanAt?`Scanned ${scanAt.split(' ')[0]}`:'—';
+  const scanDate=scanAt?scanAt.split(' ')[0].split('T')[0]:'';
+  const today=new Date().toISOString().split('T')[0];
+  const isStale=scanDate&&scanDate!==today;
+  document.getElementById('sw-scanTime').textContent=
+    scanDate?`${isStale?'⚠️ Stale — ':''}Scanned ${scanDate}`:'Run scanner first';
+  document.getElementById('sw-candCount').style.color=isStale?'var(--red)':'';
 }
 
 /* ═══ SWING OPEN POSITIONS ═══ */
@@ -1782,9 +1787,17 @@ function renderSwingOpen(){
 function renderSwingCandidates(){
   const el=document.getElementById('swCandidates');
   const candidates=_swCandidates?.candidates||[];
+  const scanD=(_swCandidates?.scan_date||_swCandidates?.generated_at||'').split(' ')[0].split('T')[0];
+  const todayD=new Date().toISOString().split('T')[0];
+  const stale=scanD&&scanD!==todayD;
   if(!candidates.length){
     el.innerHTML=`<div class="empty">No candidates today.<br><span style="font-size:11px;color:var(--text3)">Run swing_scanner.py after market close (8 PM IST).</span></div>`;
     return;
+  }
+  if(stale){
+    el.innerHTML=`<div style="background:rgba(224,112,112,0.10);border:1px solid rgba(224,112,112,0.25);border-radius:12px;padding:12px 14px;margin-bottom:12px;font-size:11px;color:#b84040;">
+      ⚠️ <strong>Showing results from ${scanD}</strong> — today's scan hasn't run yet or hasn't been uploaded.<br>Fresh scan runs daily after 8 PM IST.
+    </div>`+el.innerHTML;
   }
   el.innerHTML=candidates.map((c,i)=>{
     const sigs=c.signals||{};
