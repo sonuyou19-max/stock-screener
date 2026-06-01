@@ -537,9 +537,29 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict) -> Optio
 
 def fetch_sentiment_signals() -> dict:
     """
-    Fetch news sentiment signals from /signals endpoint.
-    Returns per-bucket sentiment: {BFSI_IT: "positive", DEFENCE_INFRA: "cautious", ...}
+    Fetch per-sector swing sentiment signals.
+    Priority:
+      1. swing_news_sentiment.json (from swing_news_sentiment.py) — direct file read
+      2. /signals API endpoint — fallback if file not available
+    Returns {sector_name: signal_string} e.g. {"Healthcare": "positive", ...}
     """
+    # ── Priority 1: local file ────────────────────────────────
+    local_file = os.path.join(DATA_DIR, "swing_news_sentiment.json")
+    if os.path.exists(local_file):
+        try:
+            with open(local_file) as f:
+                data = json.load(f)
+            raw = data.get("signals", {})
+            # Flatten to {sector: signal_string}
+            signals = {k: v["signal"] if isinstance(v, dict) else v
+                       for k, v in raw.items()}
+            if signals:
+                print(f"  ✅ Sentiment loaded from file ({len(signals)} sectors)")
+                return signals
+        except Exception as e:
+            print(f"  ⚠️  Could not read swing sentiment file: {e}")
+
+    # ── Priority 2: API /signals endpoint ────────────────────
     try:
         req = _urllib.Request(
             f"{API_URL}/signals",
@@ -548,42 +568,28 @@ def fetch_sentiment_signals() -> dict:
         with _urllib.urlopen(req, timeout=10) as r:
             data = json.loads(r.read().decode())
 
-        # Try news_signals first, fallback to llm_synthesis verdict
-        signals = {}
+        # Try swing_news_sentiment payload first
+        swing_sent = data.get("swing_news_sentiment", {})
+        if swing_sent:
+            raw = swing_sent.get("payload", swing_sent).get("signals", {})
+            signals = {k: v["signal"] if isinstance(v, dict) else v
+                       for k, v in raw.items()}
+            if signals:
+                print(f"  ✅ Sentiment loaded from API swing_news_sentiment ({len(signals)} sectors)")
+                return signals
 
-        # Path 1: news_signals per bucket
+        # Fallback: long-term news_signals (4 broad buckets) — partial coverage
         news = data.get("news_signals", {})
         if isinstance(news, dict):
-            bucket_sigs = news.get("signals", news)
-            for bucket, val in bucket_sigs.items():
-                if isinstance(val, str):
-                    signals[bucket] = val
-                elif isinstance(val, dict):
-                    signals[bucket] = val.get("signal", "neutral")
+            raw = news.get("payload", news).get("signals", news.get("signals", {}))
+            signals = {k: v["signal"] if isinstance(v, dict) else v
+                       for k, v in raw.items() if isinstance(v, (dict, str))}
+            if signals:
+                print(f"  ⚠️  Swing sentiment not found — using long-term signals ({len(signals)} buckets, partial coverage)")
+                return signals
 
-        # Path 2: llm_synthesis verdict (stronger signal — overrides if available)
-        llm = data.get("llm_synthesis", {})
-        if isinstance(llm, dict):
-            verdict = llm.get("verdict", {})
-            for bucket, bv in verdict.items():
-                if isinstance(bv, dict):
-                    v = bv.get("verdict", "").lower()
-                    # Map LLM verdict to sentiment scale
-                    mapping = {
-                        "positive": "positive",
-                        "cautious": "cautious",
-                        "neutral":  "neutral",
-                        "negative": "negative",
-                    }
-                    if v in mapping:
-                        signals[bucket] = mapping[v]
-
-        if signals:
-            print(f"  ✅ Sentiment signals: {signals}")
-        else:
-            print("  ⚠️  No sentiment signals available — sentiment check skipped")
-
-        return signals
+        print("  ⚠️  No sentiment signals available — sentiment check skipped")
+        return {}
 
     except Exception as e:
         print(f"  ⚠️  Could not fetch sentiment signals: {e}")
