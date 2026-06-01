@@ -4,13 +4,19 @@ Swing Scanner — India NSE
 Daily scan of Nifty 500 for swing trade candidates.
 Runs after market close (8:00 PM IST weekdays).
 
-Entry signals scored 0–6 (need ≥3 for candidate):
-  1. RSI(14)          — 40–60 zone, building momentum
-  2. MACD(12,26,9)    — bullish crossover in last 3 days
-  3. Bollinger Bands  — price crossing middle band from below
-  4. Volume Surge     — today's volume > 2× 20-day average
-  5. Momentum Breakout— price within 3% of 52-week high
-  6. FII/DII Flow     — net FII positive in 2 of last 3 days
+Entry signals scored 0–7 (need ≥3 for candidate):
+  1. RSI(14)           — 35–70 momentum zone
+  2. MACD(12,26,9)     — bullish crossover or above signal line
+  3. Bollinger Bands   — price crossing middle band or near lower band
+  4. Volume Surge      — today's volume > 1.5× 20-day average
+  5. Momentum Breakout — within 8% of 52w high or broke 20d resistance
+  6. FII/DII Flow      — net FII positive in at least 1 of last 3 days
+  7. Sector Sentiment  — news sentiment per NSE sector bucket
+                         negative → HARD EXCLUDE (overrides all technicals)
+                         cautious → −1 penalty
+                         neutral  → no effect
+                         mild_positive → +0.5
+                         positive → +1 full signal
 
 Exit rules (applied by alerter.py):
   - Stop-loss: buy_price − 1.5× ATR-14
@@ -83,35 +89,36 @@ SWING_MIN_ADV    = 300_000   # 3 lakh shares/day minimum
 SWING_MIN_ADTV   = 5.0       # ₹5 crore/day minimum
 
 # ── Sector → Bucket mapping (from nse_universe.py) ───────────
+# ── Sector → Bucket mapping ───────────────────────────────────
+# Uses exact NSE sector names from Nifty 500 classification.
+# ELECTRONICS_SEMI is carved out from Capital Goods & Consumer Durables.
+# All other stocks map directly to their NSE sector name.
+
+# ── Sector → Bucket mapping ───────────────────────────────────
+# Uses exact 20 NSE sector names from Nifty 500 (your Excel file).
+# Each stock maps to its NSE sector for sentiment lookup.
+
 NSE_SECTOR_BUCKET = {
-    "Financial Services":               "BFSI_IT",
-    "Information Technology":           "BFSI_IT",
-    "IT":                               "BFSI_IT",
-    "Capital Goods":                    "DEFENCE_INFRA",
-    "Construction":                     "DEFENCE_INFRA",
-    "Construction Materials":           "DEFENCE_INFRA",
-    "Industrial Manufacturing":         "DEFENCE_INFRA",
-    "Defence":                          "DEFENCE_INFRA",
-    "Aerospace & Defence":              "DEFENCE_INFRA",
-    "Power":                            "GREEN_ENERGY_EV",
-    "Automobile and Auto Components":   "GREEN_ENERGY_EV",
-    "Automobiles":                      "GREEN_ENERGY_EV",
-    "Consumer Durables":                "GREEN_ENERGY_EV",
-    "Electrical Equipment":             "GREEN_ENERGY_EV",
-    "Fast Moving Consumer Goods":       "FMCG_PHARMA",
-    "FMCG":                             "FMCG_PHARMA",
-    "Pharmaceuticals & Biotechnology":  "FMCG_PHARMA",
-    "Pharmaceuticals":                  "FMCG_PHARMA",
-    "Healthcare Services":              "FMCG_PHARMA",
-    "Healthcare":                       "FMCG_PHARMA",
-    "Metals & Mining":                  "DEFENCE_INFRA",
-    "Oil Gas & Consumable Fuels":       "GREEN_ENERGY_EV",
-    "Chemicals":                        "FMCG_PHARMA",
-    "Telecom":                          "BFSI_IT",
-    "Media Entertainment & Publication":"FMCG_PHARMA",
-    "Realty":                           "DEFENCE_INFRA",
-    "Services":                         "BFSI_IT",
-    "Diversified":                      "BFSI_IT",
+    "Financial Services":             "Financial Services",
+    "Information Technology":         "Information Technology",
+    "Oil Gas And Consumable Fuels":   "Oil Gas And Consumable Fuels",
+    "Fast Moving Consumer Goods":     "Fast Moving Consumer Goods",
+    "Healthcare":                     "Healthcare",
+    "Automobile and Auto Components": "Automobile and Auto Components",
+    "Capital Goods":                  "Capital Goods",
+    "Metals And Mining":              "Metals And Mining",
+    "Consumer Durables":              "Consumer Durables",
+    "Chemicals":                      "Chemicals",
+    "Construction Materials":         "Construction Materials",
+    "Power":                          "Power",
+    "Telecommunication":              "Telecommunication",
+    "Consumer Services":              "Consumer Services",
+    "Services And Logistics":         "Services And Logistics",
+    "Realty":                         "Realty",
+    "Diversified And Infrastructure": "Diversified And Infrastructure",
+    "Textiles And Apparel":           "Textiles And Apparel",
+    "Media And Entertainment":        "Media And Entertainment",
+    "Paper And Forest Products":      "Paper And Forest Products",
 }
 
 # ── Sentiment scoring ─────────────────────────────────────────
@@ -415,74 +422,75 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict) -> Optio
         },
     }
 
-    score = sum(1 for s in signals.values() if s["pass"])
+    # ── Technical score (signals 1-6) ────────────────────────
+    tech_score = sum(1 for s in signals.values() if s["pass"])
 
     # ── Signal 7: Sector Sentiment ────────────────────────────
-    # Map stock's sector to bucket, fetch sentiment for that bucket
-    sector_raw = ""
+    # Fetch stock info once — reused for sentiment + name below
     try:
-        info_s = yf.Ticker(ticker).info
-        sector_raw = info_s.get("sector","") or info_s.get("industry","") or ""
+        info       = yf.Ticker(ticker).info
+        name       = info.get("longName", ticker.replace(".NS",""))
+        sector_raw = info.get("sector","") or info.get("industry","") or ""
     except Exception:
-        pass
+        info       = {}
+        name       = ticker.replace(".NS","")
+        sector_raw = ""
 
-    # Try matching sector to bucket
-    bucket_key = None
-    for sec_name, bkt in NSE_SECTOR_BUCKET.items():
-        if sec_name.lower() in sector_raw.lower() or sector_raw.lower() in sec_name.lower():
-            bucket_key = bkt
+    # Map yfinance sector string → NSE sector bucket
+    sector_lower = sector_raw.lower()
+    bucket_key   = None
+    for nse_sec in NSE_SECTOR_BUCKET:
+        if nse_sec.lower() in sector_lower or sector_lower in nse_sec.lower():
+            bucket_key = nse_sec
             break
 
-    sentiment_val = "neutral"
-    sentiment_score_adj = 0
+    sentiment_val         = "neutral"
+    sentiment_score_adj   = 0.0
     excluded_by_sentiment = False
 
     if bucket_key and sentiment_signals:
         sentiment_val = sentiment_signals.get(bucket_key, "neutral")
         adj = SENTIMENT_SCORE.get(sentiment_val, 0)
-
         if adj == -99:
-            # HARD EXCLUDE — negative sentiment overrides everything
-            excluded_by_sentiment = True
+            excluded_by_sentiment = True   # HARD EXCLUDE
         else:
-            sentiment_score_adj = adj
+            sentiment_score_adj = float(adj)
 
+    sent_emoji = (
+        "🚫" if excluded_by_sentiment else
+        "✅" if sentiment_score_adj > 0 else
+        "⚠️" if sentiment_score_adj < 0 else "➖"
+    )
     signals["sentiment"] = {
         "pass":  sentiment_score_adj > 0,
         "value": sentiment_val,
-        "note":  f"{'✅' if sentiment_score_adj > 0 else ('❌ HARD EXCLUDE' if excluded_by_sentiment else '➖')} "
-                 f"Sector: {sector_raw or 'Unknown'} → {bucket_key or 'unmapped'} = {sentiment_val}",
+        "note":  (
+            f"{sent_emoji} {bucket_key or 'unmapped'} → {sentiment_val}"
+            + (" (HARD EXCLUDE)" if excluded_by_sentiment else
+               f" ({sentiment_score_adj:+.1f})" if sentiment_score_adj != 0 else "")
+        ),
     }
 
-    # Hard exclude on negative sentiment — no matter how good technicals are
+    # Hard exclude — negative sentiment disqualifies regardless of technicals
     if excluded_by_sentiment:
-        print(f"  🚫 {ticker} EXCLUDED — negative sector sentiment ({bucket_key})")
+        print(f"  🚫 {ticker} EXCLUDED — negative sentiment ({bucket_key})")
         return None
 
-    # Apply sentiment score adjustment (fractional allowed)
-    score = sum(1 for s in signals.values() if s.get("pass")) + sentiment_score_adj
+    # Final score = technical (0-6) + sentiment modifier (-1 / 0 / +0.5 / +1)
+    score = tech_score + sentiment_score_adj
 
     if score < MIN_SIGNALS:
         return None
 
-    # ── Compute swing levels ──────────────────────────────────
+    # ── Swing levels ──────────────────────────────────────────
     levels = compute_swing_levels(hist, curr)
 
-    # Skip if reward/risk ratio is poor (<1.0)
+    # Filter poor R/R
     if levels["rr_ratio"] < 1.0:
         return None
 
-    # ── Conviction label ──────────────────────────────────────
-    conviction = "HIGH" if score >= 5 else "MEDIUM" if score >= 4 else "LOW"
-
-    # ── Get stock name ────────────────────────────────────────
-    try:
-        info = yf.Ticker(ticker).info
-        name = info.get("longName", ticker.replace(".NS",""))
-        sector = info.get("sector", "")
-    except Exception:
-        name = ticker.replace(".NS","")
-        sector = ""
+    # ── Conviction (based on tech_score, sentiment is modifier) ─
+    conviction = "HIGH" if tech_score >= 5 else "MEDIUM" if tech_score >= 4 else "LOW"
 
     return {
         "ticker":        ticker,
@@ -491,12 +499,13 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict) -> Optio
         "scanned_at":    datetime.now(IST).strftime("%Y-%m-%d %H:%M IST"),
         "current_price": round(curr, 2),
         "score":         round(score, 1),
+        "tech_score":    tech_score,
         "max_score":     7,
         "conviction":    conviction,
         # Signals detail
         "signals":       signals,
         # Sentiment
-        "sentiment_val": sentiment_val,
+        "sentiment_val":    sentiment_val,
         "sentiment_bucket": bucket_key or "unmapped",
         # Technical values
         "rsi":           rsi,
@@ -655,11 +664,11 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
                 candidates.append(result)
                 conv = result["conviction"]
                 emoji = "🔥" if conv == "HIGH" else "⚡" if conv == "MEDIUM" else "✳️"
-                print(f"  {emoji} {ticker:<20} Score:{result['score']}/7  "
+                sent_icon = {"positive":"🟢","mild_positive":"🟡","neutral":"⬜","cautious":"🟠","negative":"🔴"}.get(result.get("sentiment_val","neutral"),"⬜")
+                print(f"  {emoji} {ticker:<20} Score:{result['score']:.1f}/7  "
                       f"RSI:{result['rsi']:.0f}  "
                       f"Vol:{result['vol_ratio']:.1f}×  "
-                      f"52w:{result['pct_from_52w']:.1f}%  "
-                      f"Sentiment:{result.get('sentiment_val','—')}  "
+                      f"Sent:{sent_icon}{result.get('sentiment_val','—')[:4]}  "
                       f"{conv}")
 
             if scanned % 50 == 0:
