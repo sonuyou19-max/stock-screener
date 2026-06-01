@@ -44,7 +44,7 @@ DATA_DIR                 = os.getenv("DATA_DIR", "/data")
 API_URL                  = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
 SWING_SENTIMENT_FILE     = os.path.join(DATA_DIR, "swing_news_sentiment.json")
 
-SCAN_DAYS   = 2     # last 2 days only — swing is short-term
+SCAN_DAYS   = 7     # last 7 days — wider window to catch more headlines
 MIN_MATCHES = 2     # minimum headline hits before applying signal
 MAX_ITEMS   = 60    # per feed
 
@@ -62,6 +62,7 @@ HEADERS = {
 # ─────────────────────────────────────────────
 
 RSS_FEEDS = {
+    # Economic Times — primary source (most reliable on Railway)
     "ET Markets":      "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
     "ET Economy":      "https://economictimes.indiatimes.com/economy/rssfeeds/1373380680.cms",
     "ET Industry":     "https://economictimes.indiatimes.com/industry/rssfeeds/13352306.cms",
@@ -69,11 +70,18 @@ RSS_FEEDS = {
     "ET Energy":       "https://economictimes.indiatimes.com/industry/energy/rssfeeds/13357174.cms",
     "ET Pharma":       "https://economictimes.indiatimes.com/industry/healthcare/biotech/pharmaceuticals/rssfeeds/13358173.cms",
     "ET IT":           "https://economictimes.indiatimes.com/tech/rssfeeds/78570561.cms",
-    "LiveMint Markets":"https://www.livemint.com/rss/markets",
-    "LiveMint Economy":"https://www.livemint.com/rss/economy",
-    "LiveMint Industry":"https://www.livemint.com/rss/industry",
-    "BusinessLine":    "https://www.thehindubusinessline.com/feeder/default.rss",
-    "MoneyControl":    "https://www.moneycontrol.com/rss/MCtopnews.xml",
+    "ET Wealth":       "https://economictimes.indiatimes.com/wealth/rssfeeds/837555174.cms",
+    # LiveMint
+    "LiveMint Markets":  "https://www.livemint.com/rss/markets",
+    "LiveMint Economy":  "https://www.livemint.com/rss/economy",
+    "LiveMint Industry": "https://www.livemint.com/rss/industry",
+    # Business Standard — good coverage, less blocking
+    "BS Markets":    "https://www.business-standard.com/rss/markets-106.rss",
+    "BS Economy":    "https://www.business-standard.com/rss/economy-policy-102.rss",
+    "BS Companies":  "https://www.business-standard.com/rss/companies-101.rss",
+    # The Hindu Business Line
+    "BusinessLine":  "https://www.thehindubusinessline.com/feeder/default.rss",
+    "BL Markets":    "https://www.thehindubusinessline.com/markets/feeder/default.rss",
 }
 
 # ─────────────────────────────────────────────
@@ -660,20 +668,30 @@ def fetch_rss_feed(source_name: str, url: str) -> list:
             entries = root.findall(".//atom:entry", ns) or root.findall(".//entry")
 
         for entry in entries[:MAX_ITEMS]:
-            title_el = entry.find("title") or entry.find("atom:title", ns)
-            title    = re.sub(r'<[^>]+>', '', (title_el.text or "") if title_el is not None else "").strip()
+            # Use explicit None checks (not truthiness) to avoid deprecation warning
+            title_el = entry.find("title")
+            if title_el is None:
+                title_el = entry.find("atom:title", ns)
+            title = re.sub(r'<[^>]+>', '', (title_el.text or "") if title_el is not None else "").strip()
             if not title or len(title) < 10:
                 continue
 
-            desc_el = (entry.find("description") or entry.find("atom:summary", ns)
-                       or entry.find("summary"))
-            desc    = re.sub(r'<[^>]+>', '', (desc_el.text or "") if desc_el is not None else "").strip()[:300]
+            desc_el = entry.find("description")
+            if desc_el is None: desc_el = entry.find("atom:summary", ns)
+            if desc_el is None: desc_el = entry.find("summary")
+            desc = re.sub(r'<[^>]+>', '', (desc_el.text or "") if desc_el is not None else "").strip()[:300]
 
-            date_el  = (entry.find("pubDate") or entry.find("published")
-                        or entry.find("atom:published", ns) or entry.find("updated"))
-            pub_date = _parse_rss_date(date_el.text) if date_el is not None and date_el.text else None
+            date_el = entry.find("pubDate")
+            if date_el is None: date_el = entry.find("published")
+            if date_el is None: date_el = entry.find("atom:published", ns)
+            if date_el is None: date_el = entry.find("updated")
 
-            if pub_date and pub_date < cutoff:
+            pub_date = None
+            if date_el is not None and date_el.text:
+                pub_date = _parse_rss_date(date_el.text)
+
+            # Accept items with unparseable dates — don't silently drop them
+            if pub_date is not None and pub_date < cutoff:
                 continue
 
             items.append({
