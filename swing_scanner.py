@@ -568,24 +568,36 @@ def fetch_sentiment_signals() -> dict:
         with _urllib.urlopen(req, timeout=10) as r:
             data = json.loads(r.read().decode())
 
-        # Try swing_news_sentiment payload first
-        swing_sent = data.get("swing_news_sentiment", {})
-        if swing_sent:
-            raw = swing_sent.get("payload", swing_sent).get("signals", {})
-            signals = {k: v["signal"] if isinstance(v, dict) else v
-                       for k, v in raw.items()}
+        # swing_news_sentiment is stored as {signals: {sector: {signal, score, ...}}}
+        swing_raw = data.get("swing_news_sentiment", {})
+        if swing_raw:
+            # Handle both direct and payload-wrapped formats
+            inner = swing_raw.get("payload", swing_raw)
+            sector_signals = inner.get("signals", {})
+            signals = {}
+            for sector, val in sector_signals.items():
+                if isinstance(val, dict):
+                    signals[sector] = val.get("signal", "neutral")
+                elif isinstance(val, str):
+                    signals[sector] = val
             if signals:
-                print(f"  ✅ Sentiment loaded from API swing_news_sentiment ({len(signals)} sectors)")
+                print(f"  ✅ Swing sentiment loaded from API ({len(signals)} sectors)")
                 return signals
 
-        # Fallback: long-term news_signals (4 broad buckets) — partial coverage
+        # Fallback: long-term news_signals (4 broad buckets — partial coverage)
         news = data.get("news_signals", {})
         if isinstance(news, dict):
-            raw = news.get("payload", news).get("signals", news.get("signals", {}))
-            signals = {k: v["signal"] if isinstance(v, dict) else v
-                       for k, v in raw.items() if isinstance(v, (dict, str))}
+            inner = news.get("payload", news)
+            sector_signals = inner.get("signals", {})
+            signals = {}
+            for k, v in sector_signals.items():
+                if isinstance(v, dict):
+                    signals[k] = v.get("signal", "neutral")
+                elif isinstance(v, str):
+                    signals[k] = v
             if signals:
-                print(f"  ⚠️  Swing sentiment not found — using long-term signals ({len(signals)} buckets, partial coverage)")
+                print(f"  ⚠️  Swing sentiment not found — using long-term signals "
+                      f"({len(signals)} buckets, partial coverage)")
                 return signals
 
         print("  ⚠️  No sentiment signals available — sentiment check skipped")
