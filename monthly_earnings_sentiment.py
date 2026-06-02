@@ -121,37 +121,76 @@ RSS_FEEDS = {
 # ─────────────────────────────────────────────
 
 EARNINGS_POSITIVE = [
+    # Estimate beats
     "beats estimates", "beat estimates", "better than expected",
     "above estimates", "above expectations",
+    # Profit
     "profit rises", "profit jumps", "profit surges", "profit up",
     "pat rises", "pat jumps", "pat up", "net profit up",
+    "eps up", "earnings growth", "earnings beat",
+    # Revenue / sales
     "revenue growth", "revenue rises", "revenue up", "revenue jumps",
+    "sales growth", "sales up", "sales jump", "sales rise",
+    # EBITDA / margins
     "ebitda grows", "ebitda rises", "ebitda up",
     "margin expansion", "margins improve", "margins widen",
+    # Guidance
     "raises guidance", "upgrades guidance", "raises outlook",
+    # Records
     "record revenue", "record profit", "all-time high",
     "strong quarter", "robust quarter", "healthy numbers",
+    # Capital returns
     "dividend declared", "interim dividend", "special dividend",
     "buyback announced", "share buyback",
+    # Order / volume
     "order book record", "highest ever", "sequential growth",
-    "volume growth", "market share gain",
+    "volume growth", "volumes up", "volumes grew", "market share gain",
+    "order inflows", "order wins",
+    # Banking / NBFC specific positives
+    "npa falls", "npa down", "npa reduced", "asset quality improves",
+    "gross npa down", "net npa down",
+    "slippages down", "slippages decline", "lower slippages",
+    "provisions decline", "lower provisions", "provisions fall",
+    "credit cost down", "credit cost falls",
+    "pcr rises", "pcr improves", "provision coverage rises",
+    "loan growth", "advances growth", "credit growth",
 ]
 
 EARNINGS_NEGATIVE = [
+    # Estimate misses
     "misses estimates", "miss estimates", "below expectations",
     "below estimates", "disappoints",
+    # Profit
     "profit falls", "profit declines", "profit drops", "profit down",
     "pat falls", "pat declines", "pat down", "net profit down",
+    "eps down", "earnings fall", "earnings decline", "earnings miss",
+    # Revenue / sales
     "revenue decline", "revenue falls", "revenue drops",
+    "sales decline", "sales fall", "sales drop",
+    # EBITDA / margins
     "ebitda falls", "ebitda declines", "ebitda down",
     "margin compression", "margins squeeze", "margins contract",
+    # Guidance
     "cuts guidance", "lowers guidance", "revises guidance down",
     "negative outlook", "cautious outlook",
+    # Losses
     "loss widened", "loss deepens", "loss reported",
     "disappointing results", "weak quarter", "muted numbers",
+    # Operational
     "order cancellation", "capex slashed", "cost overrun",
     "inventory build", "demand slowdown", "volume decline",
+    "volumes down", "volumes fell", "demand weak", "demand muted",
+    "price cuts", "write-off", "write-down",
+    # Management
     "management change", "ceo resign",
+    # Banking / NBFC specific negatives
+    "npa rises", "npa increased", "npa up", "npa worsens",
+    "gross npa rises", "gross npa up", "net npa rises",
+    "slippages rise", "slippages increase", "higher slippages", "slippages up",
+    "provisions up", "provisions increase", "higher provisions", "provisions rise",
+    "credit cost rises", "credit cost up", "credit cost elevated",
+    "stressed assets", "stress in loans", "asset quality concern",
+    "stressed book", "special mention account",
 ]
 
 # ─────────────────────────────────────────────
