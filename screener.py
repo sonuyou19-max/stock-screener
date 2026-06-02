@@ -8,6 +8,15 @@ negative-sentiment sectors), and selects the top 7 stocks.
 
 Sectors match the 20 NSE classifications used by the swing scanner.
 Run monthly to refresh your portfolio picks.
+
+Schedule: 0 3 3 * *  (3:00 AM UTC = 8:30 AM IST, 3rd of each month)
+  Runs 2 days after monthly_earnings_sentiment.py (1st) so ticker
+  signals are already written to /data before this script reads them.
+
+Railway Cron setup (dashboard → New Service → Cron):
+  Start command : python screener.py
+  Schedule      : 0 3 3 * *
+  Variables     : DATA_DIR, API_URL, ANTHROPIC_API_KEY (inherit from project)
 """
 
 import os
