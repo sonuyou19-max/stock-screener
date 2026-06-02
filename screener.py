@@ -44,11 +44,11 @@ MIN_ADV        = 200_000   # Min 30-day avg daily volume (shares)
 MIN_ADTV_CR    = 5.0       # Min avg daily traded value (₹ crore)
 
 UNIFIED_SCORING_WEIGHTS = {
-    "peg_score":            0.20,
-    "roe_score":            0.20,
-    "revenue_growth_score": 0.25,
-    "debt_score":           0.15,
-    "momentum_score":       0.20,
+    "peg_score":            0.22,   # +2% — valuation matters more for 3M+ hold
+    "roe_score":            0.22,   # +2% — capital efficiency compounds over time
+    "revenue_growth_score": 0.28,   # +3% — structural growth is the primary driver
+    "debt_score":           0.18,   # +3% — balance sheet stress amplifies on longer holds
+    "momentum_score":       0.10,   # -10% — less noise from short-term price action
 }
 
 # Sector-level sentiment adjustment (applied AFTER global normalisation).
@@ -369,8 +369,10 @@ def score_stock(row: dict) -> dict:
 
     m1 = row.get("momentum_1m", 0) or 0
     m3 = row.get("momentum_3m", 0) or 0
+    m6 = row.get("momentum_6m", 0) or 0
     vr = row.get("volume_ratio", 1.0) or 1.0
-    scores["momentum_raw"] = (0.4 * m1) + (0.4 * m3) + (0.2 * (vr - 1) * 10)
+    # 3M+ hold: shift weight from short-term (1M) to medium-term (3M+6M) price trend
+    scores["momentum_raw"] = (0.1 * m1) + (0.4 * m3) + (0.4 * m6) + (0.1 * (vr - 1) * 10)
 
     return scores
 
@@ -1435,6 +1437,7 @@ def build_portfolio(budget: int = BUDGET) -> tuple[dict, pd.DataFrame, pd.DataFr
             "debt_equity":        round(row["debt_raw"], 2) if row.get("debt_raw") else "N/A",
             "momentum_1m":        row["momentum_1m"],
             "momentum_3m":        row["momentum_3m"],
+            "momentum_6m":        row.get("momentum_6m", 0),
             "allocation_inr":     round(per_stock, 0),
             "approx_shares":      int(per_stock // buy_price) if buy_price > 0 else 0,
             # Liquidity
@@ -1565,10 +1568,13 @@ def generate_audit_trail(row: dict) -> dict:
 
     m1 = row.get("momentum_1m", 0) or 0
     m3 = row.get("momentum_3m", 0) or 0
-    if m1 >= 10 and m3 >= 15:
-        why.append(f"Strong price momentum: +{m1:.1f}% (1M), +{m3:.1f}% (3M)")
-    elif m1 >= 5 or m3 >= 10:
-        why.append(f"Positive momentum: +{m1:.1f}% (1M), +{m3:.1f}% (3M)")
+    m6 = row.get("momentum_6m", 0) or 0
+    if m3 >= 15 and m6 >= 20:
+        why.append(f"Strong medium-term momentum: +{m3:.1f}% (3M), +{m6:.1f}% (6M)")
+    elif m3 >= 8 or m6 >= 15:
+        why.append(f"Positive medium-term momentum: +{m3:.1f}% (3M), +{m6:.1f}% (6M)")
+    elif m1 >= 5:
+        why.append(f"Recent positive momentum: +{m1:.1f}% (1M), {m3:+.1f}% (3M)")
 
     insider = row.get("insider_pct")
     if insider is not None and insider >= 50:
@@ -1802,7 +1808,7 @@ def print_portfolio_report(portfolio: dict, vol: dict = None):
         print(f"    PE:          {s['pe_ratio']:<8}  PEG: {s['peg_ratio']:<8}  PB: {s['pb_ratio']}")
         print(f"    ROE:         {s['roe_pct']}%")
         print(f"    Rev Growth:  {s['rev_growth_pct']}%    D/E: {s['debt_equity']}")
-        print(f"    Momentum:    1M: {s['momentum_1m']:+.1f}%   3M: {s['momentum_3m']:+.1f}%")
+        print(f"    Momentum:    1M: {s['momentum_1m']:+.1f}%   3M: {s['momentum_3m']:+.1f}%   6M: {s.get('momentum_6m', 0):+.1f}%")
         print(f"    ── Liquidity ─────────────────────────────────")
         print(f"    Avg Daily Vol: {s['adv_30d']:>12,.0f} shares/day")
         print(f"    Avg Daily Val: ₹{s['adtv_cr']:>9.1f} Cr/day")
@@ -1924,7 +1930,7 @@ def print_full_ranking(all_df: pd.DataFrame):
     display_cols = [
         "ticker", "nse_sector", "sector_sentiment", "final_score",
         "peg_raw", "pe_raw", "roe_raw", "revenue_growth_raw",
-        "debt_raw", "momentum_1m", "momentum_3m", "adv_30d", "adtv_cr",
+        "debt_raw", "momentum_1m", "momentum_3m", "momentum_6m", "adv_30d", "adtv_cr",
     ]
     col_rename = {
         "ticker":               "Ticker",
@@ -1938,6 +1944,7 @@ def print_full_ranking(all_df: pd.DataFrame):
         "debt_raw":             "D/E",
         "momentum_1m":          "Mom1M%",
         "momentum_3m":          "Mom3M%",
+        "momentum_6m":          "Mom6M%",
         "adv_30d":              "ADV(shares)",
         "adtv_cr":              "ADTV(₹Cr)",
     }
