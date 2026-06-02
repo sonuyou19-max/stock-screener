@@ -495,7 +495,7 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict) -> Optio
     return {
         "ticker":        ticker,
         "name":          name,
-        "sector":        sector,
+        "sector":        sector_raw,
         "scanned_at":    datetime.now(IST).strftime("%Y-%m-%d %H:%M IST"),
         "current_price": round(curr, 2),
         "score":         round(score, 1),
