@@ -1,9 +1,9 @@
 """
-NSE Universe — Nifty 500 Fetcher & Bucket Mapper
+NSE Universe — Nifty 500 Fetcher & Sector Mapper
 ==================================================
 Fetches the live Nifty 500 constituent list from niftyindices.com
-and maps each stock to one of the 4 strategy buckets based on
-NSE's Industry classification.
+and maps each stock to one of the 20 NSE sector classifications
+used by the swing scanner and monthly screener.
 
 No login required. No hardcoded tickers.
 Universe refreshes every time the screener runs.
@@ -26,92 +26,78 @@ from typing import Optional
 
 NIFTY500_URL  = "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
 CACHE_PATH    = "/tmp/nifty500_cache.csv"
-CACHE_MAX_AGE = 7  # days — refresh universe weekly
+CACHE_MAX_AGE = 7  # days
 
-# ── Sector → Bucket Mapping ───────────────────
-# Maps NSE Industry labels to our 4 bucket keys.
-# NSE uses these exact strings in their CSV.
-SECTOR_BUCKET_MAP = {
-    # BFSI + IT
-    "Financial Services":               "BFSI_IT",
-    "Information Technology":           "BFSI_IT",
-    "IT":                               "BFSI_IT",
-
-    # Defence + Infra
-    "Capital Goods":                    "DEFENCE_INFRA",
-    "Construction":                     "DEFENCE_INFRA",
-    "Construction Materials":           "DEFENCE_INFRA",
-    "Industrial Manufacturing":         "DEFENCE_INFRA",
-    "Defence":                          "DEFENCE_INFRA",
-    "Aerospace & Defence":              "DEFENCE_INFRA",
-
-    # Green Energy + EV
-    "Power":                            "GREEN_ENERGY_EV",
-    "Automobile and Auto Components":   "GREEN_ENERGY_EV",
-    "Automobiles":                      "GREEN_ENERGY_EV",
-    "Consumer Durables":                "GREEN_ENERGY_EV",
-    "Electrical Equipment":             "GREEN_ENERGY_EV",
-
-    # FMCG + Pharma
-    "Fast Moving Consumer Goods":       "FMCG_PHARMA",
-    "FMCG":                             "FMCG_PHARMA",
-    "Pharmaceuticals & Biotechnology":  "FMCG_PHARMA",
-    "Pharmaceuticals":                  "FMCG_PHARMA",
-    "Healthcare Services":              "FMCG_PHARMA",
-    "Healthcare":                       "FMCG_PHARMA",
+# ── Sector Mapping ────────────────────────────
+# Maps NSE Industry labels from the CSV to the 20 exact NSE sector names
+# used by the swing scanner's sector sentiment signals.
+NSE_SECTOR_MAP = {
+    # Direct matches (most common in CSV)
+    "Financial Services":              "Financial Services",
+    "Information Technology":          "Information Technology",
+    "Oil Gas And Consumable Fuels":    "Oil Gas And Consumable Fuels",
+    "Fast Moving Consumer Goods":      "Fast Moving Consumer Goods",
+    "Healthcare":                      "Healthcare",
+    "Automobile and Auto Components":  "Automobile and Auto Components",
+    "Capital Goods":                   "Capital Goods",
+    "Metals And Mining":               "Metals And Mining",
+    "Consumer Durables":               "Consumer Durables",
+    "Chemicals":                       "Chemicals",
+    "Construction Materials":          "Construction Materials",
+    "Power":                           "Power",
+    "Telecommunication":               "Telecommunication",
+    "Consumer Services":               "Consumer Services",
+    "Services And Logistics":          "Services And Logistics",
+    "Realty":                          "Realty",
+    "Diversified And Infrastructure":  "Diversified And Infrastructure",
+    "Textiles And Apparel":            "Textiles And Apparel",
+    "Media And Entertainment":         "Media And Entertainment",
+    "Paper And Forest Products":       "Paper And Forest Products",
+    # Aliases / variant names that appear in the CSV
+    "IT":                              "Information Technology",
+    "FMCG":                            "Fast Moving Consumer Goods",
+    "Pharmaceuticals & Biotechnology": "Healthcare",
+    "Pharmaceuticals":                 "Healthcare",
+    "Healthcare Services":             "Healthcare",
+    "Automobiles":                     "Automobile and Auto Components",
+    "Industrial Manufacturing":        "Capital Goods",
+    "Defence":                         "Capital Goods",
+    "Aerospace & Defence":             "Capital Goods",
+    "Electrical Equipment":            "Capital Goods",
+    "Construction":                    "Construction Materials",
+    "Logistics":                       "Services And Logistics",
+    "Services":                        "Services And Logistics",
+    "Media & Entertainment":           "Media And Entertainment",
+    "Textiles":                        "Textiles And Apparel",
+    "Textiles & Apparel":              "Textiles And Apparel",
+    "Diversified":                     "Diversified And Infrastructure",
+    "Infrastructure":                  "Diversified And Infrastructure",
+    "Oil, Gas & Consumable Fuels":     "Oil Gas And Consumable Fuels",
+    "Gas":                             "Oil Gas And Consumable Fuels",
+    "Forest Materials":                "Paper And Forest Products",
 }
 
-# ── Fundamental Filters Per Bucket ───────────
-# Stocks must pass ALL filters to enter scoring.
-# These mirror the criteria we agreed on.
-BUCKET_FILTERS = {
-    "BFSI_IT": {
-        "min_market_cap_cr":    20_000,
-        "max_pe":               35,
-        "max_pb":               5.0,      # 1.4: PB ceiling
-        "max_52w_proximity":    0.90,     # 1.4: exclude if >90% of 52w high
-        "min_roe":              15,
-        "min_revenue_growth":   10,
-        "max_debt_equity":      2.0,
-        "max_peg":              2.5,
-        "min_profit_growth":    8,
-    },
-    "DEFENCE_INFRA": {
-        "min_market_cap_cr":    5_000,
-        "max_market_cap_cr":    40_000,
-        "max_pe":               50,
-        "max_pb":               8.0,      # 1.4
-        "max_52w_proximity":    0.90,     # 1.4
-        "min_roe":              12,
-        "min_revenue_growth":   12,      # Relaxed from 15: infra/EPC revenue is lumpy (order-book driven)
-        "max_debt_equity":      1.5,
-        "max_peg":              3.0,
-        "min_profit_growth":    12,
-    },
-    "GREEN_ENERGY_EV": {
-        "min_market_cap_cr":    2_000,
-        "max_pe":               80,
-        "max_pb":               10.0,     # 1.4
-        "max_52w_proximity":    0.92,     # 1.4: slightly relaxed — sector is volatile
-        "min_revenue_growth":   20,
-        "max_debt_equity":      6.0,      # Raised from 3.0: solar developers use project-level
-                                          # debt in ring-fenced SPVs — Yahoo Finance reports
-                                          # consolidated D/E which inflates the parent metric
-        "max_peg":              4.0,
-        "min_profit_growth":    10,
-    },
-    "FMCG_PHARMA": {
-        "min_market_cap_cr":    10_000,
-        "max_pe":               65,       # Revised: FMCG/Pharma 5yr avg PE is 52x; 65 allows premium without buying junk
-        "max_pb":               12.0,     # Unchanged: FMCG brands justify high PB
-        "max_52w_proximity":    0.90,     # Unchanged: don't buy near peaks
-        "min_roe":              16,       # Relaxed from 18: VBL (16.8%), DrReddy (16.1%) are quality cos missed by 1-2%
-        "min_revenue_growth":   8,        # Unchanged: only growing businesses
-        "max_debt_equity":      1.5,      # Revised from 0.5: pharma D/E 0.04–0.58 operationally; 1.5 excludes truly leveraged
-        "max_peg":              3.0,      # Unchanged
-        "min_profit_growth":    10,       # Unchanged: profit discipline non-negotiable
-    },
+# ── Universal Fundamental Filters ────────────
+# Single set applied to all sectors — scoring differentiates quality.
+UNIVERSAL_FILTERS = {
+    "min_market_cap_cr":  2_000,   # investable companies only
+    "max_pe":             75,      # generous ceiling — covers growth sectors
+    "max_pb":             12.0,    # allows brand/premium franchises
+    "max_52w_proximity":  0.92,    # avoid buying near 52w peak
+    "min_roe":            10,      # minimum capital efficiency bar
+    "min_revenue_growth": 5,       # growing businesses only
+    "max_debt_equity":    3.0,     # moderate leverage tolerance
+    "max_peg":            4.5,     # allows growth premium
+    "min_profit_growth":  0,       # excludes loss-making (negative earnings growth)
 }
+
+# Expose UNIVERSAL_FILTERS as BUCKET_FILTERS for any legacy callers
+BUCKET_FILTERS = {"_universal": UNIVERSAL_FILTERS}
+
+# Holdings thresholds — used by screener for display and scoring
+INSIDER_HIGH   = 50.0
+INSIDER_NORMAL = 35.0
+INSIDER_LOW    = 20.0
 
 
 # ─────────────────────────────────────────────
@@ -119,7 +105,6 @@ BUCKET_FILTERS = {
 # ─────────────────────────────────────────────
 
 def _cache_is_fresh() -> bool:
-    """Return True if cached CSV exists and is less than CACHE_MAX_AGE days old."""
     if not os.path.exists(CACHE_PATH):
         return False
     age_days = (time.time() - os.path.getmtime(CACHE_PATH)) / 86400
@@ -152,7 +137,6 @@ def fetch_nifty500() -> pd.DataFrame:
     Returns DataFrame with columns:
       company_name | industry | symbol | nse_ticker
     """
-    # Use cache if fresh
     if _cache_is_fresh():
         cached = _load_cache()
         if cached is not None:
@@ -177,11 +161,8 @@ def fetch_nifty500() -> pd.DataFrame:
 
         from io import StringIO
         df = pd.read_csv(StringIO(response.text))
-
-        # Normalise column names
         df.columns = [c.strip() for c in df.columns]
 
-        # Expected: Company Name, Industry, Symbol, Series, ISIN Code
         df = df.rename(columns={
             "Company Name": "company_name",
             "Industry":     "industry",
@@ -190,14 +171,11 @@ def fetch_nifty500() -> pd.DataFrame:
             "ISIN Code":    "isin",
         })
 
-        # Keep only equity series
         if "series" in df.columns:
             df = df[df["series"] == "EQ"].copy()
 
-        # Add yfinance-compatible ticker (append .NS)
         df["nse_ticker"] = df["symbol"].str.strip() + ".NS"
         df["industry"]   = df["industry"].str.strip()
-
         df = df[["company_name", "industry", "symbol", "nse_ticker"]].copy()
         df = df.dropna(subset=["symbol", "industry"])
 
@@ -207,49 +185,42 @@ def fetch_nifty500() -> pd.DataFrame:
 
     except Exception as e:
         print(f"  ⚠️  Failed to fetch Nifty 500: {e}")
-        print(f"  ⚠️  Attempting to use cached version...")
-
+        print(f"  ⚠️  Attempting cached version...")
         cached = _load_cache()
         if cached is not None:
             print(f"  ✅ Loaded {len(cached)} stocks from cache (stale)")
             return cached
-
         print(f"  ❌ No cache available. Returning empty universe.")
         return pd.DataFrame(columns=["company_name", "industry", "symbol", "nse_ticker"])
 
 
 # ─────────────────────────────────────────────
-# BUCKET MAPPER
+# SECTOR MAPPER
 # ─────────────────────────────────────────────
 
-def map_to_buckets(df: pd.DataFrame) -> dict[str, list[str]]:
+def map_to_sectors(df: pd.DataFrame) -> dict[str, list[str]]:
     """
-    Map Nifty 500 stocks to buckets based on Industry.
-    Returns {bucket_key: [list of nse_tickers]}
+    Map Nifty 500 stocks to the 20 NSE sectors.
+    Returns {sector_name: [list of nse_tickers]}
     """
-    buckets: dict[str, list[str]] = {
-        "BFSI_IT":        [],
-        "DEFENCE_INFRA":  [],
-        "GREEN_ENERGY_EV":[],
-        "FMCG_PHARMA":    [],
-    }
-
+    all_sectors = sorted(set(NSE_SECTOR_MAP.values()))
+    sectors: dict[str, list[str]] = {s: [] for s in all_sectors}
     unmapped = []
 
     for _, row in df.iterrows():
         industry = row["industry"]
         ticker   = row["nse_ticker"]
-        bucket   = SECTOR_BUCKET_MAP.get(industry)
+        sector   = NSE_SECTOR_MAP.get(industry)
 
-        if bucket:
-            buckets[bucket].append(ticker)
+        if sector:
+            sectors[sector].append(ticker)
         else:
             unmapped.append(industry)
 
-    # Summary
-    print(f"\n  📊 Bucket Universe Sizes:")
-    for key, tickers in buckets.items():
-        print(f"    {key:<20} {len(tickers):>3} stocks")
+    print(f"\n  📊 Sector Universe Sizes:")
+    for sec, tickers in sorted(sectors.items(), key=lambda x: -len(x[1])):
+        if tickers:
+            print(f"    {sec:<40} {len(tickers):>3} stocks")
 
     unique_unmapped = set(unmapped)
     if unique_unmapped:
@@ -257,117 +228,87 @@ def map_to_buckets(df: pd.DataFrame) -> dict[str, list[str]]:
         for ind in sorted(unique_unmapped):
             print(f"    - {ind}")
 
-    return buckets
+    return sectors
+
+
+# Backward-compat alias — kept for any scripts that still import map_to_buckets
+def map_to_buckets(df: pd.DataFrame) -> dict[str, list[str]]:
+    return map_to_sectors(df)
 
 
 # ─────────────────────────────────────────────
 # FILTER CHECKER (pre-scoring gate)
 # ─────────────────────────────────────────────
 
-def passes_fundamental_filters(data: dict, bucket_key: str) -> tuple[bool, str]:
+def passes_fundamental_filters(data: dict, bucket_key: str = "") -> tuple[bool, str]:
     """
-    Check if a stock's yfinance data passes the bucket's
-    fundamental filters. Returns (True, "") or (False, reason).
+    Check if a stock's yfinance data passes the universal fundamental filters.
+    Returns (True, "") or (False, reason).
 
-    Checks (in order):
-      - Market cap (min/max)
-      - PE ceiling
-      - PB ceiling          (1.4)
-      - 52w high proximity  (1.4)
-      - ROE floor
-      - Revenue growth floor
-      - Debt/Equity ceiling
-      - PEG ceiling
-      - Profit growth floor
+    bucket_key is accepted for backward compatibility but ignored —
+    the same UNIVERSAL_FILTERS apply to all sectors.
     """
-    f = BUCKET_FILTERS.get(bucket_key, {})
+    f = UNIVERSAL_FILTERS
 
     mkt_cap_cr = data.get("market_cap_cr", 0) or 0
 
-    # ── Market cap ────────────────────────────────────────────
-    if "min_market_cap_cr" in f and mkt_cap_cr < f["min_market_cap_cr"]:
+    if mkt_cap_cr < f["min_market_cap_cr"]:
         return False, f"Mkt cap ₹{mkt_cap_cr:.0f}Cr < min ₹{f['min_market_cap_cr']}Cr"
 
-    if "max_market_cap_cr" in f and mkt_cap_cr > f["max_market_cap_cr"]:
-        return False, f"Mkt cap ₹{mkt_cap_cr:.0f}Cr > max ₹{f['max_market_cap_cr']}Cr"
-
-    # ── PE ceiling ────────────────────────────────────────────
     pe = data.get("pe_ratio")
-    if pe and "max_pe" in f and pe > f["max_pe"]:
+    if pe and pe > f["max_pe"]:
         return False, f"PE {pe:.1f} > max {f['max_pe']}"
 
-    # ── PB ceiling (1.4) ──────────────────────────────────────
     pb = data.get("pb_ratio")
-    if pb is not None and pb > 0 and "max_pb" in f and pb > f["max_pb"]:
+    if pb is not None and pb > 0 and pb > f["max_pb"]:
         return False, f"PB {pb:.1f} > max {f['max_pb']} — overvalued on assets"
 
-    # ── 52-week high proximity (1.4) ──────────────────────────
-    # Exclude stocks trading too close to their 52w high —
-    # buying near peak means limited upside and high reversal risk
     price_pos = data.get("price_position_52w")
-    if price_pos is not None and "max_52w_proximity" in f:
-        if price_pos > f["max_52w_proximity"]:
-            return False, (
-                f"Price at {price_pos*100:.0f}% of 52w high "
-                f"> max {f['max_52w_proximity']*100:.0f}% — near peak"
-            )
+    if price_pos is not None and price_pos > f["max_52w_proximity"]:
+        return False, (
+            f"Price at {price_pos*100:.0f}% of 52w high "
+            f"> max {f['max_52w_proximity']*100:.0f}% — near peak"
+        )
 
-    # ── ROE floor ─────────────────────────────────────────────
     roe = data.get("roe_pct")
-    if roe is not None and "min_roe" in f and roe < f["min_roe"]:
+    if roe is not None and roe < f["min_roe"]:
         return False, f"ROE {roe:.1f}% < min {f['min_roe']}%"
 
-    # ── Revenue growth floor ──────────────────────────────────
     rev_g = data.get("revenue_growth_pct")
-    if rev_g is not None and "min_revenue_growth" in f and rev_g < f["min_revenue_growth"]:
+    if rev_g is not None and rev_g < f["min_revenue_growth"]:
         return False, f"Rev growth {rev_g:.1f}% < min {f['min_revenue_growth']}%"
 
-    # ── Debt/Equity ceiling ───────────────────────────────────
     de = data.get("debt_to_equity")
-    if de is not None and "max_debt_equity" in f and de > f["max_debt_equity"]:
+    if de is not None and de > f["max_debt_equity"]:
         return False, f"D/E {de:.2f} > max {f['max_debt_equity']}"
 
-    # ── Data quality gate — growth data required ─────────────
-    # If NEITHER earningsGrowth NOR revenueGrowth is available from Yahoo Finance,
-    # we cannot verify the stock's growth trajectory or compute PEG.
-    # Such stocks are excluded to prevent data-blind picks (e.g. GALLANTT).
-    # Exception: banks/insurers where revenue_growth may appear as NaN due to
-    # Yahoo Finance quirks — they are already handled by the ROE/PE filters.
+    # Data quality gate — must have at least one growth metric
     earn_g = data.get("earnings_growth_pct")
     rev_g_check = data.get("revenue_growth_pct")
     industry_for_gate = (data.get("industry") or "").lower()
     is_financial = any(k in industry_for_gate for k in ("bank", "insurance", "financial"))
     if not is_financial and earn_g is None and rev_g_check is None:
-        return False, "No growth data available — cannot verify fundamentals (earningsGrowth + revenueGrowth both None)"
+        return False, "No growth data available — cannot verify fundamentals"
 
-    # ── Loss-making stock gate ───────────────────────────────
-    # Exclude stocks with no PE (loss-making) AND negative earnings growth.
-    # A loss-making company has no place in a systematic value+growth strategy.
-    # Exception: financials where PE can be NaN due to Yahoo Finance quirks.
-    pe_val_check  = data.get("pe_ratio")
-    earn_g_check  = data.get("earnings_growth_pct")
+    # Loss-making gate
+    pe_val_check = data.get("pe_ratio")
+    earn_g_check = data.get("earnings_growth_pct")
     if pe_val_check is None and earn_g_check is not None and earn_g_check < 0:
         return False, f"Loss-making: no PE and earnings declining ({earn_g_check:.1f}%)"
-    # Also exclude if PE is NaN AND earnings growth is also NaN (no visibility at all)
-    # but only for non-financial stocks (financials already handled above)
-    # — this case is already caught by the data quality gate above
 
-    # ── PEG ceiling ───────────────────────────────────────────
-    # Primary: use computed PEG (PE / earningsGrowth)
-    # Fallback: compute PEG from PE / revenueGrowth when earnings data missing
-    # This prevents stocks with missing earningsGrowth from bypassing the cap
+    # PEG ceiling
     peg = data.get("peg_ratio")
-    if peg is None and "max_peg" in f:
-        pe_val  = data.get("pe_ratio")
-        rev_g   = data.get("revenue_growth_pct")
-        if pe_val and pe_val > 0 and rev_g and rev_g > 0:
-            peg = round(pe_val / rev_g, 2)  # fallback PEG
-    if peg is not None and peg > 0 and "max_peg" in f and peg > f["max_peg"]:
+    if peg is None:
+        pe_val = data.get("pe_ratio")
+        rev_g2 = data.get("revenue_growth_pct")
+        if pe_val and pe_val > 0 and rev_g2 and rev_g2 > 0:
+            peg = round(pe_val / rev_g2, 2)
+    if peg is not None and peg > 0 and peg > f["max_peg"]:
         return False, f"PEG {peg:.2f} > max {f['max_peg']}"
 
-    # ── Profit growth floor ───────────────────────────────────
+    # Profit growth floor
     profit_g = data.get("earnings_growth_pct")
-    if profit_g is not None and "min_profit_growth" in f and profit_g < f["min_profit_growth"]:
+    if profit_g is not None and profit_g < f["min_profit_growth"]:
         return False, f"Profit growth {profit_g:.1f}% < min {f['min_profit_growth']}%"
 
     return True, ""
@@ -382,6 +323,7 @@ if __name__ == "__main__":
     print(df.head(10).to_string())
     print(f"\nTotal: {len(df)} stocks")
 
-    buckets = map_to_buckets(df)
-    for k, v in buckets.items():
-        print(f"\n{k}: {v[:5]}...")  # show first 5 tickers per bucket
+    sectors = map_to_sectors(df)
+    for k, v in sorted(sectors.items()):
+        if v:
+            print(f"\n{k}: {v[:3]}...")

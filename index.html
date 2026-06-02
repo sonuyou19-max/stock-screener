@@ -396,6 +396,7 @@ header{
 .sc-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;}
 .sc-tkr{font-family:var(--display);font-size:17px;font-weight:900;color:var(--text);letter-spacing:-.01em;}
 .sc-name{font-size:10px;color:var(--text3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px;}
+.sc-sector-tag{font-size:9px;color:var(--text3);margin-top:3px;opacity:0.75;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px;}
 .sc-score-num{font-family:var(--mono);font-size:20px;font-weight:700;text-align:right;}
 .sc-score-num.high{color:#2d7a5a;}
 .sc-score-num.mid{color:#8a6800;}
@@ -1157,9 +1158,10 @@ async function fetchUsPrices(){
 }
 
 /* ═══ BUCKET/STOCK RENDERER ═══ */
-const IT={BFSI_IT:{min_rev:10,max_pe:35,max_pb:5,min_roe:15,max_de:2,max_peg:2.5},DEFENCE_INFRA:{min_rev:12,max_pe:50,max_pb:8,min_roe:12,max_de:1.5,max_peg:3},GREEN_ENERGY_EV:{min_rev:20,max_pe:80,max_pb:10,max_de:6},FMCG_PHARMA:{min_rev:8,max_pe:65,max_pb:12,min_roe:16,max_de:1.5}};
+const IT={BFSI_IT:{min_rev:10,max_pe:35,max_pb:5,min_roe:15,max_de:2,max_peg:2.5},DEFENCE_INFRA:{min_rev:12,max_pe:50,max_pb:8,min_roe:12,max_de:1.5,max_peg:3},GREEN_ENERGY_EV:{min_rev:20,max_pe:80,max_pb:10,max_de:6},FMCG_PHARMA:{min_rev:8,max_pe:65,max_pb:12,min_roe:16,max_de:1.5},top_picks:{min_rev:5,max_pe:75,max_pb:12,min_roe:10,max_de:3,max_peg:4.5}};
 const UT={TECH:{min_rev:8,max_pe:80,max_pb:20,max_de:400,max_peg:4},DEFENSIVE_DIV:{min_rev:3,max_pe:30,max_pb:8,min_roe:12,max_de:250,max_peg:2.5}};
-const IBT={BFSI_IT:'BFSI + IT · 30%',DEFENCE_INFRA:'Defence + Infra · 30%',GREEN_ENERGY_EV:'Green Energy + EV · 20%',FMCG_PHARMA:'FMCG + Pharma · 20%'};
+const IBT={BFSI_IT:'BFSI + IT · 30%',DEFENCE_INFRA:'Defence + Infra · 30%',GREEN_ENERGY_EV:'Green Energy + EV · 20%',FMCG_PHARMA:'FMCG + Pharma · 20%',top_picks:'Nifty 500 · Top 7 · All Sectors'};
+const SENT_EMOJI={positive:'🟢',mild_positive:'🟡',neutral:'⚪',cautious:'🟠',negative:'🔴'};
 const UBT={TECH:'Technology · 80%',DEFENSIVE_DIV:'Defensive + Dividend · 20%'};
 
 function mr(label,val,fmt,req,reqFmt,pw){
@@ -1208,6 +1210,7 @@ function buildCard(s,i,bk,prefix,cur){
           <div class="sc-tkr">${tkr} <span style="font-size:10px;color:var(--blue2);font-weight:500;vertical-align:middle;">↗</span></div>
         </a>
         <div class="sc-name" title="${s.name||''}">${s.name||''}</div>
+        ${s.nse_sector?`<div class="sc-sector-tag">${SENT_EMOJI[s.sector_sentiment]||'⚪'} ${s.nse_sector}</div>`:''}
       </div>
       <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
         <div style="text-align:right;"><div class="sc-score-num ${sc}">${(s.final_score||0).toFixed(1)}</div><div class="sc-score-lbl">Score</div></div>
