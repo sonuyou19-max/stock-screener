@@ -51,7 +51,7 @@ UNIFIED_SCORING_WEIGHTS = {
     "momentum_score":       0.20,
 }
 
-# Sentiment adjustment applied AFTER global normalisation.
+# Sector-level sentiment adjustment (applied AFTER global normalisation).
 # "negative" sectors are hard-excluded via sector skip; -99 is a safety fallback.
 SENTIMENT_SCORE_ADJ = {
     "positive":      5.0,
@@ -59,6 +59,16 @@ SENTIMENT_SCORE_ADJ = {
     "neutral":       0.0,
     "cautious":     -3.0,
     "negative":    -99.0,
+}
+
+# Ticker-level earnings quality adjustment (from monthly_earnings_sentiment.py).
+# Applied per stock — not a hard-exclude, just a significant score delta.
+TICKER_EARNINGS_ADJ = {
+    "positive":      5.0,
+    "mild_positive": 2.5,
+    "neutral":       0.0,
+    "cautious":     -5.0,
+    "negative":    -15.0,
 }
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
@@ -1031,24 +1041,92 @@ def _parse_sentiment(raw: dict) -> dict:
 
 def fetch_sentiment_signals() -> dict:
     """
-    Return {sector_name: sentiment_label} where sentiment_label is one of:
-    positive, mild_positive, neutral, cautious, negative.
+    Return {sector_name: sentiment_label}.
 
-    Priority: shared-volume local file > API /signals endpoint.
-    Returns {} (treat all as neutral) if neither source works.
+    Priority order:
+      1. monthly_earnings_sentiment.json → sector_signals (30-day structural view)
+      2. swing_news_sentiment.json        (7-day news view — fallback)
+      3. API /signals endpoint            (remote fallback)
     """
-    local_path = os.path.join(DATA_DIR, "swing_news_sentiment.json")
+    # 1. Monthly structural signals (preferred for longer-term picks)
+    monthly_path = os.path.join(DATA_DIR, "monthly_earnings_sentiment.json")
     try:
-        if os.path.exists(local_path):
-            with open(local_path) as f:
+        if os.path.exists(monthly_path):
+            with open(monthly_path) as f:
                 raw = json.load(f)
-            parsed = _parse_sentiment(raw)
+            parsed = _parse_sentiment(raw.get("sector_signals", raw))
             if parsed:
-                print(f"  📂 Sentiment loaded from local file ({len(parsed)} sectors)")
+                print(f"  📂 Sector sentiment loaded from monthly file ({len(parsed)} sectors)")
                 return parsed
     except Exception:
         pass
 
+    # 2. Swing sentiment (shorter-window fallback)
+    swing_path = os.path.join(DATA_DIR, "swing_news_sentiment.json")
+    try:
+        if os.path.exists(swing_path):
+            with open(swing_path) as f:
+                raw = json.load(f)
+            parsed = _parse_sentiment(raw.get("signals", raw))
+            if parsed:
+                print(f"  📂 Sector sentiment loaded from swing file ({len(parsed)} sectors, fallback)")
+                return parsed
+    except Exception:
+        pass
+
+    # 3. API fallback — try monthly then swing signal type
+    for signal_type in ("monthly_earnings_sentiment", "swing_news_sentiment"):
+        try:
+            req = _urllib.Request(
+                f"{API_URL}/signals",
+                headers={"Accept": "application/json"},
+            )
+            with _urllib.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+            raw = data.get(signal_type, {})
+            # monthly type nests under sector_signals
+            if signal_type == "monthly_earnings_sentiment" and "sector_signals" in raw:
+                raw = raw["sector_signals"]
+            parsed = _parse_sentiment(raw)
+            if parsed:
+                print(f"  🌐 Sector sentiment loaded from API/{signal_type} ({len(parsed)} sectors)")
+                return parsed
+        except Exception:
+            pass
+
+    print("  ⚠️  Could not load sentiment signals — all sectors treated as neutral")
+    return {}
+
+
+def fetch_ticker_earnings_signals() -> dict:
+    """
+    Return {ticker: signal_label} from monthly_earnings_sentiment.json.
+    Used to apply per-ticker earnings quality adjustment in Stage 3.
+    Returns {} if no monthly file available.
+    """
+    monthly_path = os.path.join(DATA_DIR, "monthly_earnings_sentiment.json")
+    try:
+        if os.path.exists(monthly_path):
+            with open(monthly_path) as f:
+                raw = json.load(f)
+            ticker_sigs = raw.get("ticker_signals", {})
+            result = {}
+            for ticker, val in ticker_sigs.items():
+                if isinstance(val, dict):
+                    sig = val.get("signal", "neutral")
+                elif isinstance(val, str):
+                    sig = val
+                else:
+                    sig = "neutral"
+                result[ticker] = sig.lower()
+            if result:
+                nonneut = sum(1 for s in result.values() if s != "neutral")
+                print(f"  📂 Ticker earnings signals loaded: {len(result)} tickers ({nonneut} non-neutral)")
+            return result
+    except Exception:
+        pass
+
+    # API fallback
     try:
         req = _urllib.Request(
             f"{API_URL}/signals",
@@ -1056,15 +1134,17 @@ def fetch_sentiment_signals() -> dict:
         )
         with _urllib.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
-        raw = data.get("swing_news_sentiment", {})
-        parsed = _parse_sentiment(raw)
-        if parsed:
-            print(f"  🌐 Sentiment loaded from API ({len(parsed)} sectors)")
-            return parsed
+        monthly = data.get("monthly_earnings_sentiment", {})
+        ticker_sigs = monthly.get("ticker_signals", {})
+        result = {t: v.get("signal", "neutral") if isinstance(v, dict) else "neutral"
+                  for t, v in ticker_sigs.items()}
+        if result:
+            print(f"  🌐 Ticker earnings signals from API: {len(result)} tickers")
+        return result
     except Exception:
         pass
 
-    print("  ⚠️  Could not load sentiment signals — all sectors treated as neutral")
+    print("  ℹ️  No ticker earnings signals — monthly_earnings_sentiment.py not yet run")
     return {}
 
 
@@ -1076,6 +1156,7 @@ def screen_all(
     sector_universe: dict,
     sentiment_signals: dict,
     prev_institutional: dict,
+    ticker_earnings_signals: dict = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Screen all Nifty 500 stocks across 20 NSE sectors.
@@ -1236,7 +1317,7 @@ def screen_all(
                 all_df["final_score"] + sign * all_df[col]
             ).clip(lower=0, upper=100)
 
-    # Sentiment adjustment per sector
+    # Stage 3A — Sector sentiment adjustment
     all_df["sentiment_adj"] = (
         all_df["sector_sentiment"]
         .map(SENTIMENT_SCORE_ADJ)
@@ -1245,6 +1326,27 @@ def screen_all(
     all_df["final_score"] = (
         all_df["final_score"] + all_df["sentiment_adj"]
     ).clip(0, 100)
+
+    # Stage 3B — Ticker earnings quality adjustment (from monthly_earnings_sentiment.py)
+    if ticker_earnings_signals:
+        def _earnings_adj(ticker):
+            sig = ticker_earnings_signals.get(ticker, "neutral")
+            return TICKER_EARNINGS_ADJ.get(sig, 0.0)
+
+        all_df["earnings_signal"]   = all_df["ticker"].map(
+            lambda t: ticker_earnings_signals.get(t, "neutral")
+        )
+        all_df["earnings_news_adj"] = all_df["ticker"].map(_earnings_adj)
+        all_df["final_score"] = (
+            all_df["final_score"] + all_df["earnings_news_adj"]
+        ).clip(0, 100)
+
+        n_adj = (all_df["earnings_news_adj"] != 0).sum()
+        if n_adj:
+            print(f"\n  Stage 3B: Ticker earnings adjustment applied to {n_adj} stocks")
+    else:
+        all_df["earnings_signal"]   = "neutral"
+        all_df["earnings_news_adj"] = 0.0
 
     all_df = all_df.sort_values("final_score", ascending=False).reset_index(drop=True)
     top_df = all_df.head(TOP_PICKS).copy()
@@ -1270,17 +1372,20 @@ def build_portfolio(budget: int = BUDGET) -> tuple[dict, pd.DataFrame, pd.DataFr
     nifty500_df     = fetch_nifty500()
     sector_universe = map_to_sectors(nifty500_df)
 
-    # Step 2: Sentiment signals
-    print("\n  Step 2: Loading sector sentiment signals...")
+    # Step 2: Sentiment + earnings signals
+    print("\n  Step 2: Loading sentiment and earnings signals...")
+    semj = {"positive": "🟢", "mild_positive": "🟡", "neutral": "⚪",
+            "cautious": "🟠", "negative": "🔴"}
+
     sentiment_signals = fetch_sentiment_signals()
     if sentiment_signals:
-        semj = {"positive": "🟢", "mild_positive": "🟡", "neutral": "⚪",
-                "cautious": "🟠", "negative": "🔴"}
         print(f"  Sector sentiments:")
         for sec, sig in sorted(sentiment_signals.items()):
             print(f"    {semj.get(sig,'⚪')} {sec:<42} {sig}")
     else:
-        print("  No sentiment data — all sectors treated as neutral")
+        print("  No sector sentiment data — all treated as neutral")
+
+    ticker_earnings_signals = fetch_ticker_earnings_signals()
 
     # Step 3: Previous institutional holdings for QoQ comparison
     prev_institutional = _load_prev_institutional()
@@ -1291,7 +1396,10 @@ def build_portfolio(budget: int = BUDGET) -> tuple[dict, pd.DataFrame, pd.DataFr
 
     # Step 4: Screen
     print("\n  Step 3: Screening Nifty 500 across all sectors...")
-    top_df, all_df = screen_all(sector_universe, sentiment_signals, prev_institutional)
+    top_df, all_df = screen_all(
+        sector_universe, sentiment_signals, prev_institutional,
+        ticker_earnings_signals=ticker_earnings_signals,
+    )
 
     if top_df.empty:
         print("  ⚠️  No stocks passed all filters.")
@@ -1315,6 +1423,8 @@ def build_portfolio(budget: int = BUDGET) -> tuple[dict, pd.DataFrame, pd.DataFr
             "nse_sector":         row.get("nse_sector", "Unknown"),
             "sector_sentiment":   row.get("sector_sentiment", "neutral"),
             "sentiment_adj":      float(row.get("sentiment_adj", 0.0)),
+            "earnings_signal":    row.get("earnings_signal", "neutral"),
+            "earnings_news_adj":  float(row.get("earnings_news_adj", 0.0)),
             "final_score":        round(row["final_score"], 1),
             # Valuation
             "pe_ratio":           round(row["pe_raw"], 1)  if row.get("pe_raw")  else "N/A",
