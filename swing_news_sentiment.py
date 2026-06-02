@@ -16,7 +16,7 @@ Sentiment scale:
   cautious      → −1 penalty
   negative      → HARD EXCLUDE (stock removed regardless of technicals)
 
-Schedule: 30 14 * * 1-5  (8:00 PM IST = 14:30 UTC, same as swing scanner)
+Schedule: 30 13 * * 1-5  (7:00 PM IST = 13:30 UTC, runs 30 min before swing-scanner at 14:00 UTC)
 
 Usage:
   python swing_news_sentiment.py           # run scan
