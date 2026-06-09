@@ -4,11 +4,11 @@ Swing Scanner — India NSE
 Daily scan of Nifty 500 for swing trade candidates.
 Runs after market close (8:00 PM IST weekdays).
 
-Entry signals scored 0–7 (need ≥3 for candidate):
-  1. RSI(14)           — 35–70 momentum zone
-  2. MACD(12,26,9)     — bullish crossover or above signal line
+Entry signals scored 0–7 (need ≥5 for candidate):
+  1. RSI(14)           — 42–70 confirmed momentum zone (not still declining)
+  2. MACD(12,26,9)     — bullish crossover OR (above signal + histogram growing)
   3. Bollinger Bands   — price crossing middle band or near lower band
-  4. Volume Surge      — today's volume > 1.5× 20-day average
+  4. Volume Surge      — today's volume > 2× 20-day average (real conviction)
   5. Momentum Breakout — within 8% of 52w high or broke 20d resistance
   6. FII/DII Flow      — net FII positive in at least 1 of last 3 days
   7. Sector Sentiment  — news sentiment per NSE sector bucket
@@ -20,8 +20,9 @@ Entry signals scored 0–7 (need ≥3 for candidate):
 
 Exit rules (applied by alerter.py):
   - Stop-loss: buy_price − 1.5× ATR-14
-  - Target 1:  +5%  (book 50%)
-  - Target 2:  +8%  (book remaining 50%)
+  - Target 1:  +7%  (book 50%)
+  - Target 2:  +12% (book remaining 50%)
+  - Min R/R:   1.5 (skip trade if reward < 1.5× risk)
   - Time exit: force exit after 10 trading days
 
 Schedule: 0 14 * * 1-5   (8:00 PM IST = 14:00 UTC on weekdays)
@@ -58,20 +59,20 @@ CANDIDATES_FILE = os.path.join(DATA_DIR, "swing_candidates.json")
 
 # Signal parameters
 RSI_PERIOD       = 14
-RSI_MIN          = 35      # widen — accept stocks building from mild oversold
-RSI_MAX          = 70      # widen — allow momentum to be already running
+RSI_MIN          = 42      # confirmed upswing — not still declining from oversold
+RSI_MAX          = 70      # not yet overbought
 MACD_FAST        = 12
 MACD_SLOW        = 26
 MACD_SIGNAL      = 9
 MACD_CROSS_DAYS  = 5       # crossover within last 5 days
 BB_PERIOD        = 20
 BB_STD           = 2.0
-VOL_SURGE_MULT   = 1.5     # volume > 1.5× 20-day avg (2x is too rare)
+VOL_SURGE_MULT   = 2.0     # real conviction — volume > 2× 20-day avg
 BREAKOUT_PCT     = 0.08    # within 8% of 52-week high or broke 20d resistance
 FII_LOOKBACK     = 3       # days of FII data to check
 FII_MIN_POSITIVE = 1       # FII positive in at least 1 of last 3 days
 
-MIN_SIGNALS      = 3       # minimum signals to qualify as candidate
+MIN_SIGNALS      = 5       # high-conviction only — 5 of 7 must pass
 MAX_CANDIDATES   = 10      # max candidates to report
 
 # Swing-specific ATR stop (tighter than long-term 2.5x)
@@ -80,8 +81,8 @@ SWING_ATR_PERIOD = 14
 SWING_TRAIL_MULT = 1.0     # tighter trail for swing
 
 # Profit targets
-SWING_TARGET_1   = 0.05   # +5%  → book 50%
-SWING_TARGET_2   = 0.08   # +8%  → book remaining 50%
+SWING_TARGET_1   = 0.07   # +7%  → book 50%
+SWING_TARGET_2   = 0.12   # +12% → book remaining 50%
 SWING_MAX_DAYS   = 10     # force exit after 10 trading days
 
 # Liquidity — swing needs more liquidity than long-term
@@ -187,12 +188,15 @@ def calc_macd(closes: pd.Series) -> dict:
             crossed = True
             break
 
+    hist_growing = float(hist.iloc[-1]) > float(hist.iloc[-2]) if len(hist) >= 2 else False
+
     return {
         "macd":         round(float(macd.iloc[-1]), 4),
         "signal":       round(float(signal.iloc[-1]), 4),
         "histogram":    round(float(hist.iloc[-1]), 4),
         "bullish_cross": crossed,
         "macd_above":   float(macd.iloc[-1]) > float(signal.iloc[-1]),
+        "hist_growing": hist_growing,
     }
 
 
@@ -396,9 +400,9 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict) -> Optio
             "note":  f"RSI {rsi:.1f} ({'✅ momentum zone' if RSI_MIN <= rsi <= RSI_MAX else '❌ outside 40-65'})",
         },
         "macd": {
-            "pass":  macd["bullish_cross"] or macd["macd_above"] or macd["histogram"] > 0,
+            "pass":  macd["bullish_cross"] or (macd["macd_above"] and macd["hist_growing"]),
             "value": macd["histogram"],
-            "note":  f"MACD {'✅ bullish cross' if macd['bullish_cross'] else ('✅ above signal' if macd['macd_above'] else '❌ bearish')}",
+            "note":  f"MACD {'✅ bullish cross' if macd['bullish_cross'] else ('✅ above+growing' if macd['macd_above'] and macd['hist_growing'] else '❌ no momentum')}",
         },
         "bollinger": {
             "pass":  bb["signal"],
@@ -485,12 +489,12 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict) -> Optio
     # ── Swing levels ──────────────────────────────────────────
     levels = compute_swing_levels(hist, curr)
 
-    # Filter poor R/R
-    if levels["rr_ratio"] < 1.0:
+    # Filter poor R/R — need 1.5× reward for every 1× risk
+    if levels["rr_ratio"] < 1.5:
         return None
 
     # ── Conviction (based on tech_score, sentiment is modifier) ─
-    conviction = "HIGH" if tech_score >= 5 else "MEDIUM" if tech_score >= 4 else "LOW"
+    conviction = "HIGH" if tech_score >= 6 else "MEDIUM" if tech_score >= 5 else "LOW"
 
     return {
         "ticker":        ticker,
