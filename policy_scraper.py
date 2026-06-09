@@ -630,22 +630,42 @@ def llm_classify_releases(releases: list) -> dict | None:
 
     sectors_list = "\n".join(f"- {s}" for s in SECTOR_POLICY_KEYWORDS)
 
-    prompt = f"""You are an Indian equity macro analyst. Analyze these RBI and Government of India (PIB) press releases and determine their impact on 20 NSE stock sectors.
+    prompt = f"""You are a senior Indian equity macro analyst. Analyze these RBI and Government of India (PIB) press releases and rate their STOCK MARKET impact on 20 NSE sectors.
 
 Press releases from the last {SCAN_DAYS} days:
 {releases_text}
 
-Rate the policy impact on each sector:
+SECTOR MAPPING GUIDE — use this to connect policy to sectors:
+- RBI repo rate cut / liquidity easing → Financial Services +, Realty +
+- RBI repo rate hike / tightening → Financial Services cautious, Realty cautious
+- PLI scheme, production incentive → relevant manufacturing sector +
+- Import duty hike on a product → that sector + (protects domestic players)
+- Import duty cut → that sector cautious (more competition)
+- MSP hike, farm loan waiver → Fast Moving Consumer Goods +, Chemicals (fertiliser) +
+- FAME subsidy, EV policy, scrappage → Automobile and Auto Components +
+- Renewable energy target, solar/wind capacity → Power +
+- Budget capex, infra spend, road/highway/metro/port → Capital Goods +, Diversified And Infrastructure +, Construction Materials +
+- Defence procurement, Make in India manufacturing → Capital Goods +
+- Telecom spectrum auction, 5G rollout, AGR relief → Telecommunication +
+- Healthcare scheme, drug pricing (DPCO) → Healthcare (check direction)
+- Crude oil import, refinery policy → Oil Gas And Consumable Fuels (check direction)
+- IT export, BPO, digital policy → Information Technology (check direction)
+- Housing scheme (PMAY), stamp duty cut → Realty +, Construction Materials +
+- Chemical park, petrochemical hub → Chemicals +
+- Textile PLI, export incentive → Textiles And Apparel +
+
+Rate EACH of the 20 sectors:
 {sectors_list}
 
-Rules:
-- score: -10 (very negative) to +10 (very positive), 0 = no impact
+Scoring rules:
+- score: -10 (very negative) to +10 (very positive)
+- Assign a non-zero score whenever a release plausibly affects that sector — even indirectly
+- score=0 ONLY when there is genuinely NO connection
 - signal: "positive" (score>=4), "mild_positive" (1.5 to 4), "neutral" (-1.5 to 1.5), "cautious" (-4 to -1.5), "negative" (score<=-4)
-- reason: one sentence citing the most relevant release number(s)
-- If no release is relevant to a sector, score=0, signal="neutral"
+- reason: cite specific release number(s) like "[3]" that drove the score; write "None" if truly no match
 
 Respond with ONLY valid JSON — no markdown, no explanation:
-{{"Financial Services": {{"score": 0.0, "signal": "neutral", "reason": "No relevant releases"}}, "Information Technology": {{...}}, ...all 20 sectors...}}"""
+{{"Financial Services": {{"score": 2.5, "signal": "mild_positive", "reason": "[1] RBI rate cut boosts lending margins"}}, "Information Technology": {{...}}, ...all 20 sectors...}}"""
 
     try:
         resp = requests.post(
@@ -975,17 +995,22 @@ def run_policy_scan(test_mode: bool = False):
         "cautious":     "🟠",
         "negative":     "🔴",
     }
+    _no_reason = {"No significant policy events in last 14 days",
+                  "LLM classification", "No relevant releases", "None"}
     for sector, sig in signals.items():
         emoji  = signal_emoji.get(sig["signal"], "⚪")
         source = sig.get("source", "keywords")
-        print(f"\n  {sector}")
+        matched_str = (f"{sig['releases_matched']} releases"
+                       if source == "keywords" else f"LLM [{total} releases scanned]")
+        print(f"\n  {sector}", flush=True)
         print(f"    Signal:  {emoji} {sig['signal'].replace('_',' ').title()}  "
-              f"(score: {sig['score']:+.1f}, source: {source})")
-        print(f"    Matched: {sig['releases_matched']} releases")
-        if sig["reason"] not in ("No significant policy events in last 14 days", "LLM classification"):
-            for line in sig["reason"].split(";")[:2]:
+              f"(score: {sig['score']:+.1f})  [{source}]", flush=True)
+        print(f"    Source:  {matched_str}", flush=True)
+        reason = sig.get("reason", "")
+        if reason and reason not in _no_reason:
+            for line in reason.split(";")[:2]:
                 if line.strip():
-                    print(f"    {line.strip()}")
+                    print(f"    {line.strip()}", flush=True)
 
     if not test_mode:
         save_signals(signals, all_releases)
