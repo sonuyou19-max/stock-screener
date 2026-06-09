@@ -795,19 +795,24 @@ def scrape_pib_releases() -> list:
             resp.raise_for_status()
             soup = BeautifulSoup(resp.text, "html.parser")
 
-            # PIB uses a list of releases with date + title
-            items = (
+            # Try selectors from most-specific to broadest.
+            # PIB allRel.aspx pages use a table layout on the right pane.
+            candidate_items = (
+                soup.select(".innner-page-main-about-us-content-right-part td") or
                 soup.select(".innner-page-main-about-us-content-right-part li") or
                 soup.select(".release-list li") or
                 soup.select("ul.list li") or
+                soup.select("table td") or
                 soup.select("li")
             )
 
             ministry_count = 0
-            for item in items[:MAX_RELEASES]:
+            sample_titles  = []   # for diagnostic logging
+
+            for item in candidate_items:
                 text     = item.get_text(separator=" ", strip=True)
                 link_tag = item.find("a")
-                title    = link_tag.get_text(strip=True) if link_tag else text[:100]
+                title    = link_tag.get_text(strip=True) if link_tag else text[:120]
                 url_link = ""
 
                 if link_tag and link_tag.get("href"):
@@ -815,12 +820,14 @@ def scrape_pib_releases() -> list:
                     url_link = href if href.startswith("http") \
                                else f"https://pib.gov.in{href}"
 
-                # Try to extract date from text (PIB often includes it)
-                parsed_date = _extract_date_from_text(text) or date.today()
+                # Require a real parseable date — skip nav items (they have no dates)
+                parsed_date = _extract_date_from_text(text)
+                if parsed_date is None:
+                    continue
                 if parsed_date < cutoff:
                     continue
 
-                if title and len(title) > 15:
+                if title and len(title) > 20:
                     all_releases.append({
                         "title":    title,
                         "date":     str(parsed_date),
@@ -829,12 +836,21 @@ def scrape_pib_releases() -> list:
                         "ministry": ministry,
                     })
                     ministry_count += 1
+                    if len(sample_titles) < 2:
+                        sample_titles.append(f'"{title[:70]}"')
+                    if ministry_count >= MAX_RELEASES:
+                        break
 
-            print(f"    📋 PIB {ministry}: {ministry_count} releases")
+            if sample_titles:
+                print(f"    📋 PIB {ministry}: {ministry_count} releases — e.g. {', '.join(sample_titles)}", flush=True)
+            else:
+                print(f"    📋 PIB {ministry}: 0 releases (no dated items found — page structure may have changed)", flush=True)
             time.sleep(0.5)  # polite delay between ministry pages
 
         except Exception as e:
-            print(f"    ⚠️  PIB {ministry} scrape failed: {e}")
+            print(f"    ⚠️  PIB {ministry} scrape failed: {e}", flush=True)
+
+    return all_releases
 
     return all_releases
 
@@ -962,9 +978,15 @@ def run_policy_scan(test_mode: bool = False):
         print("  ⚠️  No releases fetched — check scraper connectivity.")
         return None
 
+    # Diagnostic: show first 5 titles so we can verify scraper quality
+    print(f"\n  📝 Sample release titles:", flush=True)
+    for r in all_releases[:5]:
+        src = r.get("ministry") or r.get("source", "")
+        print(f"    [{r['date']}] [{src}] {r['title'][:90]}", flush=True)
+
     # Primary: LLM classification
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
-    print(f"\n  🔍 Classifying {total} releases ({'LLM + keywords' if api_key else 'keywords only'})...")
+    print(f"\n  🔍 Classifying {total} releases ({'LLM + keywords' if api_key else 'keywords only'})...", flush=True)
 
     llm_signals = llm_classify_releases(all_releases)
 
