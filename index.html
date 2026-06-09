@@ -535,7 +535,6 @@ header{
 .pick-add-btn:active{background:rgba(34,197,94,.25);}
 /* flat live list */
 .live-flat-item{margin-bottom:14px;}
-.live-cat-tag{font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);background:var(--card2);border-radius:6px 6px 0 0;padding:3px 10px;border-bottom:1px solid var(--border);display:inline-block;margin-bottom:-1px;}
 .exit-btn-india{display:block;width:100%;padding:9px;text-align:center;background:rgba(192,64,64,.08);border:1px solid rgba(192,64,64,.3);border-radius:10px;color:#c04040;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--sans);margin-top:8px;}
 .adv-pick-highlight{background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.3);}
 .adv-pick-rank{color:var(--text3);font-size:10px;}
@@ -1078,11 +1077,17 @@ async function fetchUsSnap(){
 
 /* ═══ INDIA DETAIL ═══ */
 async function loadIndia(){
-  const[port,sig,fii,picks,adv]=await Promise.all([
+  const[port,sig,fii,picks,adv,latest]=await Promise.all([
     fd('/portfolio/live'),fd('/signals'),fd('/fiidii'),
-    fd('/portfolio/picks'),fd('/portfolio/advisory')
+    fd('/portfolio/picks'),fd('/portfolio/advisory'),fd('/portfolio/latest')
   ]);
-  if(port){indPortfolio=port;mergeFund(port,picks);}
+  if(port){
+    indPortfolio=port;
+    // Merge from current picks first, then from latest screener output as fallback
+    // so stocks that dropped out of picks still get their fundamental data
+    if(latest)mergeFund(port,latest);
+    mergeFund(port,picks);  // picks wins over latest (more current)
+  }
   if(sig)indSignals=sig;if(fii)indFiidii=fii;
   _advData=adv;
   renderIndStats();renderLiveFlat(indPortfolio,'indStocks','₹');
@@ -1094,9 +1099,25 @@ async function loadIndia(){
 
 function mergeFund(port,picks){
   if(!port||!picks)return;
-  const FIELDS=['pe_ratio','pb_ratio','peg_ratio','roe_pct','rev_growth_pct','debt_equity','momentum_1m','momentum_3m','audit_trail','circuit_risk'];
-  const pm={};for(const b of Object.values(picks))for(const s of(b.stocks||[]))pm[s.ticker]=s;
-  for(const b of Object.values(port))for(const s of(b.stocks||[])){const ps=pm[s.ticker];if(ps)for(const f of FIELDS)if((s[f]===undefined||s[f]===null||s[f]==='N/A')&&ps[f]!==undefined)s[f]=ps[f];}
+  // Never overwrite price/buy_price (user's actual cost basis) but fill everything else
+  const FIELDS=['pe_ratio','pb_ratio','peg_ratio','roe_pct','rev_growth_pct','debt_equity',
+    'momentum_1m','momentum_3m','audit_trail','circuit_risk','final_score',
+    'stop_loss_price','stop_loss_pct','trailing_stop_dist','nse_sector',
+    'allocation_inr','approx_shares','name'];
+  const pm={};
+  for(const b of Object.values(picks)){for(const s of(b.stocks||[]))pm[s.ticker]=s;}
+  for(const b of Object.values(port)){
+    for(const s of(b.stocks||[])){
+      const ps=pm[s.ticker];
+      if(!ps)continue;
+      for(const f of FIELDS){
+        // Fill if missing or zero (but don't overwrite user-set values)
+        const missing=s[f]===undefined||s[f]===null||s[f]===''||s[f]==='N/A';
+        const zero=f!=='final_score'&&s[f]===0&&ps[f]>0;
+        if((missing||zero)&&ps[f]!==undefined&&ps[f]!==null)s[f]=ps[f];
+      }
+    }
+  }
 }
 
 function renderIndStats(){
@@ -1321,10 +1342,9 @@ function renderLiveFlat(portfolio,containerId,cur){
   for(const[bk,bucket]of Object.entries(portfolio))
     for(const s of(bucket.stocks||[]))all.push({s,bk,bucket});
   if(!all.length){el.innerHTML=`<div class="empty" style="padding:20px 16px">No stocks yet. Tap <b>+</b> on any screener pick to add.</div>`;return;}
-  el.innerHTML=all.map(({s,bk,bucket},i)=>{
-    const cat=IBT[bk]||(bucket.label||bk);
-    return`<div class="live-flat-item"><div class="live-cat-tag">${cat}</div>${buildCard(s,i,bk,'ind',cur)}</div>`;
-  }).join('');
+  el.innerHTML=all.map(({s,bk},i)=>
+    `<div class="live-flat-item">${buildCard(s,i,bk,'ind',cur)}</div>`
+  ).join('');
 }
 
 /* ═══ PERF CHARTS ═══ */
@@ -1445,7 +1465,10 @@ function renderAdvisory(adv){
     </div>`:'';
 
   // Build top picks reference table
-  const picks=(adv.top_picks||[]).slice(0,7);
+  // Filter out stocks already in live portfolio to avoid duplicates
+  const liveTkrs=new Set();
+  for(const b of Object.values(indPortfolio||{}))for(const s of(b.stocks||[]))liveTkrs.add(s.ticker);
+  const picks=(adv.top_picks||[]).filter(p=>!liveTkrs.has(p.ticker)).slice(0,7);
   const picksHtml=picks.length?`
     <div class="adv-picks-lbl">This month's screener top picks — tap + to add:</div>
     <div class="adv-picks-list">${picks.map((p,i)=>`
@@ -1484,27 +1507,32 @@ function renderAdvisory(adv){
 }
 
 async function addToPickedPortfolio(ticker){
-  // Look up pick data from advisory
-  const pick=(_advData?.top_picks||[]).find(p=>p.ticker===ticker);
-  if(!pick){alert(`Pick data for ${ticker.replace('.NS','')} not found. Reload the page.`);return;}
   // Check not already in portfolio
-  const live=await fd('/portfolio/live')||{};
+  const [liveRaw, picksRaw] = await Promise.all([fd('/portfolio/live'), fd('/portfolio/picks')]);
+  const live = liveRaw || {};
   for(const bk of Object.keys(live)){
     if((live[bk].stocks||[]).find(s=>s.ticker===ticker)){
       alert(`${ticker.replace('.NS','')} is already in your portfolio.`);return;
     }
   }
+  // Get full screener data (audit_trail, fundamentals, stop-loss etc.)
+  let fullStock=null;
+  for(const b of Object.values(picksRaw||{})){fullStock=(b.stocks||[]).find(s=>s.ticker===ticker);if(fullStock)break;}
+  // Fallback: advisory top_picks has minimal fields
+  const advPick=(_advData?.top_picks||[]).find(p=>p.ticker===ticker);
+  if(!fullStock&&!advPick){alert(`Pick data for ${ticker.replace('.NS','')} not found. Reload the page.`);return;}
   const inputPrice=prompt(`Add ${ticker.replace('.NS','')} to portfolio\nEnter your buy price (₹):`);
   if(inputPrice===null)return;
   const buyPrice=parseFloat(inputPrice);
   if(!buyPrice||isNaN(buyPrice)||buyPrice<=0){alert('Please enter a valid buy price.');return;}
   if(!live.top_picks)live.top_picks={label:'Monthly Top Picks',stocks:[]};
-  live.top_picks.stocks.push({
-    ticker,name:pick.name,nse_sector:pick.sector,
-    price:buyPrice,buy_price:buyPrice,
-    buy_date:new Date().toISOString().split('T')[0],
-    final_score:pick.score,allocation_inr:0,approx_shares:0,
-  });
+  // Spread all screener fields so Why Picked, fundamentals, stop-loss all work
+  const entry=fullStock
+    ? {...fullStock, price:buyPrice, buy_price:buyPrice, buy_date:new Date().toISOString().split('T')[0]}
+    : {ticker, name:advPick.name, nse_sector:advPick.sector, final_score:advPick.score,
+       price:buyPrice, buy_price:buyPrice, buy_date:new Date().toISOString().split('T')[0],
+       allocation_inr:0, approx_shares:0};
+  live.top_picks.stocks.push(entry);
   await fetch(`${API}/portfolio/live/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(live)});
   alert(`✅ ${ticker.replace('.NS','')} added at ₹${buyPrice.toLocaleString('en-IN')}`);
   _iL=false;loadIndia();
