@@ -48,6 +48,9 @@ US_PERF_FILE   = os.path.join(os.getenv("DATA_DIR", "/data"), "us_performance_hi
 US_HISTORY_FILE= os.path.join(os.getenv("DATA_DIR", "/data"), "us_trade_history.json")
 
 ADVISORY_FILE         = os.path.join(os.getenv("DATA_DIR", "/data"), "monthly_advisory.json")
+REBALANCE_FILE        = os.path.join(os.getenv("DATA_DIR", "/data"), "rebalance_report.json")
+
+_rebalance_cache: dict = {}
 
 SWING_CANDIDATES_FILE = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_candidates.json")
 SWING_LIVE_FILE       = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_live.json")
@@ -181,6 +184,10 @@ def upload_signals():
         _signals_cache[sig_type] = payload
         path = os.path.join(DATA_DIR, f"{sig_type}.json")
         _save_json(path, payload)
+        # Also cache rebalance reports separately for fast retrieval
+        if sig_type == "rebalance_report":
+            global _rebalance_cache
+            _rebalance_cache = payload
         print(f"✅ Signal received: {sig_type}")
         return jsonify({"status": "ok", "type": sig_type}), 200
     except Exception as e:
@@ -507,6 +514,21 @@ def upload_advisory():
         return jsonify({"status": "ok", "action": data.get("action", "?")}), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/rebalance/report", methods=["GET", "OPTIONS"])
+def get_rebalance_report():
+    """Latest rebalancer.py report — HOLD/TRIM/EXIT decisions for live holdings."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    global _rebalance_cache
+    if _rebalance_cache:
+        return jsonify(_sanitise(_rebalance_cache))
+    data = _load_json(REBALANCE_FILE)
+    if data:
+        _rebalance_cache = data
+        return jsonify(_sanitise(data))
+    return jsonify({"error": "No rebalance report yet. Run rebalancer.py first."}), 404
 
 
 @app.route("/prices", methods=["GET"])
