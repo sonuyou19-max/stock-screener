@@ -1608,7 +1608,222 @@ def build_portfolio(budget: int = BUDGET) -> tuple[dict, pd.DataFrame, pd.DataFr
     for w in vol_assessment["warnings"]:
         print(f"  ⚠️  {w}")
 
+    # Step 6: Monthly advisory — compare with current holdings, ask Claude
+    print("\n  Step 4: Generating monthly portfolio advisory...")
+    advisory = generate_monthly_advisory(portfolio, all_df)
+    try:
+        adv_path = os.path.join(DATA_DIR, "monthly_advisory.json")
+        with open(adv_path, "w") as f:
+            json.dump(advisory, f, indent=2)
+        _post_to_api("/portfolio/advisory/upload", advisory)
+    except Exception as e:
+        print(f"  ⚠️  Could not save advisory: {e}")
+
     return portfolio, top_df, all_df
+
+
+def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
+    """
+    Ask Claude Sonnet to compare current live holdings with this month's
+    screener results and recommend ONE action: HOLD, REPLACE, or ADD.
+    Falls back to rule-based logic when ANTHROPIC_API_KEY is not set.
+    """
+    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M IST")
+
+    # ── Load current live holdings ──────────────────────────────────────────
+    live_holdings = []
+    try:
+        req = _urllib.Request(
+            f"{API_URL}/portfolio/live",
+            headers={"Accept": "application/json"},
+        )
+        with _urllib.urlopen(req, timeout=10) as resp:
+            live_data = json.loads(resp.read())
+        for bucket in live_data.values():
+            for stock in bucket.get("stocks", []):
+                live_holdings.append({
+                    "ticker":    stock.get("ticker", ""),
+                    "name":      stock.get("name", ""),
+                    "sector":    stock.get("nse_sector", stock.get("sector", "")),
+                    "buy_price": stock.get("price", stock.get("buy_price", 0)),
+                    "buy_date":  stock.get("buy_date", ""),
+                })
+    except Exception as e:
+        print(f"  ⚠️  Could not load live portfolio for advisory: {e}")
+
+    # ── Build top-10 ranked picks ───────────────────────────────────────────
+    new_picks = []
+    for _, row in all_df.sort_values("final_score", ascending=False).head(10).iterrows():
+        new_picks.append({
+            "ticker":    row["ticker"],
+            "name":      row["name"],
+            "sector":    row.get("nse_sector", ""),
+            "score":     round(row["final_score"], 1),
+            "sentiment": row.get("sector_sentiment", "neutral"),
+            "policy":    row.get("policy_signal", "neutral"),
+            "earnings":  row.get("earnings_signal", "neutral"),
+            "mom_3m":    round(float(row.get("momentum_3m", 0) or 0), 1),
+            "roe":       round(float(row.get("roe_pct", 0) or 0), 1),
+            "pe":        round(float(row.get("pe_ratio", 0) or 0), 1),
+        })
+
+    top_picks_tickers = {s["ticker"] for s in portfolio.get("top_picks", {}).get("stocks", [])}
+    live_tickers      = {h["ticker"] for h in live_holdings}
+    still_in  = [h for h in live_holdings if h["ticker"] in top_picks_tickers]
+    dropped   = [h for h in live_holdings if h["ticker"] not in top_picks_tickers]
+    new_buys  = [p for p in new_picks if p["ticker"] not in live_tickers]
+
+    base = {
+        "generated_at":          generated_at,
+        "current_holdings":      len(live_holdings),
+        "still_recommended":     len(still_in),
+        "dropped_from_picks":    len(dropped),
+        "top_picks":             new_picks[:7],
+    }
+
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+
+    # ── LLM path ────────────────────────────────────────────────────────────
+    if api_key and live_holdings:
+        live_str = "\n".join(
+            f"  {i+1}. {h['ticker'].replace('.NS','')} ({h['name'][:28]}) "
+            f"| {h['sector']} | Bought ₹{h.get('buy_price',0):,.0f} on {h.get('buy_date','?')}"
+            for i, h in enumerate(live_holdings)
+        )
+        picks_str = "\n".join(
+            f"  {i+1}. {p['ticker'].replace('.NS','')} ({p['name'][:28]}) "
+            f"| {p['sector']} | Score {p['score']} | Sentiment {p['sentiment']} "
+            f"| Policy {p['policy']} | Mom-3M {p['mom_3m']:+.1f}% | ROE {p['roe']:.0f}% | PE {p['pe']:.0f}"
+            for i, p in enumerate(new_picks)
+        )
+        dropped_str = (
+            "\n".join(f"  - {h['ticker'].replace('.NS','')} ({h['name'][:28]})" for h in dropped)
+            if dropped else "  None — all current holdings still in top 10"
+        )
+
+        prompt = f"""You are an Indian equity portfolio advisor. Each month a Nifty 500 screener runs and you decide if any portfolio change is needed.
+
+CURRENT PORTFOLIO ({len(live_holdings)} holdings):
+{live_str}
+
+SCREENER'S TOP 10 THIS MONTH (by fundamental+momentum score):
+{picks_str}
+
+CURRENT HOLDINGS NO LONGER IN TOP 10:
+{dropped_str}
+
+TASK: Recommend exactly ONE of:
+A) HOLD — no changes, all positions are fine
+B) REPLACE [old ticker] with [new ticker] — one position should be swapped
+C) ADD [new ticker] — add one new position (budget can stretch slightly)
+
+RULES:
+- Only recommend a change if the quality improvement is meaningful, not marginal
+- Prefer stability — churning has costs (brokerage, taxes, timing risk)
+- Avoid doubling up on the same sector already in the portfolio
+- If you recommend a change, give a clear 2–3 sentence investment thesis for the new stock
+- Be direct — this is a monthly Kite execution instruction
+
+Respond with ONLY valid JSON (no markdown):
+{{"action":"HOLD","sell_ticker":null,"sell_name":null,"buy_ticker":null,"buy_name":null,"buy_sector":null,"reasoning":"..."}}"""
+
+        try:
+            resp = requests.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={
+                    "Content-Type": "application/json",
+                    "x-api-key": api_key,
+                    "anthropic-version": "2023-06-01",
+                },
+                json={
+                    "model": "claude-sonnet-4-20250514",
+                    "max_tokens": 400,
+                    "messages": [{"role": "user", "content": prompt}],
+                },
+                timeout=30,
+            )
+            resp.raise_for_status()
+            raw = resp.json()["content"][0]["text"].strip()
+            if raw.startswith("```"):
+                raw = re.sub(r"^```[a-z]*\n?", "", raw)
+                raw = re.sub(r"\n?```$", "", raw)
+            result = json.loads(raw)
+            base.update(result)
+            base["source"] = "llm"
+            print(f"\n  🤖 Advisory: {result.get('action','?')} "
+                  f"{'→ ' + result.get('buy_ticker','') if result.get('buy_ticker') else ''}")
+            print(f"     {str(result.get('reasoning',''))[:120]}")
+            return base
+        except Exception as e:
+            print(f"  ⚠️  Advisory LLM call failed: {e} — using rule-based fallback")
+
+    # ── Rule-based fallback ─────────────────────────────────────────────────
+    base["source"] = "rule"
+    if not live_holdings:
+        # First run — no holdings yet — recommend the top pick
+        if new_picks:
+            p = new_picks[0]
+            base.update({
+                "action": "ADD",
+                "sell_ticker": None, "sell_name": None,
+                "buy_ticker": p["ticker"], "buy_name": p["name"],
+                "buy_sector": p["sector"],
+                "reasoning": (
+                    f"No existing portfolio. Start with {p['name']} ({p['sector']}), "
+                    f"the screener's top-ranked stock this month with score {p['score']}."
+                ),
+            })
+        else:
+            base.update({"action": "HOLD", "sell_ticker": None, "buy_ticker": None,
+                          "reasoning": "No screener data available."})
+        return base
+
+    if not dropped:
+        base.update({
+            "action": "HOLD", "sell_ticker": None, "buy_ticker": None,
+            "reasoning": (
+                f"All {len(still_in)} current holdings remain in the screener's top picks. "
+                "No changes needed — hold existing positions."
+            ),
+        })
+    elif new_buys:
+        worst_old = dropped[0]
+        best_new  = new_buys[0]
+        base.update({
+            "action": "REPLACE",
+            "sell_ticker": worst_old["ticker"], "sell_name": worst_old["name"],
+            "buy_ticker":  best_new["ticker"],  "buy_name":  best_new["name"],
+            "buy_sector":  best_new["sector"],
+            "reasoning": (
+                f"{worst_old['name']} dropped out of the screener's top picks this month. "
+                f"The strongest new entry is {best_new['name']} ({best_new['sector']}, "
+                f"score {best_new['score']}). Consider this replacement."
+            ),
+        })
+    else:
+        base.update({
+            "action": "HOLD", "sell_ticker": None, "buy_ticker": None,
+            "reasoning": (
+                f"{len(dropped)} holding(s) dropped from top picks but no stronger replacement found. "
+                "Hold current positions."
+            ),
+        })
+    return base
+
+
+def _post_to_api(path: str, payload: dict):
+    """POST payload to API endpoint (non-fatal if fails)."""
+    try:
+        body = json.dumps(payload).encode("utf-8")
+        req = _urllib.Request(
+            f"{API_URL}{path}", data=body,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with _urllib.urlopen(req, timeout=10) as resp:
+            print(f"  ✅ Posted to {path}: {resp.read().decode()[:60]}")
+    except Exception as e:
+        print(f"  ⚠️  Could not POST to {path}: {e}")
 
 
 # ─────────────────────────────────────────────
