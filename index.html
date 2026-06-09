@@ -1676,6 +1676,14 @@ async function editBuyPrice(ticker, prefix, bucket, currentBp){
 }
 let _swL=false, _swCandidates=null, _swLive=[], _swHistory=null;
 
+/* ── Business-day helper ──────────────────────────────────── */
+function prevBizDay(d){
+  const p=new Date(d);
+  p.setDate(p.getDate()-1);
+  while(p.getDay()===0||p.getDay()===6) p.setDate(p.getDate()-1);
+  return p.toISOString().split('T')[0];
+}
+
 /* ═══ SWING ROUTING ═══ */
 function showSwing(){
   ['homeView','indView','usView','swingView'].forEach(v=>{
@@ -1738,7 +1746,7 @@ function renderSwingStats(){
   const scanAt=_swCandidates?.generated_at||_swCandidates?.scan_date||'';
   const scanDate=scanAt?scanAt.split(' ')[0].split('T')[0]:'';
   const today=new Date().toISOString().split('T')[0];
-  const isStale=scanDate&&scanDate!==today;
+  const isStale=scanDate&&scanDate!==today&&scanDate!==prevBizDay(new Date());
   document.getElementById('sw-scanTime').textContent=
     scanDate?`${isStale?'⚠️ Stale — ':''}Scanned ${scanDate}`:'Run scanner first';
   document.getElementById('sw-candCount').style.color=isStale?'var(--red)':'';
@@ -1792,15 +1800,10 @@ function renderSwingCandidates(){
   const candidates=_swCandidates?.candidates||[];
   const scanD=(_swCandidates?.scan_date||_swCandidates?.generated_at||'').split(' ')[0].split('T')[0];
   const todayD=new Date().toISOString().split('T')[0];
-  const stale=scanD&&scanD!==todayD;
+  const stale=scanD&&scanD!==todayD&&scanD!==prevBizDay(new Date());
   if(!candidates.length){
     el.innerHTML=`<div class="empty">No candidates today.<br><span style="font-size:11px;color:var(--text3)">Run swing_scanner.py after market close (8 PM IST).</span></div>`;
     return;
-  }
-  if(stale){
-    el.innerHTML=`<div style="background:rgba(224,112,112,0.10);border:1px solid rgba(224,112,112,0.25);border-radius:12px;padding:12px 14px;margin-bottom:12px;font-size:11px;color:#b84040;">
-      ⚠️ <strong>Showing results from ${scanD}</strong> — today's scan hasn't run yet or hasn't been uploaded.<br>Fresh scan runs daily after 8 PM IST.
-    </div>`+el.innerHTML;
   }
   el.innerHTML=candidates.map((c,i)=>{
     const sigs=c.signals||{};
@@ -1851,6 +1854,11 @@ function renderSwingCandidates(){
       <button class="sw-enter-btn" onclick="enterSwingTrade(${JSON.stringify(c).replace(/"/g,'&quot;')})">✅ Enter Trade on Kite</button>
     </div>`;
   }).join('');
+  if(stale){
+    el.insertAdjacentHTML('afterbegin',`<div style="background:rgba(224,112,112,0.10);border:1px solid rgba(224,112,112,0.25);border-radius:12px;padding:12px 14px;margin-bottom:12px;font-size:11px;color:#b84040;">
+      ⚠️ <strong>Showing results from ${scanD}</strong> — today's scan hasn't run yet or hasn't been uploaded.<br>Fresh scan runs daily after 8 PM IST (Mon–Fri).
+    </div>`);
+  }
 }
 
 /* ═══ SWING CLOSED ═══ */
@@ -1955,10 +1963,17 @@ async function enterSwingTrade(candidate){
 
 /* ═══ SWING TRADE EXIT ═══ */
 async function exitSwingTrade(ticker,buyPrice){
-  const price=prompt(`Exit price for ${ticker.replace('.NS','')}?\n(Leave blank for current market price)`);
+  const price=prompt(`Exit price for ${ticker.replace('.NS','')}?\n(Leave blank to use last scanned price)`);
   if(price===null)return; // cancelled
-  const sellPrice=parseFloat(price)||0;
-  if(!sellPrice||isNaN(sellPrice)||sellPrice<=0){alert('Please enter a valid price');return;}
+  let sellPrice;
+  if(price.trim()===''){
+    const cand=(_swCandidates?.candidates||[]).find(c=>c.ticker===ticker);
+    if(cand?.current_price){sellPrice=cand.current_price;}
+    else{alert(`No scanned price available for ${ticker.replace('.NS','')}.\nPlease enter the exit price manually.`);return;}
+  }else{
+    sellPrice=parseFloat(price);
+    if(!sellPrice||isNaN(sellPrice)||sellPrice<=0){alert('Please enter a valid exit price');return;}
+  }
   const pos=_swLive.find(p=>p.ticker===ticker);
   if(!pos){alert('Position not found');return;}
   const bp=pos.buy_price||pos.price||0;
