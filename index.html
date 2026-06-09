@@ -529,14 +529,14 @@ header{
 .adv-reason{font-size:13px;color:var(--text2);line-height:1.55;margin-bottom:12px;}
 .adv-exec{width:100%;margin-bottom:12px;}
 .adv-picks-lbl{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;}
-.adv-picks-list{display:flex;flex-direction:column;gap:4px;margin-bottom:10px;}
-.adv-pick-row{display:grid;grid-template-columns:18px 52px 1fr 90px 32px;gap:4px;align-items:center;font-size:11px;padding:4px 6px;border-radius:8px;background:var(--card2);}
+.adv-picks-list{display:flex;flex-direction:column;gap:3px;margin-bottom:10px;}
+.adv-pick-row{display:grid;grid-template-columns:18px 1fr 36px;gap:6px;align-items:center;font-size:11px;padding:5px 8px;border-radius:8px;background:var(--card2);}
 .adv-pick-highlight{background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.3);}
-.adv-pick-rank{color:var(--text3);}
-.adv-pick-ticker{font-weight:700;color:var(--text);}
-.adv-pick-name{color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.adv-pick-sector{color:var(--text3);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.adv-pick-score{font-weight:600;color:var(--blue2);text-align:right;}
+.adv-pick-rank{color:var(--text3);font-size:10px;}
+.adv-pick-main{min-width:0;}
+.adv-pick-ticker{font-weight:700;color:var(--text);font-size:12px;}
+.adv-pick-sub{color:var(--text3);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.adv-pick-score{font-weight:700;color:var(--blue2);text-align:right;font-size:13px;}
 .adv-meta{font-size:10px;color:var(--text3);}
 
 .swap-c{
@@ -1085,7 +1085,8 @@ function renderIndStats(){
   let dep=0,cnt=0;
   for(const b of Object.values(indPortfolio)){for(const s of(b.stocks||[])){dep+=s.allocation_inr||0;cnt++;}}
   document.getElementById('ind-dep').textContent='₹'+dep.toLocaleString('en-IN',{maximumFractionDigits:0});
-  document.getElementById('ind-stocks').textContent=cnt+' stocks · 4 buckets';
+  const bktCount=Object.values(indPortfolio).filter(b=>(b.stocks||[]).length).length;
+  document.getElementById('ind-stocks').textContent=cnt+' stocks · '+bktCount+' bucket'+(bktCount!==1?'s':'');
   document.getElementById('ind-cash').textContent='₹'+(100000-dep).toLocaleString('en-IN',{maximumFractionDigits:0});
   if(indFiidii&&indFiidii.length){
     const r=[...indFiidii].sort((a,b)=>b.date.localeCompare(a.date)).slice(0,10);
@@ -1279,7 +1280,7 @@ function renderBuckets(prefix,portfolio,containerId,cur){
   const tagMap=prefix==='ind'?IBT:UBT;
   el.innerHTML=Object.entries(portfolio).map(([bk,bucket])=>{
     const stocks=bucket.stocks||[],tag=tagMap[bk]||bk;
-    const label=(bucket.label||bk).replace(/^(Large Cap|Mid Cap|High Conviction|Defensive|Growth|🤖|⚙️|⚡|🌾)\s*[—–-]\s*/i,'').trim();
+    const label=IBT[bk]||(bucket.label||bk).replace(/^(Large Cap|Mid Cap|High Conviction|Defensive|Growth|🤖|⚙️|⚡|🌾)\s*[—–-]\s*/i,'').trim();
     const cards=stocks.map((s,i)=>buildCard(s,i,bk,prefix,cur)).join('');
     return`<div class="bkt-sec" id="${prefix}-b-${bk}">
       <div class="bkt-hdr" onclick="toggleBkt('${prefix}-b-${bk}')">
@@ -1389,9 +1390,10 @@ function renderAdvisory(adv){
     <div class="adv-picks-list">${picks.map((p,i)=>`
       <div class="adv-pick-row ${adv.buy_ticker===p.ticker?'adv-pick-highlight':''}">
         <span class="adv-pick-rank">${i+1}</span>
-        <span class="adv-pick-ticker">${p.ticker.replace('.NS','')}</span>
-        <span class="adv-pick-name">${p.name.slice(0,22)}</span>
-        <span class="adv-pick-sector">${p.sector.slice(0,18)}</span>
+        <div class="adv-pick-main">
+          <span class="adv-pick-ticker">${p.ticker.replace('.NS','')}</span>
+          <div class="adv-pick-sub">${p.name.slice(0,28)} · ${p.sector.slice(0,20)}</div>
+        </div>
         <span class="adv-pick-score">${p.score}</span>
       </div>`).join('')}
     </div>`:''
