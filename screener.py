@@ -1627,8 +1627,22 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
     Ask Claude Sonnet to compare current live holdings with this month's
     screener results and recommend ONE action: HOLD, REPLACE, or ADD.
     Falls back to rule-based logic when ANTHROPIC_API_KEY is not set.
+
+    Health check: every holding is evaluated even if the advisory says HOLD.
+    Rule-based REPLACE only fires when score delta >= 10 pts.
     """
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M IST")
+
+    # ── Build full score/rank lookup from all_df ────────────────────────────
+    sorted_df = all_df.sort_values("final_score", ascending=False).reset_index(drop=True)
+    all_scores = {
+        row["ticker"]: {
+            "rank":   i + 1,
+            "score":  round(row["final_score"], 1),
+            "sector": row.get("nse_sector", ""),
+        }
+        for i, (_, row) in enumerate(sorted_df.iterrows())
+    }
 
     # ── Load current live holdings ──────────────────────────────────────────
     live_holdings = []
@@ -1641,19 +1655,31 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
             live_data = json.loads(resp.read())
         for bucket in live_data.values():
             for stock in bucket.get("stocks", []):
+                tick = stock.get("ticker", "")
+                si   = all_scores.get(tick)
                 live_holdings.append({
-                    "ticker":    stock.get("ticker", ""),
-                    "name":      stock.get("name", ""),
-                    "sector":    stock.get("nse_sector", stock.get("sector", "")),
-                    "buy_price": stock.get("price", stock.get("buy_price", 0)),
-                    "buy_date":  stock.get("buy_date", ""),
+                    "ticker":        tick,
+                    "name":          stock.get("name", ""),
+                    "sector":        stock.get("nse_sector", stock.get("sector", "")),
+                    "buy_price":     stock.get("price", stock.get("buy_price", 0)),
+                    "buy_date":      stock.get("buy_date", ""),
+                    "current_score": si["score"] if si else None,
+                    "current_rank":  si["rank"]  if si else None,
+                    # status: top7 | top15 | top30 | low | excluded
+                    "status": (
+                        "top7"     if si and si["rank"] <= 7  else
+                        "top15"    if si and si["rank"] <= 15 else
+                        "top30"    if si and si["rank"] <= 30 else
+                        "low"      if si else
+                        "excluded"
+                    ),
                 })
     except Exception as e:
         print(f"  ⚠️  Could not load live portfolio for advisory: {e}")
 
     # ── Build top-10 ranked picks ───────────────────────────────────────────
     new_picks = []
-    for _, row in all_df.sort_values("final_score", ascending=False).head(10).iterrows():
+    for _, row in sorted_df.head(10).iterrows():
         new_picks.append({
             "ticker":    row["ticker"],
             "name":      row["name"],
@@ -1674,11 +1700,12 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
     new_buys  = [p for p in new_picks if p["ticker"] not in live_tickers]
 
     base = {
-        "generated_at":          generated_at,
-        "current_holdings":      len(live_holdings),
-        "still_recommended":     len(still_in),
-        "dropped_from_picks":    len(dropped),
-        "top_picks":             new_picks[:7],
+        "generated_at":       generated_at,
+        "current_holdings":   len(live_holdings),
+        "still_recommended":  len(still_in),
+        "dropped_from_picks": len(dropped),
+        "top_picks":          new_picks[:7],
+        "holdings_health":    live_holdings,   # full health check for dashboard
     }
 
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
@@ -1687,45 +1714,39 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
     if api_key and live_holdings:
         live_str = "\n".join(
             f"  {i+1}. {h['ticker'].replace('.NS','')} ({h['name'][:28]}) "
-            f"| {h['sector']} | Bought ₹{h.get('buy_price',0):,.0f} on {h.get('buy_date','?')}"
+            f"| {h['sector']} | Bought ₹{h.get('buy_price',0):,.0f} on {h.get('buy_date','?')} "
+            f"| This month rank #{h['current_rank'] or 'N/A'} score {h['current_score'] or 'filtered out'}"
             for i, h in enumerate(live_holdings)
         )
         picks_str = "\n".join(
             f"  {i+1}. {p['ticker'].replace('.NS','')} ({p['name'][:28]}) "
             f"| {p['sector']} | Score {p['score']} | Sentiment {p['sentiment']} "
-            f"| Policy {p['policy']} | Mom-3M {p['mom_3m']:+.1f}% | ROE {p['roe']:.0f}% | PE {p['pe']:.0f}"
+            f"| Mom-3M {p['mom_3m']:+.1f}% | ROE {p['roe']:.0f}% | PE {p['pe']:.0f}"
             for i, p in enumerate(new_picks)
         )
-        dropped_str = (
-            "\n".join(f"  - {h['ticker'].replace('.NS','')} ({h['name'][:28]})" for h in dropped)
-            if dropped else "  None — all current holdings still in top 10"
-        )
 
-        prompt = f"""You are an Indian equity portfolio advisor. Each month a Nifty 500 screener runs and you decide if any portfolio change is needed.
+        prompt = f"""You are an Indian equity portfolio advisor. Each month a Nifty 500 screener runs.
 
-CURRENT PORTFOLIO ({len(live_holdings)} holdings):
+CURRENT PORTFOLIO ({len(live_holdings)} holdings) — with this month's screener rank/score:
 {live_str}
 
-SCREENER'S TOP 10 THIS MONTH (by fundamental+momentum score):
+SCREENER'S TOP 10 THIS MONTH:
 {picks_str}
 
-CURRENT HOLDINGS NO LONGER IN TOP 10:
-{dropped_str}
-
 TASK: Recommend exactly ONE of:
-A) HOLD — no changes, all positions are fine
-B) REPLACE [old ticker] with [new ticker] — one position should be swapped
-C) ADD [new ticker] — add one new position (budget can stretch slightly)
+A) HOLD — all positions are healthy enough, no change needed
+B) REPLACE [old ticker] with [new ticker] — only if score gap > 10 pts AND the old stock shows real weakness
+C) ADD [new ticker] — if portfolio has fewer than 7 stocks and a strong entry exists
 
-RULES:
-- Only recommend a change if the quality improvement is meaningful, not marginal
-- Prefer stability — churning has costs (brokerage, taxes, timing risk)
-- Avoid doubling up on the same sector already in the portfolio
-- If you recommend a change, give a clear 2–3 sentence investment thesis for the new stock
-- Be direct — this is a monthly Kite execution instruction
+STRICT RULES:
+- A stock slightly outside the top-7 (rank 8-12) is NOT reason enough to replace — look at the score gap
+- If score improvement is < 10 pts, recommend HOLD — churning costs money
+- A stock "filtered out" this month (failed a fundamental check) is a genuine red flag
+- Consider sector diversification — don't concentrate in one sector
+- Give a 2-3 sentence reasoning citing the specific rank/score numbers
 
 Respond with ONLY valid JSON (no markdown):
-{{"action":"HOLD","sell_ticker":null,"sell_name":null,"buy_ticker":null,"buy_name":null,"buy_sector":null,"reasoning":"..."}}"""
+{{"action":"HOLD","sell_ticker":null,"sell_name":null,"buy_ticker":null,"buy_name":null,"buy_sector":null,"score_delta":null,"reasoning":"..."}}"""
 
         try:
             resp = requests.post(
@@ -1736,9 +1757,9 @@ Respond with ONLY valid JSON (no markdown):
                     "anthropic-version": "2023-06-01",
                 },
                 json={
-                    "model": "claude-sonnet-4-20250514",
-                    "max_tokens": 400,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "model":      "claude-sonnet-4-20250514",
+                    "max_tokens": 450,
+                    "messages":   [{"role": "user", "content": prompt}],
                 },
                 timeout=30,
             )
@@ -1758,54 +1779,85 @@ Respond with ONLY valid JSON (no markdown):
             print(f"  ⚠️  Advisory LLM call failed: {e} — using rule-based fallback")
 
     # ── Rule-based fallback ─────────────────────────────────────────────────
+    REPLACE_THRESHOLD = 10.0   # min score delta to justify a replacement
     base["source"] = "rule"
+
     if not live_holdings:
-        # First run — no holdings yet — recommend the top pick
         if new_picks:
             p = new_picks[0]
             base.update({
                 "action": "ADD",
                 "sell_ticker": None, "sell_name": None,
                 "buy_ticker": p["ticker"], "buy_name": p["name"],
-                "buy_sector": p["sector"],
+                "buy_sector": p["sector"], "score_delta": None,
                 "reasoning": (
-                    f"No existing portfolio. Start with {p['name']} ({p['sector']}), "
-                    f"the screener's top-ranked stock this month with score {p['score']}."
+                    f"No existing portfolio detected. The screener's top pick this month is "
+                    f"{p['name']} ({p['sector']}, score {p['score']}). Consider starting here."
                 ),
             })
         else:
             base.update({"action": "HOLD", "sell_ticker": None, "buy_ticker": None,
-                          "reasoning": "No screener data available."})
+                         "score_delta": None, "reasoning": "No screener data available."})
         return base
 
-    if not dropped:
-        base.update({
-            "action": "HOLD", "sell_ticker": None, "buy_ticker": None,
-            "reasoning": (
-                f"All {len(still_in)} current holdings remain in the screener's top picks. "
-                "No changes needed — hold existing positions."
-            ),
-        })
-    elif new_buys:
-        worst_old = dropped[0]
-        best_new  = new_buys[0]
-        base.update({
-            "action": "REPLACE",
-            "sell_ticker": worst_old["ticker"], "sell_name": worst_old["name"],
-            "buy_ticker":  best_new["ticker"],  "buy_name":  best_new["name"],
-            "buy_sector":  best_new["sector"],
-            "reasoning": (
-                f"{worst_old['name']} dropped out of the screener's top picks this month. "
-                f"The strongest new entry is {best_new['name']} ({best_new['sector']}, "
-                f"score {best_new['score']}). Consider this replacement."
-            ),
-        })
+    # Find the weakest holding (lowest current score or excluded)
+    excluded = [h for h in live_holdings if h["status"] == "excluded"]
+    weak     = sorted(
+        [h for h in live_holdings if h["current_score"] is not None],
+        key=lambda h: h["current_score"]
+    )
+
+    # Candidates for replacement: excluded first, then weakest scored
+    candidates_for_replace = excluded + weak
+
+    if candidates_for_replace and new_buys:
+        worst  = candidates_for_replace[0]
+        best   = new_buys[0]
+        w_score = worst.get("current_score") or 0
+        delta   = round(best["score"] - w_score, 1)
+
+        if worst["status"] == "excluded":
+            # Failed a filter this month — always worth replacing
+            base.update({
+                "action": "REPLACE",
+                "sell_ticker": worst["ticker"], "sell_name": worst["name"],
+                "buy_ticker":  best["ticker"],  "buy_name":  best["name"],
+                "buy_sector":  best["sector"],  "score_delta": delta,
+                "reasoning": (
+                    f"{worst['name']} failed a screener filter this month (likely a fundamental "
+                    f"deterioration — D/E, ROE, or revenue growth). "
+                    f"{best['name']} ({best['sector']}, score {best['score']}) is the strongest replacement."
+                ),
+            })
+        elif delta >= REPLACE_THRESHOLD:
+            base.update({
+                "action": "REPLACE",
+                "sell_ticker": worst["ticker"], "sell_name": worst["name"],
+                "buy_ticker":  best["ticker"],  "buy_name":  best["name"],
+                "buy_sector":  best["sector"],  "score_delta": delta,
+                "reasoning": (
+                    f"{worst['name']} ranks #{worst['current_rank']} this month "
+                    f"(score {w_score}) while {best['name']} scores {best['score']} "
+                    f"— a {delta:.0f}-point gap that justifies a replacement."
+                ),
+            })
+        else:
+            base.update({
+                "action": "HOLD",
+                "sell_ticker": None, "buy_ticker": None, "score_delta": delta,
+                "reasoning": (
+                    f"Your weakest holding ({worst['name']}) ranks #{worst['current_rank']} "
+                    f"(score {w_score}). The best alternative ({best['name']}) scores "
+                    f"{best['score']}, only a {delta:.0f}-point gap — not enough to justify "
+                    "churning. Hold all positions."
+                ),
+            })
     else:
         base.update({
-            "action": "HOLD", "sell_ticker": None, "buy_ticker": None,
+            "action": "HOLD", "sell_ticker": None, "buy_ticker": None, "score_delta": None,
             "reasoning": (
-                f"{len(dropped)} holding(s) dropped from top picks but no stronger replacement found. "
-                "Hold current positions."
+                f"All {len(still_in)} holdings remain well-ranked in the screener. "
+                "No changes needed this month."
             ),
         })
     return base

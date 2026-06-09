@@ -538,6 +538,18 @@ header{
 .adv-pick-sub{color:var(--text3);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
 .adv-pick-score{font-weight:700;color:var(--blue2);text-align:right;font-size:13px;}
 .adv-meta{font-size:10px;color:var(--text3);}
+/* health check table */
+.adv-health-lbl{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin:10px 0 6px;}
+.adv-health-list{display:flex;flex-direction:column;gap:3px;margin-bottom:12px;}
+.adv-hrow{display:grid;grid-template-columns:20px 1fr 60px 36px;gap:6px;align-items:center;font-size:11px;padding:5px 8px;border-radius:8px;background:var(--card2);}
+.adv-hrow.h-top7{background:rgba(34,197,94,.12);}
+.adv-hrow.h-top15{background:rgba(251,191,36,.08);}
+.adv-hrow.h-low{background:rgba(251,100,36,.08);}
+.adv-hrow.h-excluded{background:rgba(192,64,64,.12);}
+.adv-hicon{font-size:13px;}
+.adv-hname{font-weight:700;color:var(--text);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}
+.adv-hrank{font-size:10px;color:var(--text3);text-align:right;}
+.adv-hscore{font-weight:700;color:var(--blue2);text-align:right;font-size:12px;}
 
 .swap-c{
   background:rgba(255,255,255,0.50);border:1px solid rgba(255,255,255,0.07);
@@ -1383,6 +1395,21 @@ function renderAdvisory(adv){
     action==='REPLACE'?`Replace ${(adv.sell_ticker||'').replace('.NS','')} → ${(adv.buy_ticker||'').replace('.NS','')}`:
     `Add ${(adv.buy_ticker||'').replace('.NS','')}`;
 
+  // Build portfolio health check section
+  const health=(adv.holdings_health||[]);
+  const statusIcon=s=>s==='top7'?'✅':s==='top15'?'🟡':s==='excluded'?'⛔':'⚠️';
+  const statusCls=s=>s==='top7'?'h-top7':s==='top15'?'h-top15':s==='excluded'?'h-excluded':'h-low';
+  const healthHtml=health.length?`
+    <div class="adv-health-lbl">Portfolio health check (${health.length} holdings):</div>
+    <div class="adv-health-list">${health.map(h=>`
+      <div class="adv-hrow ${statusCls(h.status)}">
+        <span class="adv-hicon">${statusIcon(h.status)}</span>
+        <span class="adv-hname">${h.ticker.replace('.NS','')} · ${(h.name||'').slice(0,22)}</span>
+        <span class="adv-hrank">${h.current_rank?'#'+h.current_rank:h.status==='excluded'?'filtered out':'n/a'}</span>
+        <span class="adv-hscore">${h.current_score!=null?h.current_score:'—'}</span>
+      </div>`).join('')}
+    </div>`:'';
+
   // Build top picks reference table
   const picks=(adv.top_picks||[]).slice(0,7);
   const picksHtml=picks.length?`
@@ -1410,10 +1437,11 @@ function renderAdvisory(adv){
       <span class="adv-action-badge">${actionIcon} ${actionLabel}</span>
       ${src}
     </div>
+    ${healthHtml}
     <div class="adv-reason">${adv.reasoning||''}</div>
     ${execBtn}
     ${picksHtml}
-    <div class="adv-meta">Generated: ${adv.generated_at||''} · Holdings checked: ${adv.current_holdings||0}</div>
+    <div class="adv-meta">Generated: ${adv.generated_at||''} · Holdings: ${adv.current_holdings||0}</div>
   </div>`;
 }
 
