@@ -1762,6 +1762,8 @@ function renderSwingOpen(){
   el.innerHTML=_swLive.map((p,i)=>{
     const bp=p.buy_price||p.price||0;
     const t1=p.target1||0, t2=p.target2||0;
+    const t1pct=bp>0?((t1/bp-1)*100).toFixed(0):'';
+    const t2pct=bp>0?((t2/bp-1)*100).toFixed(0):'';
     const sl=p.stop_loss||p.stop_loss_price||0;
     const trail=p.trailing_stop||p.trailing_stop_dist||0;
     const edate=p.entry_date||p.buy_date||'';
@@ -1785,8 +1787,8 @@ function renderSwingOpen(){
       </div>
       <div class="sw-levels">
         <div class="sw-level"><div class="sw-level-lbl">🛑 Stop</div><div class="sw-level-val stop">₹${sl.toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
-        <div class="sw-level"><div class="sw-level-lbl">🎯 T1 +5%</div><div class="sw-level-val t1">₹${t1.toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
-        <div class="sw-level"><div class="sw-level-lbl">🎯 T2 +8%</div><div class="sw-level-val t2">₹${t2.toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
+        <div class="sw-level"><div class="sw-level-lbl">🎯 T1 ${t1pct?`+${t1pct}%`:''}</div><div class="sw-level-val t1">₹${t1.toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
+        <div class="sw-level"><div class="sw-level-lbl">🎯 T2 ${t2pct?`+${t2pct}%`:''}</div><div class="sw-level-val t2">₹${t2.toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
       </div>
       ${trail?`<div style="font-size:10px;color:var(--text2);margin-bottom:10px;">📈 Trail ₹${trail.toFixed(2)} below each new high</div>`:''}
       <button class="sw-exit-btn" onclick="exitSwingTrade('${p.ticker}','${bp}')">🚪 Mark as Exited on Kite</button>
@@ -1838,8 +1840,8 @@ function renderSwingCandidates(){
         </div>
       </div>
       <div class="sw-levels">
-        <div class="sw-level"><div class="sw-level-lbl">T1 +5%</div><div class="sw-level-val t1">₹${(c.target1||0).toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
-        <div class="sw-level"><div class="sw-level-lbl">T2 +8%</div><div class="sw-level-val t2">₹${(c.target2||0).toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
+        <div class="sw-level"><div class="sw-level-lbl">T1 ${c.current_price>0?`+${((c.target1/c.current_price-1)*100).toFixed(0)}%`:''}</div><div class="sw-level-val t1">₹${(c.target1||0).toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
+        <div class="sw-level"><div class="sw-level-lbl">T2 ${c.current_price>0?`+${((c.target2/c.current_price-1)*100).toFixed(0)}%`:''}</div><div class="sw-level-val t2">₹${(c.target2||0).toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
         <div class="sw-level"><div class="sw-level-lbl">Max days</div><div class="sw-level-val" style="color:var(--text2)">${c.max_days||10}d</div></div>
       </div>
       <div class="sw-signals">${sigPills}</div>

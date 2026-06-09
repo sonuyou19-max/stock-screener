@@ -355,8 +355,8 @@ def compute_swing_levels(hist: pd.DataFrame, buy_price: float) -> dict:
         "stop_loss":    stop,
         "stop_pct":     stop_pct,
         "trailing":     trail,
-        "target1":      target1,   # +5% — book 50%
-        "target2":      target2,   # +8% — book 50%
+        "target1":      target1,
+        "target2":      target2,
         "rr_ratio":     rr_ratio,  # reward/risk ratio
         "max_days":     SWING_MAX_DAYS,
         "source":       src,
@@ -806,10 +806,11 @@ def send_telegram_alert(candidates: list):
 
             lines.append(
                 f"{conv_emoji} *{i}. {c['ticker'].replace('.NS','')}* "
-                f"[{c['conviction']}] Score: {c['score']}/6\n"
+                f"[{c['conviction']}] Score: {c['score']}/{len(c['signals'])}\n"
                 f"  Price: ₹{c['current_price']:,.2f}\n"
                 f"  Stop:  ₹{c['stop_loss']:,.2f} ({c['stop_pct']:.1f}% below)\n"
-                f"  T1: ₹{c['target1']:,.2f} (+5%) | T2: ₹{c['target2']:,.2f} (+8%)\n"
+                f"  T1: ₹{c['target1']:,.2f} (+{SWING_TARGET_1*100:.0f}%) | "
+                f"T2: ₹{c['target2']:,.2f} (+{SWING_TARGET_2*100:.0f}%)\n"
                 f"  R/R: {c['rr_ratio']:.2f}× | Signals: {', '.join(sigs_passed)}\n"
             )
 
