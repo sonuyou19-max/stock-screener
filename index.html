@@ -1900,6 +1900,7 @@ async function fetchSwingPrices(){
     const bp=pos.buy_price||pos.price||0;
     const sh=pos.shares||1;
     const {price,change_pct}=info;
+    pos.current_price=price; // store so exitSwingTrade can use it when blank entered
     const prev=price/(1+(change_pct||0)/100);
     const di=(price-prev)*sh;
     const pnlAbs=(price-bp)*sh;
@@ -1967,9 +1968,21 @@ async function exitSwingTrade(ticker,buyPrice){
   if(price===null)return; // cancelled
   let sellPrice;
   if(price.trim()===''){
-    const cand=(_swCandidates?.candidates||[]).find(c=>c.ticker===ticker);
-    if(cand?.current_price){sellPrice=cand.current_price;}
-    else{alert(`No scanned price available for ${ticker.replace('.NS','')}.\nPlease enter the exit price manually.`);return;}
+    // Level 1: live price stored during last price refresh
+    const livePos=_swLive.find(p=>p.ticker===ticker);
+    if(livePos?.current_price){sellPrice=livePos.current_price;}
+    // Level 2: last scanned price from candidates
+    else{
+      const cand=(_swCandidates?.candidates||[]).find(c=>c.ticker===ticker);
+      if(cand?.current_price){sellPrice=cand.current_price;}
+      // Level 3: price already rendered in the DOM
+      else{
+        const domEl=document.getElementById(`swlp-${ticker.replace('.','_')}`);
+        const domPrice=domEl?parseFloat(domEl.textContent.replace('₹','').replace(/,/g,'')):0;
+        if(domPrice>0){sellPrice=domPrice;}
+        else{alert(`Live price not yet loaded for ${ticker.replace('.NS','')}.\nHit Refresh and try again, or enter the price manually.`);return;}
+      }
+    }
   }else{
     sellPrice=parseFloat(price);
     if(!sellPrice||isNaN(sellPrice)||sellPrice<=0){alert('Please enter a valid exit price');return;}
