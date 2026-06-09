@@ -2,32 +2,36 @@
 """
 rebalancer.py — Monthly Portfolio Rebalancer
 =============================================
-Runs on the 1st working day of each month, BEFORE the screener.
+Runs on the 1st working day of each month, BEFORE the screener (3rd).
 
 What it does:
   1. Loads current portfolio from API (what you bought, at what price)
   2. Fetches live prices from Yahoo Finance
   3. Calculates P&L for each position
-  4. Decides: EXIT / TRIM / HOLD for each stock
+  4. Decides: EXIT / TRIM / HOLD for each stock using fixed rules
   5. Computes freed cash available for new screener picks
-  6. Sends Telegram message with action list
-  7. Saves rebalance report to API
+  6. Saves rebalance report to API  ← screener reads this on the 3rd
+
+The screener reads this report to protect HOLD-rated stocks — it will NOT
+suggest replacing a stock that the rebalancer has cleared as healthy.
+
+Telegram notifications are handled by the separate alerter service.
+This service is a pure analysis + API-save tool.
 
 Decision rules:
   TRIM  — Stage 1 (+20%): sell 30% | Stage 2 (+35%): sell 30%
-  EXIT  — Stage 3 (+50%): sell all  |  3+ months, no stage hit  |  stop-loss breach
+  EXIT  — Stage 3 (+50%): sell all  |  3+ months, <5% gain  |  stop-loss breach
+  WATCH — Within 5% of stop-loss
   HOLD  — Everything else
 
 Railway schedule: 0 2 1 * *  (2:00 AM UTC on 1st of every month)
 
 Environment variables required:
-  API_URL              — Railway API base URL
-  TELEGRAM_BOT_TOKEN   — Telegram bot token
-  TELEGRAM_CHAT_ID     — Telegram chat ID
+  API_URL   — Railway API base URL
 
 Usage:
   python rebalancer.py              # normal monthly run
-  python rebalancer.py --dry-run    # print report, no Telegram
+  python rebalancer.py --dry-run    # print report only, no API save
   python rebalancer.py --force      # skip date check (for testing)
 """
 
@@ -734,7 +738,7 @@ def _print_swap_report(swaps: list):
 def main():
     parser = argparse.ArgumentParser(description="Monthly portfolio rebalancer")
     parser.add_argument("--dry-run", action="store_true",
-                        help="Print report only — no Telegram, no API save")
+                        help="Print report only — no API save")
     parser.add_argument("--force",   action="store_true",
                         help="Skip date check (for testing)")
     args = parser.parse_args()
@@ -755,51 +759,29 @@ def main():
         print(f"      Use --force to override for testing.\n")
         return
 
-    # ── Load live positions ──────────────────────
+    # ── Step 1: Load live positions ──────────────
     portfolio = fetch_portfolio()
     if not portfolio:
         print("\n  ❌ Cannot rebalance — no live portfolio data.\n")
         return
 
-    # ── Load screener picks for swap comparison ──
-    picks = fetch_picks()
-
-    # ── Run rebalance on live positions ──────────
-    print(f"\n  Step 1: Analysing {sum(len(b.get('stocks',[])) for b in portfolio.values())} positions...")
+    # ── Step 2: Run rebalance logic ──────────────
+    n = sum(len(b.get("stocks", [])) for b in portfolio.values())
+    print(f"\n  Step 2: Analysing {n} positions...")
     report = run_rebalance(portfolio)
 
-    # ── Generate swap recommendations ────────────
-    swap_msg = ""
-    if picks:
-        print(f"\n  Step 2: Comparing live positions vs screener picks...")
-        swaps = _build_swap_recommendations(portfolio, picks)
-        report["swaps"] = swaps
-        swap_msg = _format_swap_telegram(swaps)
-        _print_swap_report(swaps)
-
-    # ── Print terminal report ────────────────────
+    # ── Step 3: Print full report to logs ────────
     print(format_terminal_report(report))
 
     if args.dry_run:
-        print("\n  [DRY RUN] — No Telegram sent, no API save.\n")
-        if swap_msg:
-            print("\n  SWAP RECOMMENDATIONS (dry run):")
-            print(swap_msg)
+        print("\n  [DRY RUN] — report printed, nothing saved to API.\n")
         return
 
-    # ── Send Telegram — rebalance + swaps ────────
-    print("\n  Step 3: Sending Telegram notifications...")
-    tg_message = format_telegram_message(report)
-    send_telegram(tg_message)
-    if swap_msg:
-        time.sleep(1)
-        send_telegram(swap_msg)
-
-    # ── Save to API ──────────────────────────────
+    # ── Step 4: Save to API (screener reads this on the 3rd) ─────────
     print("\n  Step 4: Saving report to API...")
     save_report_to_api(report)
 
-    print("\n  ✅ Rebalance complete.\n")
+    print("\n  ✅ Rebalance complete. Screener will read this on the 3rd.\n")
 
 
 if __name__ == "__main__":
