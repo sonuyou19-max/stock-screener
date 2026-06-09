@@ -1431,10 +1431,10 @@ def screen_all(
             sig = policy_signals.get(sector, "neutral")
             return POLICY_SCORE_ADJ.get(sig, 0.0)
 
-        all_df["policy_signal"] = all_df["sector_name"].map(
+        all_df["policy_signal"] = all_df["nse_sector"].map(
             lambda s: policy_signals.get(s, "neutral")
         )
-        all_df["policy_adj"] = all_df["sector_name"].map(_policy_adj)
+        all_df["policy_adj"] = all_df["nse_sector"].map(_policy_adj)
         all_df["final_score"] = (
             all_df["final_score"] + all_df["policy_adj"]
         ).clip(0, 100)
