@@ -1624,101 +1624,74 @@ def build_portfolio(budget: int = BUDGET) -> tuple[dict, pd.DataFrame, pd.DataFr
 
 def rebalance_holdings(live_holdings: list, all_df: pd.DataFrame) -> list:
     """
-    Evaluate each live holding for HOLD / WATCH / EXIT using portfolio logic,
-    NOT screener buy-criteria.  The screener tells you what to buy; the
-    rebalancer tells you whether to keep what you already own.
+    Fallback rebalancer — mirrors rebalancer.py decision rules exactly.
+    Only used when the API rebalancer report is not yet available.
 
-    Signals evaluated per holding
-    ──────────────────────────────
-    + PnL from buy price          (profit-taking)
-    + Proximity to 52-week high   (near peak = good exit window)
-    + Days held                   (LTCG tax treatment after 1 year)
-    + Failed screener filters     (secondary fundamental signal)
-    − Recent entry (<90 days)     (give new positions time)
+    Rules (same thresholds as rebalancer.py PROFIT_STAGES):
+      Stop-loss breach            → EXIT
+      PnL >= +50%  (Stage 3)     → EXIT  (sell all)
+      PnL >= +35%  (Stage 2)     → TRIM  (sell 30%)
+      PnL >= +20%  (Stage 1)     → TRIM  (sell 30%)
+      3+ months held, PnL < 5%   → EXIT  (dead money, redeploy)
+      Within 5% of stop-loss     → WATCH
+      Everything else            → HOLD
     """
-    screener_scores = {
-        row["ticker"]: round(row["final_score"], 1)
-        for _, row in all_df.iterrows()
-    } if len(all_df) > 0 else {}
-
     for h in live_holdings:
         ticker    = h["ticker"]
         buy_price = float(h.get("buy_price") or 0)
+        stop_loss = float(h.get("stop_loss_price") or 0)
 
         try:
-            fi = yf.Ticker(ticker).fast_info
-            current_price = float(fi.last_price       or 0)
-            week52_high   = float(fi.fifty_two_week_high or 0)
+            current_price = float(yf.Ticker(ticker).fast_info.last_price or 0)
         except Exception as exc:
             h["rebalancer_verdict"] = "unknown"
-            h["rebalancer_reason"]  = f"data unavailable: {exc}"
+            h["rebalancer_reason"]  = f"price unavailable: {exc}"
             continue
 
-        pnl_pct  = ((current_price - buy_price) / buy_price * 100) if buy_price > 0 else 0
-        gap_pct  = ((week52_high - current_price) / week52_high * 100) if week52_high > 0 else 100
-
+        pnl_pct = ((current_price - buy_price) / buy_price * 100) if buy_price > 0 else 0
         try:
             days_held = (datetime.now() -
                          datetime.strptime(h.get("buy_date", ""), "%Y-%m-%d")).days
         except ValueError:
             days_held = 0
 
-        in_screener    = ticker in screener_scores
-        screener_score = screener_scores.get(ticker)
+        months_held = days_held / 30.44
+        h["current_price"] = round(current_price, 2)
+        h["pnl_pct"]       = round(pnl_pct, 1)
+        h["days_held"]     = days_held
 
-        exit_score = 0
-        signals    = []
-
-        # ── Profit-taking ───────────────────────────────────────────────────
-        if pnl_pct >= 60:
-            exit_score += 35; signals.append(f"+{pnl_pct:.0f}% profit — strong target reached")
+        # ── Mirror rebalancer.py priority order ─────────────────────────────
+        if stop_loss and current_price <= stop_loss:
+            verdict = "EXIT"; exit_score = 100
+            reason  = f"Stop-loss breached — ₹{current_price:,.2f} ≤ GTT ₹{stop_loss:,.2f}"
+        elif pnl_pct >= 50:
+            verdict = "EXIT"; exit_score = 90
+            reason  = f"Stage 3 (+50%) — full exit, P&L +{pnl_pct:.0f}%"
         elif pnl_pct >= 35:
-            exit_score += 20; signals.append(f"+{pnl_pct:.0f}% profit")
+            verdict = "TRIM"; exit_score = 60
+            reason  = f"Stage 2 (+35%) — sell 30%, P&L +{pnl_pct:.0f}%"
         elif pnl_pct >= 20:
-            exit_score += 10; signals.append(f"+{pnl_pct:.0f}% profit")
-        elif pnl_pct <= -20:
-            exit_score += 30; signals.append(f"{pnl_pct:.0f}% loss — stop-loss territory")
-
-        # ── Near 52-week high (ideal exit window) ───────────────────────────
-        if gap_pct <= 3:
-            exit_score += 30; signals.append("at/near 52W high — ideal exit window")
-        elif gap_pct <= 8:
-            exit_score += 20; signals.append(f"{gap_pct:.0f}% from 52W high")
-        elif gap_pct <= 15:
-            exit_score += 10; signals.append(f"{gap_pct:.0f}% from 52W high")
-
-        # ── Tax efficiency ───────────────────────────────────────────────────
-        if days_held >= 365:
-            exit_score += 8; signals.append("LTCG: 1yr+ held")
-
-        # ── Screener filter (secondary) ─────────────────────────────────────
-        if not in_screener:
-            exit_score += 12; signals.append("no longer passes screener filters")
-
-        # ── Hold incentive for recent buys ───────────────────────────────────
-        if pnl_pct < 15 and days_held < 90:
-            exit_score -= 20; signals.append("recent entry — give time")
-
-        # ── Verdict ──────────────────────────────────────────────────────────
-        if exit_score >= 50:
-            verdict = "EXIT"
-        elif exit_score >= 28:
-            verdict = "WATCH"
+            verdict = "TRIM"; exit_score = 40
+            reason  = f"Stage 1 (+20%) — sell 30%, P&L +{pnl_pct:.0f}%"
+        elif months_held >= 3 and pnl_pct < 5:
+            verdict = "EXIT"; exit_score = 70
+            reason  = (f"Dead money — {months_held:.0f} months held, "
+                       f"only {pnl_pct:+.0f}% gain. Redeploy.")
+        elif stop_loss and current_price <= stop_loss * 1.05:
+            verdict = "WATCH"; exit_score = 25
+            reason  = f"Near stop-loss ₹{stop_loss:,.2f} — monitor closely"
         else:
-            verdict = "HOLD"
+            verdict = "HOLD"; exit_score = 0
+            next_t  = buy_price * 1.20 if buy_price > 0 else 0
+            to_go   = ((next_t - current_price) / current_price * 100) if current_price > 0 else 0
+            reason  = (f"No trigger — P&L {pnl_pct:+.0f}%, "
+                       f"needs +{to_go:.0f}% more for Stage 1 (₹{next_t:,.0f})")
 
-        h.update({
-            "current_price":      round(current_price, 2),
-            "pnl_pct":            round(pnl_pct, 1),
-            "gap_from_52w_high":  round(gap_pct, 1),
-            "days_held":          days_held,
-            "screener_score":     screener_score,
-            "exit_score":         exit_score,
-            "rebalancer_verdict": verdict,
-            "rebalancer_reason":  " · ".join(signals[:3]) if signals else "no exit signals",
-        })
-        print(f"    rebalancer {ticker.replace('.NS',''):12s} pnl={pnl_pct:+.0f}%  "
-              f"52Wgap={gap_pct:.0f}%  exit_score={exit_score}  → {verdict}")
+        h["exit_score"]         = exit_score
+        h["rebalancer_verdict"] = verdict
+        h["rebalancer_reason"]  = reason
+        print(f"    fallback-rebalancer {ticker.replace('.NS',''):12s} "
+              f"pnl={pnl_pct:+.0f}%  held={months_held:.1f}mo  → {verdict}")
 
     return live_holdings
 
@@ -1728,9 +1701,10 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
     Monthly advisory using two separate frameworks:
 
     REBALANCER  — evaluates existing holdings (hold vs exit).
-                  Driven by PnL, 52W-high proximity, days held.
-                  A stock near its 52W high with good profit is an EXIT
-                  candidate — NOT because the screener filtered it out.
+                  Uses fixed rules: TRIM at +20%/+35%, EXIT at +50%,
+                  EXIT if dead money (3+ months, <5% gain), EXIT on stop-loss.
+                  Primary source: rebalancer.py report from API.
+                  Fallback: rebalance_holdings() with identical rules.
 
     SCREENER    — identifies new buy candidates from the Nifty 500 universe.
                   Screener top picks are offered only as a reinvestment idea
@@ -1889,11 +1863,13 @@ D) ADD         [ticker] — add a new position if portfolio < 7 and cash is avai
 
 RULES:
 - Only recommend EXIT/EXIT_AND_ADD for a holding whose rebalancer verdict is EXIT or TRIM
+- Rebalancer triggers: Stage 1 +20% (TRIM), Stage 2 +35% (TRIM), Stage 3 +50% (EXIT),
+  dead money (3+ months <5%), stop-loss breach (EXIT). No other triggers.
+- Do NOT recommend exiting a stock just because it passed its 52W high or screener filtered it
 - Do NOT recommend exiting a stock with negative PnL — that locks in a loss
-- If multiple holdings have EXIT verdict, pick the one with highest PnL (most profit to protect)
-- Screener rank does NOT override the rebalancer — do not exit a HOLD-rated stock
+- If multiple holdings have EXIT/TRIM verdict, pick the one with highest PnL
 - LTCG: holding >1 year is more tax-efficient (10% vs 15% STCG)
-- 2-3 sentences citing the specific PnL and rebalancer reason
+- 2-3 sentences citing the specific PnL% and which stage/trigger fired
 
 Respond with ONLY valid JSON (action must be: HOLD / EXIT / EXIT_AND_ADD / ADD):
 {{"action":"HOLD","sell_ticker":null,"sell_name":null,"buy_ticker":null,"buy_name":null,"buy_sector":null,"reasoning":"..."}}"""
