@@ -518,6 +518,27 @@ header{
 
 /* Swap/recs */
 .swap-wrap{padding:0 20px;}
+/* ─── Monthly Advisory ─── */
+.adv-card{border-radius:14px;padding:16px;margin:0 0 12px;border:1.5px solid var(--border);}
+.adv-hold{background:linear-gradient(135deg,rgba(34,197,94,.06),rgba(34,197,94,.01));}
+.adv-replace{background:linear-gradient(135deg,rgba(251,191,36,.08),rgba(251,191,36,.01));}
+.adv-add{background:linear-gradient(135deg,rgba(99,102,241,.08),rgba(99,102,241,.01));}
+.adv-header{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;}
+.adv-action-badge{font-size:14px;font-weight:700;color:var(--text);}
+.adv-src{font-size:10px;color:var(--text3);background:var(--card2);padding:2px 7px;border-radius:20px;}
+.adv-reason{font-size:13px;color:var(--text2);line-height:1.55;margin-bottom:12px;}
+.adv-exec{width:100%;margin-bottom:12px;}
+.adv-picks-lbl{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin-bottom:6px;}
+.adv-picks-list{display:flex;flex-direction:column;gap:4px;margin-bottom:10px;}
+.adv-pick-row{display:grid;grid-template-columns:18px 52px 1fr 90px 32px;gap:4px;align-items:center;font-size:11px;padding:4px 6px;border-radius:8px;background:var(--card2);}
+.adv-pick-highlight{background:rgba(34,197,94,.15);border:1px solid rgba(34,197,94,.3);}
+.adv-pick-rank{color:var(--text3);}
+.adv-pick-ticker{font-weight:700;color:var(--text);}
+.adv-pick-name{color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.adv-pick-sector{color:var(--text3);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.adv-pick-score{font-weight:600;color:var(--blue2);text-align:right;}
+.adv-meta{font-size:10px;color:var(--text3);}
+
 .swap-c{
   background:rgba(255,255,255,0.50);border:1px solid rgba(255,255,255,0.07);
   border-radius:18px;padding:16px;margin-bottom:10px;
@@ -851,8 +872,8 @@ document.addEventListener('keydown',e=>{if(document.getElementById('pinGate').cl
   </div>
   <div class="sec"><span class="sec-lbl">Closed Positions</span><span class="sec-line"></span></div>
   <div class="closed-wrap" id="indClosed"><div class="spin-wrap"><div class="spinner"></div></div></div>
-  <div class="sec"><span class="sec-lbl">Screener Recommendations</span><span class="sec-line"></span></div>
-  <div class="swap-wrap" id="indSwaps"><div class="spin-wrap"><div class="spinner"></div></div></div>
+  <div class="sec"><span class="sec-lbl">Monthly Advisory</span><span class="sec-line"></span></div>
+  <div id="indAdvisory"><div class="spin-wrap"><div class="spinner"></div></div></div>
   <div class="sec"><span class="sec-lbl">Policy Signals (RBI / PIB)</span><span class="sec-line"></span></div>
   <div class="sig-grid" id="indMacro"><div class="spin-wrap" style="grid-column:1/-1"><div class="spinner"></div></div></div>
   <div class="sec"><span class="sec-lbl">AI Macro Verdict</span><span class="sec-line"></span></div>
@@ -1039,12 +1060,16 @@ async function fetchUsSnap(){
 
 /* ═══ INDIA DETAIL ═══ */
 async function loadIndia(){
-  const[port,sig,fii,picks]=await Promise.all([fd('/portfolio/live'),fd('/signals'),fd('/fiidii'),fd('/portfolio/picks')]);
+  const[port,sig,fii,picks,adv]=await Promise.all([
+    fd('/portfolio/live'),fd('/signals'),fd('/fiidii'),
+    fd('/portfolio/picks'),fd('/portfolio/advisory')
+  ]);
   if(port){indPortfolio=port;mergeFund(port,picks);}
   if(sig)indSignals=sig;if(fii)indFiidii=fii;
   renderIndStats();renderBuckets('ind',indPortfolio,'indStocks','₹');
   renderIndMacro();renderIndVerdict();renderFiiDii();
-  fetchSwap('ind');loadPerf('IND');loadClosed('ind');
+  renderAdvisory(adv);
+  loadPerf('IND');loadClosed('ind');
   await fetchIndPrices();
 }
 
@@ -1160,7 +1185,7 @@ async function fetchUsPrices(){
 /* ═══ BUCKET/STOCK RENDERER ═══ */
 const IT={BFSI_IT:{min_rev:10,max_pe:35,max_pb:5,min_roe:15,max_de:2,max_peg:2.5},DEFENCE_INFRA:{min_rev:12,max_pe:50,max_pb:8,min_roe:12,max_de:1.5,max_peg:3},GREEN_ENERGY_EV:{min_rev:20,max_pe:80,max_pb:10,max_de:6},FMCG_PHARMA:{min_rev:8,max_pe:65,max_pb:12,min_roe:16,max_de:1.5},top_picks:{min_rev:5,max_pe:75,max_pb:12,min_roe:10,max_de:3,max_peg:4.5}};
 const UT={TECH:{min_rev:8,max_pe:80,max_pb:20,max_de:400,max_peg:4},DEFENSIVE_DIV:{min_rev:3,max_pe:30,max_pb:8,min_roe:12,max_de:250,max_peg:2.5}};
-const IBT={BFSI_IT:'BFSI + IT · 30%',DEFENCE_INFRA:'Defence + Infra · 30%',GREEN_ENERGY_EV:'Green Energy + EV · 20%',FMCG_PHARMA:'FMCG + Pharma · 20%',top_picks:'Nifty 500 · Top 7 · All Sectors'};
+const IBT={BFSI_IT:'Financial Services + IT',DEFENCE_INFRA:'Capital Goods + Defence',GREEN_ENERGY_EV:'Power + Automobile',FMCG_PHARMA:'FMCG + Healthcare',top_picks:'Monthly Top Picks — Nifty 500'};
 const SENT_EMOJI={positive:'🟢',mild_positive:'🟡',neutral:'⚪',cautious:'🟠',negative:'🔴'};
 const UBT={TECH:'Technology · 80%',DEFENSIVE_DIV:'Defensive + Dividend · 20%'};
 
@@ -1341,6 +1366,88 @@ async function fetchSwap(mkt){
   const ep=mkt==='ind'?'/portfolio/swap':'/us/portfolio/swap';
   const cId=mkt==='ind'?'indSwaps':'usSwaps';
   const data=await fd(ep);renderSwaps(cId,data,mkt);
+}
+
+function renderAdvisory(adv){
+  const el=document.getElementById('indAdvisory');
+  if(!el)return;
+  if(!adv||adv.error){
+    el.innerHTML=`<div class="adv-card adv-hold"><div class="adv-action">⏳ Not yet generated</div><div class="adv-reason">Run screener.py to generate this month's advisory.</div></div>`;
+    return;
+  }
+  const action=adv.action||'HOLD';
+  const cls=action==='HOLD'?'adv-hold':action==='REPLACE'?'adv-replace':'adv-add';
+  const actionIcon=action==='HOLD'?'✅':action==='REPLACE'?'🔄':'➕';
+  const actionLabel=action==='HOLD'?'Hold — No Changes This Month':
+    action==='REPLACE'?`Replace ${(adv.sell_ticker||'').replace('.NS','')} → ${(adv.buy_ticker||'').replace('.NS','')}`:
+    `Add ${(adv.buy_ticker||'').replace('.NS','')}`;
+
+  // Build top picks reference table
+  const picks=(adv.top_picks||[]).slice(0,7);
+  const picksHtml=picks.length?`
+    <div class="adv-picks-lbl">This month's screener top picks:</div>
+    <div class="adv-picks-list">${picks.map((p,i)=>`
+      <div class="adv-pick-row ${adv.buy_ticker===p.ticker?'adv-pick-highlight':''}">
+        <span class="adv-pick-rank">${i+1}</span>
+        <span class="adv-pick-ticker">${p.ticker.replace('.NS','')}</span>
+        <span class="adv-pick-name">${p.name.slice(0,22)}</span>
+        <span class="adv-pick-sector">${p.sector.slice(0,18)}</span>
+        <span class="adv-pick-score">${p.score}</span>
+      </div>`).join('')}
+    </div>`:''
+
+  // Execute button for REPLACE or ADD
+  const execBtn=(action!=='HOLD')
+    ?`<button class="exec-btn adv-exec" onclick="execAdvisory('${adv.buy_ticker||''}','${adv.sell_ticker||''}')">✅ Execute on Kite</button>`
+    :'';
+
+  const src=adv.source==='llm'?'<span class="adv-src">🤖 Claude AI</span>':'<span class="adv-src">📊 Rule-based</span>';
+
+  el.innerHTML=`<div class="adv-card ${cls}">
+    <div class="adv-header">
+      <span class="adv-action-badge">${actionIcon} ${actionLabel}</span>
+      ${src}
+    </div>
+    <div class="adv-reason">${adv.reasoning||''}</div>
+    ${execBtn}
+    ${picksHtml}
+    <div class="adv-meta">Generated: ${adv.generated_at||''} · Holdings checked: ${adv.current_holdings||0}</div>
+  </div>`;
+}
+
+async function execAdvisory(buyTicker,sellTicker){
+  if(!buyTicker)return;
+  const msg=sellTicker
+    ?`Execute on Kite:\n• SELL ${sellTicker.replace('.NS','')}\n• BUY ${buyTicker.replace('.NS','')}\n\nMark as done?`
+    :`Execute on Kite:\n• BUY ${buyTicker.replace('.NS','')}\n\nMark as done?`;
+  if(!confirm(msg))return;
+  // Mark advisory as executed — move sell out of live, add buy to live
+  const picks=await fd('/portfolio/picks');
+  if(!picks){alert('Could not load picks data.');return;}
+  // Find the new stock in picks
+  let newStock=null;
+  for(const b of Object.values(picks)){
+    const found=(b.stocks||[]).find(s=>s.ticker===buyTicker);
+    if(found){newStock={...found};break;}
+  }
+  if(!newStock){alert(`${buyTicker} not found in this month's picks. Check dashboard.`);return;}
+  // Update live portfolio
+  const live=await fd('/portfolio/live')||{};
+  // Remove sell ticker if present
+  if(sellTicker){
+    for(const bk of Object.keys(live)){
+      live[bk].stocks=(live[bk].stocks||[]).filter(s=>s.ticker!==sellTicker);
+    }
+  }
+  // Add new stock — put in top_picks bucket or first existing bucket
+  const targetBucket=Object.keys(live)[0]||'top_picks';
+  if(!live[targetBucket])live[targetBucket]={label:'Portfolio',stocks:[]};
+  if(!(live[targetBucket].stocks||[]).find(s=>s.ticker===buyTicker)){
+    live[targetBucket].stocks.push({...newStock,buy_date:new Date().toISOString().split('T')[0]});
+  }
+  await fetch('/portfolio/live/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(live)});
+  alert('Executed! Portfolio updated.');
+  loadIndia();
 }
 
 function renderSwaps(cId,data,mkt){
