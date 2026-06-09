@@ -541,7 +541,7 @@ header{
 /* health check table */
 .adv-health-lbl{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;margin:10px 0 6px;}
 .adv-health-list{display:flex;flex-direction:column;gap:3px;margin-bottom:12px;}
-.adv-hrow{display:grid;grid-template-columns:20px 1fr 60px 36px;gap:6px;align-items:center;font-size:11px;padding:5px 8px;border-radius:8px;background:var(--card2);}
+.adv-hrow{display:grid;grid-template-columns:20px 1fr 52px 46px;gap:6px;align-items:center;font-size:11px;padding:5px 8px;border-radius:8px;background:var(--card2);}
 .adv-hrow.h-top7{background:rgba(34,197,94,.12);}
 .adv-hrow.h-top15{background:rgba(251,191,36,.08);}
 .adv-hrow.h-low{background:rgba(251,100,36,.08);}
@@ -1389,31 +1389,45 @@ function renderAdvisory(adv){
     return;
   }
   const action=adv.action||'HOLD';
-  const cls=action==='HOLD'?'adv-hold':action==='REPLACE'?'adv-replace':'adv-add';
-  const actionIcon=action==='HOLD'?'✅':action==='REPLACE'?'🔄':'➕';
-  const actionLabel=action==='HOLD'?'Hold — No Changes This Month':
-    action==='REPLACE'?`Replace ${(adv.sell_ticker||'').replace('.NS','')} → ${(adv.buy_ticker||'').replace('.NS','')}`:
+  const isExit=action==='EXIT'||action==='EXIT_AND_ADD';
+  const isAdd =action==='ADD'||action==='EXIT_AND_ADD';
+  const cls   =action==='HOLD'?'adv-hold':isExit?'adv-replace':'adv-add';
+  const actionIcon=action==='HOLD'?'✅':isExit&&isAdd?'🔄':isExit?'📤':'➕';
+  const actionLabel=
+    action==='HOLD'       ?'Hold — No Changes This Month':
+    action==='EXIT'       ?`Exit ${(adv.sell_ticker||'').replace('.NS','')} — Bank Profits`:
+    action==='EXIT_AND_ADD'?`Exit ${(adv.sell_ticker||'').replace('.NS','')} → Add ${(adv.buy_ticker||'').replace('.NS','')}`:
     `Add ${(adv.buy_ticker||'').replace('.NS','')}`;
 
-  // Build portfolio health check section
+  // Build portfolio rebalancer health check
   const health=(adv.holdings_health||[]);
-  const statusIcon=s=>s==='top7'?'✅':s==='top15'?'🟡':s==='excluded'?'⛔':'⚠️';
-  const statusCls=s=>s==='top7'?'h-top7':s==='top15'?'h-top15':s==='excluded'?'h-excluded':'h-low';
+  const rbIcon=v=>(v==='EXIT'||v==='TRIM')?'🔴':v==='WATCH'?'👁':v==='HOLD'?'🟢':'⚪';
+  const rbCls =v=>(v==='EXIT'||v==='TRIM')?'h-excluded':v==='WATCH'?'h-top15':v==='HOLD'?'h-top7':'';
+  const rbDate=adv.rebalance_report_date?`<span style="font-size:9px;color:var(--text3)"> · report: ${adv.rebalance_report_date}</span>`:'';
   const healthHtml=health.length?`
-    <div class="adv-health-lbl">Portfolio health check (${health.length} holdings):</div>
-    <div class="adv-health-list">${health.map(h=>`
-      <div class="adv-hrow ${statusCls(h.status)}">
-        <span class="adv-hicon">${statusIcon(h.status)}</span>
-        <span class="adv-hname">${h.ticker.replace('.NS','')} · ${(h.name||'').slice(0,22)}</span>
-        <span class="adv-hrank">${h.current_rank?'#'+h.current_rank:h.status==='excluded'?'filtered out':'n/a'}</span>
-        <span class="adv-hscore">${h.current_score!=null?h.current_score:'—'}</span>
-      </div>`).join('')}
+    <div class="adv-health-lbl">Rebalancer${rbDate} — ${health.length} holdings:</div>
+    <div class="adv-health-list">${health.map(h=>{
+      const v=h.rebalancer_verdict||'HOLD';
+      const rawPnl=h.pnl_pct!=null?h.pnl_pct:(h.gain_pct!=null?h.gain_pct:null);
+      const pnlHtml=rawPnl!=null
+        ?`<span style="color:${rawPnl>=0?'#2d8a6a':'#c04040'};font-weight:700;white-space:nowrap">${rawPnl>=0?'+':''}${rawPnl.toFixed(1)}%</span>`
+        :'—';
+      const detail=(h.rebalancer_reason||h.reason||'').slice(0,55);
+      return `<div class="adv-hrow ${rbCls(v)}">
+        <span class="adv-hicon">${rbIcon(v)}</span>
+        <div class="adv-pick-main">
+          <span class="adv-hname">${h.ticker.replace('.NS','')} · ${(h.name||'').slice(0,20)}</span>
+          ${detail?`<div class="adv-pick-sub" style="font-size:9px">${detail}</div>`:''}
+        </div>
+        ${pnlHtml}
+        <span class="adv-hscore" style="font-size:10px">${v}</span>
+      </div>`;}).join('')}
     </div>`:'';
 
   // Build top picks reference table
   const picks=(adv.top_picks||[]).slice(0,7);
   const picksHtml=picks.length?`
-    <div class="adv-picks-lbl">This month's screener top picks:</div>
+    <div class="adv-picks-lbl">This month's screener top picks (new entries):</div>
     <div class="adv-picks-list">${picks.map((p,i)=>`
       <div class="adv-pick-row ${adv.buy_ticker===p.ticker?'adv-pick-highlight':''}">
         <span class="adv-pick-rank">${i+1}</span>
@@ -1425,9 +1439,12 @@ function renderAdvisory(adv){
       </div>`).join('')}
     </div>`:''
 
-  // Execute button for REPLACE or ADD
-  const execBtn=(action!=='HOLD')
-    ?`<button class="exec-btn adv-exec" onclick="execAdvisory('${adv.buy_ticker||''}','${adv.sell_ticker||''}')">✅ Execute on Kite</button>`
+  // Execute button
+  const canExec=action!=='HOLD';
+  const execBtn=canExec
+    ?`<button class="exec-btn adv-exec" onclick="execAdvisory('${adv.buy_ticker||''}','${adv.sell_ticker||''}')">
+        ${isExit&&isAdd?'✅ Sell + Buy on Kite':isExit?'📤 Sell on Kite':'➕ Buy on Kite'}
+      </button>`
     :'';
 
   const src=adv.source==='llm'?'<span class="adv-src">🤖 Claude AI</span>':'<span class="adv-src">📊 Rule-based</span>';

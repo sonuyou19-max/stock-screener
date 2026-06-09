@@ -1622,14 +1622,121 @@ def build_portfolio(budget: int = BUDGET) -> tuple[dict, pd.DataFrame, pd.DataFr
     return portfolio, top_df, all_df
 
 
+def rebalance_holdings(live_holdings: list, all_df: pd.DataFrame) -> list:
+    """
+    Evaluate each live holding for HOLD / WATCH / EXIT using portfolio logic,
+    NOT screener buy-criteria.  The screener tells you what to buy; the
+    rebalancer tells you whether to keep what you already own.
+
+    Signals evaluated per holding
+    ──────────────────────────────
+    + PnL from buy price          (profit-taking)
+    + Proximity to 52-week high   (near peak = good exit window)
+    + Days held                   (LTCG tax treatment after 1 year)
+    + Failed screener filters     (secondary fundamental signal)
+    − Recent entry (<90 days)     (give new positions time)
+    """
+    screener_scores = {
+        row["ticker"]: round(row["final_score"], 1)
+        for _, row in all_df.iterrows()
+    } if len(all_df) > 0 else {}
+
+    for h in live_holdings:
+        ticker    = h["ticker"]
+        buy_price = float(h.get("buy_price") or 0)
+
+        try:
+            fi = yf.Ticker(ticker).fast_info
+            current_price = float(fi.last_price       or 0)
+            week52_high   = float(fi.fifty_two_week_high or 0)
+        except Exception as exc:
+            h["rebalancer_verdict"] = "unknown"
+            h["rebalancer_reason"]  = f"data unavailable: {exc}"
+            continue
+
+        pnl_pct  = ((current_price - buy_price) / buy_price * 100) if buy_price > 0 else 0
+        gap_pct  = ((week52_high - current_price) / week52_high * 100) if week52_high > 0 else 100
+
+        try:
+            days_held = (datetime.now() -
+                         datetime.strptime(h.get("buy_date", ""), "%Y-%m-%d")).days
+        except ValueError:
+            days_held = 0
+
+        in_screener    = ticker in screener_scores
+        screener_score = screener_scores.get(ticker)
+
+        exit_score = 0
+        signals    = []
+
+        # ── Profit-taking ───────────────────────────────────────────────────
+        if pnl_pct >= 60:
+            exit_score += 35; signals.append(f"+{pnl_pct:.0f}% profit — strong target reached")
+        elif pnl_pct >= 35:
+            exit_score += 20; signals.append(f"+{pnl_pct:.0f}% profit")
+        elif pnl_pct >= 20:
+            exit_score += 10; signals.append(f"+{pnl_pct:.0f}% profit")
+        elif pnl_pct <= -20:
+            exit_score += 30; signals.append(f"{pnl_pct:.0f}% loss — stop-loss territory")
+
+        # ── Near 52-week high (ideal exit window) ───────────────────────────
+        if gap_pct <= 3:
+            exit_score += 30; signals.append("at/near 52W high — ideal exit window")
+        elif gap_pct <= 8:
+            exit_score += 20; signals.append(f"{gap_pct:.0f}% from 52W high")
+        elif gap_pct <= 15:
+            exit_score += 10; signals.append(f"{gap_pct:.0f}% from 52W high")
+
+        # ── Tax efficiency ───────────────────────────────────────────────────
+        if days_held >= 365:
+            exit_score += 8; signals.append("LTCG: 1yr+ held")
+
+        # ── Screener filter (secondary) ─────────────────────────────────────
+        if not in_screener:
+            exit_score += 12; signals.append("no longer passes screener filters")
+
+        # ── Hold incentive for recent buys ───────────────────────────────────
+        if pnl_pct < 15 and days_held < 90:
+            exit_score -= 20; signals.append("recent entry — give time")
+
+        # ── Verdict ──────────────────────────────────────────────────────────
+        if exit_score >= 50:
+            verdict = "EXIT"
+        elif exit_score >= 28:
+            verdict = "WATCH"
+        else:
+            verdict = "HOLD"
+
+        h.update({
+            "current_price":      round(current_price, 2),
+            "pnl_pct":            round(pnl_pct, 1),
+            "gap_from_52w_high":  round(gap_pct, 1),
+            "days_held":          days_held,
+            "screener_score":     screener_score,
+            "exit_score":         exit_score,
+            "rebalancer_verdict": verdict,
+            "rebalancer_reason":  " · ".join(signals[:3]) if signals else "no exit signals",
+        })
+        print(f"    rebalancer {ticker.replace('.NS',''):12s} pnl={pnl_pct:+.0f}%  "
+              f"52Wgap={gap_pct:.0f}%  exit_score={exit_score}  → {verdict}")
+
+    return live_holdings
+
+
 def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
     """
-    Ask Claude Sonnet to compare current live holdings with this month's
-    screener results and recommend ONE action: HOLD, REPLACE, or ADD.
-    Falls back to rule-based logic when ANTHROPIC_API_KEY is not set.
+    Monthly advisory using two separate frameworks:
 
-    Health check: every holding is evaluated even if the advisory says HOLD.
-    Rule-based REPLACE only fires when score delta >= 10 pts.
+    REBALANCER  — evaluates existing holdings (hold vs exit).
+                  Driven by PnL, 52W-high proximity, days held.
+                  A stock near its 52W high with good profit is an EXIT
+                  candidate — NOT because the screener filtered it out.
+
+    SCREENER    — identifies new buy candidates from the Nifty 500 universe.
+                  Screener top picks are offered only as a reinvestment idea
+                  when the rebalancer flags an exit.
+
+    Advisory outputs one action per month: HOLD / EXIT / ADD / EXIT_AND_ADD.
     """
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M IST")
 
@@ -1658,14 +1765,14 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
                 tick = stock.get("ticker", "")
                 si   = all_scores.get(tick)
                 live_holdings.append({
-                    "ticker":        tick,
-                    "name":          stock.get("name", ""),
-                    "sector":        stock.get("nse_sector", stock.get("sector", "")),
-                    "buy_price":     stock.get("price", stock.get("buy_price", 0)),
-                    "buy_date":      stock.get("buy_date", ""),
+                    "ticker":    tick,
+                    "name":      stock.get("name", ""),
+                    "sector":    stock.get("nse_sector", stock.get("sector", "")),
+                    "buy_price": stock.get("price", stock.get("buy_price", 0)),
+                    "buy_date":  stock.get("buy_date", ""),
+                    # screener rank (used as context only, not exit trigger)
                     "current_score": si["score"] if si else None,
                     "current_rank":  si["rank"]  if si else None,
-                    # status: top7 | top15 | top30 | low | excluded
                     "status": (
                         "top7"     if si and si["rank"] <= 7  else
                         "top15"    if si and si["rank"] <= 15 else
@@ -1677,8 +1784,39 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
     except Exception as e:
         print(f"  ⚠️  Could not load live portfolio for advisory: {e}")
 
-    # ── Build top-10 ranked picks ───────────────────────────────────────────
-    new_picks = []
+    # ── Try to fetch authoritative rebalancer report from API ───────────────
+    # rebalancer.py runs on the 1st of month; screener runs on the 3rd.
+    # If the report is available use it — otherwise fall back to lightweight check.
+    rb_report = None
+    try:
+        req = _urllib.Request(
+            f"{API_URL}/rebalance/report",
+            headers={"Accept": "application/json"},
+        )
+        with _urllib.urlopen(req, timeout=10) as resp:
+            rb_data = json.loads(resp.read())
+        if "error" not in rb_data and rb_data.get("actions"):
+            rb_report = rb_data
+            print(f"  ✅ Using rebalancer report from API (date: {rb_data.get('date','?')})")
+            # Merge rebalancer decisions into live_holdings for the health check
+            rb_by_ticker = {d["ticker"]: d for d in rb_data.get("actions", [])}
+            for h in live_holdings:
+                rb = rb_by_ticker.get(h["ticker"], {})
+                h["rebalancer_verdict"] = rb.get("action", "HOLD")
+                h["rebalancer_reason"]  = rb.get("reason", "")
+                h["pnl_pct"]            = rb.get("gain_pct", h.get("pnl_pct"))
+                h["current_price"]      = rb.get("current_price")
+                h["exit_score"]         = {"EXIT": 80, "TRIM": 50, "WATCH": 30, "HOLD": 10}.get(
+                    rb.get("action", "HOLD"), 10)
+        else:
+            raise ValueError("empty report")
+    except Exception as e:
+        print(f"  ⚠️  Rebalancer API report not available ({e}) — running lightweight check")
+        live_holdings = rebalance_holdings(live_holdings, all_df)
+
+    # ── Build screener top-10 (new buys only, not already in portfolio) ───────
+    new_picks    = []
+    live_tickers = {h["ticker"] for h in live_holdings}
     for _, row in sorted_df.head(10).iterrows():
         new_picks.append({
             "ticker":    row["ticker"],
@@ -1692,20 +1830,14 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
             "roe":       round(float(row.get("roe_pct", 0) or 0), 1),
             "pe":        round(float(row.get("pe_ratio", 0) or 0), 1),
         })
-
-    top_picks_tickers = {s["ticker"] for s in portfolio.get("top_picks", {}).get("stocks", [])}
-    live_tickers      = {h["ticker"] for h in live_holdings}
-    still_in  = [h for h in live_holdings if h["ticker"] in top_picks_tickers]
-    dropped   = [h for h in live_holdings if h["ticker"] not in top_picks_tickers]
-    new_buys  = [p for p in new_picks if p["ticker"] not in live_tickers]
+    new_entry_picks = [p for p in new_picks if p["ticker"] not in live_tickers]
 
     base = {
-        "generated_at":       generated_at,
-        "current_holdings":   len(live_holdings),
-        "still_recommended":  len(still_in),
-        "dropped_from_picks": len(dropped),
-        "top_picks":          new_picks[:7],
-        "holdings_health":    live_holdings,   # full health check for dashboard
+        "generated_at":        generated_at,
+        "current_holdings":    len(live_holdings),
+        "top_picks":           new_picks[:7],
+        "holdings_health":     live_holdings,   # rebalancer data per holding
+        "rebalance_report_date": rb_report.get("date") if rb_report else None,
     }
 
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
@@ -1714,52 +1846,70 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
     if api_key and live_holdings:
         live_str = "\n".join(
             f"  {i+1}. {h['ticker'].replace('.NS','')} ({h['name'][:28]}) "
-            f"| {h['sector']} | Bought ₹{h.get('buy_price',0):,.0f} on {h.get('buy_date','?')} "
-            f"| This month rank #{h['current_rank'] or 'N/A'} score {h['current_score'] or 'filtered out'}"
+            f"| bought ₹{h.get('buy_price',0):,.0f} on {h.get('buy_date','?')} "
+            f"| PnL {h.get('pnl_pct', 0):+.1f}% "
+            f"| rebalancer verdict: {h.get('rebalancer_verdict','?')} "
+            f"| reason: {str(h.get('rebalancer_reason',''))[:60]}"
             for i, h in enumerate(live_holdings)
         )
         picks_str = "\n".join(
             f"  {i+1}. {p['ticker'].replace('.NS','')} ({p['name'][:28]}) "
-            f"| {p['sector']} | Score {p['score']} | Sentiment {p['sentiment']} "
-            f"| Mom-3M {p['mom_3m']:+.1f}% | ROE {p['roe']:.0f}% | PE {p['pe']:.0f}"
-            for i, p in enumerate(new_picks)
+            f"| {p['sector']} | Score {p['score']} | Mom-3M {p['mom_3m']:+.1f}% "
+            f"| ROE {p['roe']:.0f}% | PE {p['pe']:.0f}"
+            for i, p in enumerate(new_entry_picks[:7])
         )
 
-        prompt = f"""You are an Indian equity portfolio advisor. Each month a Nifty 500 screener runs.
+        rb_note = (
+            f"(Rebalancer ran on {rb_report['date']} — verdicts shown above are authoritative)"
+            if rb_report else
+            "(Rebalancer report not available — verdicts estimated from price data)"
+        )
 
-CURRENT PORTFOLIO ({len(live_holdings)} holdings) — with this month's screener rank/score:
+        prompt = f"""You are a conservative Indian equity portfolio advisor. Today is {datetime.now().strftime('%B %Y')}.
+{rb_note}
+
+PORTFOLIO FRAMEWORK — two separate jobs:
+1. REBALANCER  decides on EXISTING holdings: HOLD, TRIM (+20% sell 30%), or EXIT (+50% / dead money).
+   Rebalancer verdict is authoritative — do NOT second-guess it with screener rank.
+   A stock can fail the BUY screener because it's fully priced (PE rose after rally) but still HOLD.
+
+2. SCREENER finds NEW entry candidates — used only when cash is freed from an exit.
+
+CURRENT HOLDINGS with rebalancer verdict:
 {live_str}
 
-SCREENER'S TOP 10 THIS MONTH:
+SCREENER TOP NEW ENTRIES (stocks not already in portfolio):
 {picks_str}
 
-TASK: Recommend exactly ONE of:
-A) HOLD — all positions are healthy enough, no change needed
-B) REPLACE [old ticker] with [new ticker] — only if score gap > 10 pts AND the old stock shows real weakness
-C) ADD [new ticker] — if portfolio has fewer than 7 stocks and a strong entry exists
+TASK: Pick exactly ONE action:
+A) HOLD        — no exits flagged, all positions healthy
+B) EXIT        [ticker] — bank profits from this position, hold cash
+C) EXIT_AND_ADD [sell] → [buy] — exit one position, immediately redeploy into screener top pick
+D) ADD         [ticker] — add a new position if portfolio < 7 and cash is available
 
-STRICT RULES:
-- A stock slightly outside the top-7 (rank 8-12) is NOT reason enough to replace — look at the score gap
-- If score improvement is < 10 pts, recommend HOLD — churning costs money
-- A stock "filtered out" this month (failed a fundamental check) is a genuine red flag
-- Consider sector diversification — don't concentrate in one sector
-- Give a 2-3 sentence reasoning citing the specific rank/score numbers
+RULES:
+- Only recommend EXIT/EXIT_AND_ADD for a holding whose rebalancer verdict is EXIT or TRIM
+- Do NOT recommend exiting a stock with negative PnL — that locks in a loss
+- If multiple holdings have EXIT verdict, pick the one with highest PnL (most profit to protect)
+- Screener rank does NOT override the rebalancer — do not exit a HOLD-rated stock
+- LTCG: holding >1 year is more tax-efficient (10% vs 15% STCG)
+- 2-3 sentences citing the specific PnL and rebalancer reason
 
-Respond with ONLY valid JSON (no markdown):
-{{"action":"HOLD","sell_ticker":null,"sell_name":null,"buy_ticker":null,"buy_name":null,"buy_sector":null,"score_delta":null,"reasoning":"..."}}"""
+Respond with ONLY valid JSON (action must be: HOLD / EXIT / EXIT_AND_ADD / ADD):
+{{"action":"HOLD","sell_ticker":null,"sell_name":null,"buy_ticker":null,"buy_name":null,"buy_sector":null,"reasoning":"..."}}"""
 
         try:
             resp = requests.post(
                 "https://api.anthropic.com/v1/messages",
                 headers={
-                    "Content-Type": "application/json",
-                    "x-api-key": api_key,
+                    "Content-Type":    "application/json",
+                    "x-api-key":       api_key,
                     "anthropic-version": "2023-06-01",
                 },
                 json={
-                    "model":      "claude-sonnet-4-20250514",
-                    "max_tokens": 450,
-                    "messages":   [{"role": "user", "content": prompt}],
+                    "model":    "claude-sonnet-4-20250514",
+                    "max_tokens": 500,
+                    "messages": [{"role": "user", "content": prompt}],
                 },
                 timeout=30,
             )
@@ -1773,91 +1923,92 @@ Respond with ONLY valid JSON (no markdown):
             base["source"] = "llm"
             print(f"\n  🤖 Advisory: {result.get('action','?')} "
                   f"{'→ ' + result.get('buy_ticker','') if result.get('buy_ticker') else ''}")
-            print(f"     {str(result.get('reasoning',''))[:120]}")
+            print(f"     {str(result.get('reasoning',''))[:140]}")
             return base
         except Exception as e:
             print(f"  ⚠️  Advisory LLM call failed: {e} — using rule-based fallback")
 
-    # ── Rule-based fallback ─────────────────────────────────────────────────
-    REPLACE_THRESHOLD = 10.0   # min score delta to justify a replacement
+    # ── Rule-based fallback ──────────────────────────────────────────────────
     base["source"] = "rule"
 
     if not live_holdings:
-        if new_picks:
-            p = new_picks[0]
+        if new_entry_picks:
+            p = new_entry_picks[0]
             base.update({
                 "action": "ADD",
                 "sell_ticker": None, "sell_name": None,
                 "buy_ticker": p["ticker"], "buy_name": p["name"],
-                "buy_sector": p["sector"], "score_delta": None,
+                "buy_sector": p["sector"],
                 "reasoning": (
-                    f"No existing portfolio detected. The screener's top pick this month is "
+                    f"No existing portfolio detected. Top screener pick this month: "
                     f"{p['name']} ({p['sector']}, score {p['score']}). Consider starting here."
                 ),
             })
         else:
             base.update({"action": "HOLD", "sell_ticker": None, "buy_ticker": None,
-                         "score_delta": None, "reasoning": "No screener data available."})
+                         "reasoning": "No screener data available."})
         return base
 
-    # Find the weakest holding (lowest current score or excluded)
-    excluded = [h for h in live_holdings if h["status"] == "excluded"]
-    weak     = sorted(
-        [h for h in live_holdings if h["current_score"] is not None],
-        key=lambda h: h["current_score"]
+    # Find the best exit candidate — TRIM also qualifies (partial profit-booking)
+    # Sort by PnL descending so we bank the most profit first
+    exit_candidates = sorted(
+        [h for h in live_holdings
+         if h.get("rebalancer_verdict") in ("EXIT", "TRIM") and h.get("pnl_pct", 0) > 0],
+        key=lambda h: h.get("pnl_pct", 0), reverse=True,
+    )
+    watch_candidates = sorted(
+        [h for h in live_holdings
+         if h.get("rebalancer_verdict") == "WATCH" and h.get("pnl_pct", 0) > 0],
+        key=lambda h: h.get("exit_score", 0), reverse=True,
     )
 
-    # Candidates for replacement: excluded first, then weakest scored
-    candidates_for_replace = excluded + weak
-
-    if candidates_for_replace and new_buys:
-        worst  = candidates_for_replace[0]
-        best   = new_buys[0]
-        w_score = worst.get("current_score") or 0
-        delta   = round(best["score"] - w_score, 1)
-
-        if worst["status"] == "excluded":
-            # Failed a filter this month — always worth replacing
+    if exit_candidates:
+        sell    = exit_candidates[0]
+        pnl     = sell.get("pnl_pct", 0)
+        verdict = sell.get("rebalancer_verdict", "EXIT")
+        rb_rsn  = sell.get("rebalancer_reason", "")
+        rsn     = (
+            f"{sell['name']} is up {pnl:+.0f}% from your buy price. "
+            f"Rebalancer verdict: {verdict}. "
+            + (f"Reason: {rb_rsn}. " if rb_rsn else "")
+        )
+        if new_entry_picks:
+            best = new_entry_picks[0]
             base.update({
-                "action": "REPLACE",
-                "sell_ticker": worst["ticker"], "sell_name": worst["name"],
-                "buy_ticker":  best["ticker"],  "buy_name":  best["name"],
-                "buy_sector":  best["sector"],  "score_delta": delta,
-                "reasoning": (
-                    f"{worst['name']} failed a screener filter this month (likely a fundamental "
-                    f"deterioration — D/E, ROE, or revenue growth). "
-                    f"{best['name']} ({best['sector']}, score {best['score']}) is the strongest replacement."
-                ),
-            })
-        elif delta >= REPLACE_THRESHOLD:
-            base.update({
-                "action": "REPLACE",
-                "sell_ticker": worst["ticker"], "sell_name": worst["name"],
-                "buy_ticker":  best["ticker"],  "buy_name":  best["name"],
-                "buy_sector":  best["sector"],  "score_delta": delta,
-                "reasoning": (
-                    f"{worst['name']} ranks #{worst['current_rank']} this month "
-                    f"(score {w_score}) while {best['name']} scores {best['score']} "
-                    f"— a {delta:.0f}-point gap that justifies a replacement."
+                "action": "EXIT_AND_ADD",
+                "sell_ticker": sell["ticker"], "sell_name": sell["name"],
+                "buy_ticker":  best["ticker"], "buy_name":  best["name"],
+                "buy_sector":  best["sector"],
+                "reasoning": rsn + (
+                    f"Redeploy proceeds into {best['name']} ({best['sector']}, "
+                    f"screener score {best['score']})."
                 ),
             })
         else:
             base.update({
-                "action": "HOLD",
-                "sell_ticker": None, "buy_ticker": None, "score_delta": delta,
-                "reasoning": (
-                    f"Your weakest holding ({worst['name']}) ranks #{worst['current_rank']} "
-                    f"(score {w_score}). The best alternative ({best['name']}) scores "
-                    f"{best['score']}, only a {delta:.0f}-point gap — not enough to justify "
-                    "churning. Hold all positions."
-                ),
+                "action": "EXIT",
+                "sell_ticker": sell["ticker"], "sell_name": sell["name"],
+                "buy_ticker": None, "buy_name": None, "buy_sector": None,
+                "reasoning": rsn + "Bank the gains; reinvest next month when screener picks are ready.",
             })
+    elif watch_candidates:
+        w = watch_candidates[0]
+        base.update({
+            "action": "HOLD",
+            "sell_ticker": None, "buy_ticker": None,
+            "reasoning": (
+                f"{w['name']} is in WATCH territory (PnL {w.get('pnl_pct', 0):+.0f}%). "
+                f"{w.get('rebalancer_reason', '')} Not strong enough to act yet — monitor next month."
+            ),
+        })
     else:
         base.update({
-            "action": "HOLD", "sell_ticker": None, "buy_ticker": None, "score_delta": None,
+            "action": "HOLD",
+            "sell_ticker": None, "buy_ticker": None,
             "reasoning": (
-                f"All {len(still_in)} holdings remain well-ranked in the screener. "
-                "No changes needed this month."
+                "Rebalancer sees no exit signals this month. "
+                "All holdings are within normal range — no profit-booking stage triggered, "
+                "no stop-loss near breach. Hold all positions."
             ),
         })
     return base
