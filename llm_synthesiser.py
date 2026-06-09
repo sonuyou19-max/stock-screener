@@ -32,13 +32,29 @@ IST              = ZoneInfo("Asia/Kolkata")
 SYNTHESIS_FILE   = os.path.join(os.path.dirname(__file__), "llm_synthesis.json")
 ANTHROPIC_API    = "https://api.anthropic.com/v1/messages"
 MODEL            = "claude-sonnet-4-20250514"
-MAX_TOKENS       = 1000
+MAX_TOKENS       = 2800
 
 BUCKET_LABELS = {
-    "BFSI_IT":         "🏦 BFSI + IT (Large Cap)",
-    "DEFENCE_INFRA":   "⚙️  Defence + Infra (Mid Cap)",
-    "GREEN_ENERGY_EV": "⚡ Green Energy + EV",
-    "FMCG_PHARMA":     "🌾 FMCG + Pharma (Defensive)",
+    "Financial Services":             "🏦 Financial Services",
+    "Information Technology":         "💻 Information Technology",
+    "Oil Gas And Consumable Fuels":   "🛢️  Oil Gas & Fuels",
+    "Fast Moving Consumer Goods":     "🛒 FMCG",
+    "Healthcare":                     "💊 Healthcare",
+    "Automobile and Auto Components": "🚗 Auto & Auto Components",
+    "Capital Goods":                  "⚙️  Capital Goods",
+    "Metals And Mining":              "⛏️  Metals & Mining",
+    "Consumer Durables":              "📺 Consumer Durables",
+    "Chemicals":                      "🧪 Chemicals",
+    "Construction Materials":         "🏗️  Construction Materials",
+    "Power":                          "⚡ Power",
+    "Telecommunication":              "📡 Telecommunication",
+    "Consumer Services":              "🍽️  Consumer Services",
+    "Services And Logistics":         "🚚 Services & Logistics",
+    "Realty":                         "🏠 Realty",
+    "Diversified And Infrastructure": "🛤️  Diversified & Infrastructure",
+    "Textiles And Apparel":           "👗 Textiles & Apparel",
+    "Media And Entertainment":        "🎬 Media & Entertainment",
+    "Paper And Forest Products":      "📄 Paper & Forest Products",
 }
 
 
@@ -112,10 +128,8 @@ def build_macro_context(macro: dict) -> str:
     adj = macro.get("adjusted_allocations", {})
     if adj:
         lines.append(f"\nCOMPUTED ALLOCATION ADJUSTMENTS:")
-        base = {"BFSI_IT": 0.30, "DEFENCE_INFRA": 0.30, "GREEN_ENERGY_EV": 0.20, "FMCG_PHARMA": 0.20}
         for b, v in adj.items():
-            diff = round((v - base.get(b, v)) * 100, 1)
-            lines.append(f"  {b}: {v*100:.1f}% ({diff:+.1f}% vs base)")
+            lines.append(f"  {b}: {v*100:.1f}%")
 
     return "\n".join(lines)
 
@@ -142,37 +156,35 @@ def synthesise_macro_verdict(macro: dict) -> dict | None:
         "Always respond with valid JSON only, no markdown, no preamble."
     )
 
+    sectors_list = "\n".join(f"{i+1}. {s}" for i, s in enumerate(BUCKET_LABELS))
+    example_sector = list(BUCKET_LABELS.keys())[0]
+
     user_prompt = f"""Today's macro signals for Indian equity markets:
 
 {context}
 
-The portfolio has 4 sector buckets. For each bucket, provide a verdict considering ALL signals above — especially when they conflict.
+The portfolio covers 20 NSE sectors. For each sector, provide a verdict considering ALL signals above — especially when they conflict.
 
-For EACH bucket provide:
+For EACH sector provide:
 - verdict: exactly one of: Positive | Cautious | Neutral | Negative
-- confidence: exactly one of: High | Medium | Low  
+- confidence: exactly one of: High | Medium | Low
 - key_driver: one sentence — the main signal driving this verdict
-- action: one sentence — what to do with this bucket's allocation
+- action: one sentence — what to do with this sector's allocation
 - watch_for: one thing to monitor in the next 2-4 weeks
 
-Buckets to analyse:
-1. BFSI_IT — Banks, NBFCs, Insurance, IT services
-2. DEFENCE_INFRA — Defence manufacturing, Capital goods, Infrastructure
-3. GREEN_ENERGY_EV — Renewable energy, Solar, Wind, EVs
-4. FMCG_PHARMA — Consumer goods, Pharmaceuticals, Healthcare
+Sectors to analyse:
+{sectors_list}
 
-Respond with ONLY a JSON object in this exact format:
+Respond with ONLY a JSON object in this exact format (all 20 sectors + overall_market):
 {{
-  "BFSI_IT": {{
+  "{example_sector}": {{
     "verdict": "...",
     "confidence": "...",
     "key_driver": "...",
     "action": "...",
     "watch_for": "..."
   }},
-  "DEFENCE_INFRA": {{ ... }},
-  "GREEN_ENERGY_EV": {{ ... }},
-  "FMCG_PHARMA": {{ ... }},
+  ... (all 20 sectors) ...,
   "overall_market": "one sentence on overall Indian market outlook"
 }}"""
 

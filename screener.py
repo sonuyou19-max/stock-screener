@@ -80,6 +80,17 @@ TICKER_EARNINGS_ADJ = {
     "negative":    -15.0,
 }
 
+# Policy/macro adjustment (from policy_scraper.py).
+# Softer than news sentiment — policy signals are slower-moving and less stock-specific.
+# No hard-exclude: policy alone shouldn't block a high-quality stock.
+POLICY_SCORE_ADJ = {
+    "positive":      3.0,
+    "mild_positive": 1.5,
+    "neutral":       0.0,
+    "cautious":     -1.5,
+    "negative":     -3.0,
+}
+
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 API_URL  = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
 
@@ -1159,6 +1170,58 @@ def fetch_ticker_earnings_signals() -> dict:
     return {}
 
 
+def fetch_policy_signals() -> dict:
+    """
+    Return {sector_name: signal_label} from policy_signals.json.
+    Used as Stage 3C softer macro adjustment — no hard-exclude.
+    Returns {} if policy_scraper.py has not yet run.
+    """
+    policy_path = os.path.join(DATA_DIR, "policy_signals.json")
+    try:
+        if os.path.exists(policy_path):
+            with open(policy_path) as f:
+                raw = json.load(f)
+            signals = raw.get("signals", {})
+            result = {}
+            for sector, val in signals.items():
+                if isinstance(val, dict):
+                    sig = val.get("signal", "neutral")
+                elif isinstance(val, str):
+                    sig = val
+                else:
+                    sig = "neutral"
+                result[sector] = sig.lower()
+            if result:
+                nonneut = sum(1 for s in result.values() if s != "neutral")
+                gen_at  = raw.get("generated_at", "unknown")
+                print(f"  📂 Policy signals loaded: {len(result)} sectors "
+                      f"({nonneut} non-neutral, generated {gen_at})")
+            return result
+    except Exception:
+        pass
+
+    # API fallback
+    try:
+        req = _urllib.Request(
+            f"{API_URL}/signals",
+            headers={"Accept": "application/json"},
+        )
+        with _urllib.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read())
+        raw     = data.get("policy_signals", {})
+        signals = raw.get("signals", {})
+        result  = {s: v.get("signal", "neutral") if isinstance(v, dict) else "neutral"
+                   for s, v in signals.items()}
+        if result:
+            print(f"  🌐 Policy signals from API: {len(result)} sectors")
+        return result
+    except Exception:
+        pass
+
+    print("  ℹ️  No policy signals — policy_scraper.py not yet run")
+    return {}
+
+
 # ─────────────────────────────────────────────
 # UNIVERSE SCREENER
 # ─────────────────────────────────────────────
@@ -1168,6 +1231,7 @@ def screen_all(
     sentiment_signals: dict,
     prev_institutional: dict,
     ticker_earnings_signals: dict = None,
+    policy_signals: dict = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
     Screen all Nifty 500 stocks across 20 NSE sectors.
@@ -1359,6 +1423,29 @@ def screen_all(
         all_df["earnings_signal"]   = "neutral"
         all_df["earnings_news_adj"] = 0.0
 
+    # Stage 3C — Policy/macro adjustment (from policy_scraper.py)
+    # Softer than news sentiment; no hard-exclude — policy signals affect all stocks
+    # in a sector equally and are slower-moving than earnings/news signals.
+    if policy_signals:
+        def _policy_adj(sector):
+            sig = policy_signals.get(sector, "neutral")
+            return POLICY_SCORE_ADJ.get(sig, 0.0)
+
+        all_df["policy_signal"] = all_df["sector_name"].map(
+            lambda s: policy_signals.get(s, "neutral")
+        )
+        all_df["policy_adj"] = all_df["sector_name"].map(_policy_adj)
+        all_df["final_score"] = (
+            all_df["final_score"] + all_df["policy_adj"]
+        ).clip(0, 100)
+
+        n_pol = (all_df["policy_adj"] != 0).sum()
+        if n_pol:
+            print(f"\n  Stage 3C: Policy adjustment applied to {n_pol} stocks")
+    else:
+        all_df["policy_signal"] = "neutral"
+        all_df["policy_adj"]    = 0.0
+
     all_df = all_df.sort_values("final_score", ascending=False).reset_index(drop=True)
     top_df = all_df.head(TOP_PICKS).copy()
 
@@ -1397,6 +1484,7 @@ def build_portfolio(budget: int = BUDGET) -> tuple[dict, pd.DataFrame, pd.DataFr
         print("  No sector sentiment data — all treated as neutral")
 
     ticker_earnings_signals = fetch_ticker_earnings_signals()
+    policy_signals = fetch_policy_signals()
 
     # Step 3: Previous institutional holdings for QoQ comparison
     prev_institutional = _load_prev_institutional()
@@ -1410,6 +1498,7 @@ def build_portfolio(budget: int = BUDGET) -> tuple[dict, pd.DataFrame, pd.DataFr
     top_df, all_df = screen_all(
         sector_universe, sentiment_signals, prev_institutional,
         ticker_earnings_signals=ticker_earnings_signals,
+        policy_signals=policy_signals,
     )
 
     if top_df.empty:

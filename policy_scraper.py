@@ -1,8 +1,10 @@
 """
-Policy Scraper — RBI + PIB Press Release Monitor (4.2)
+Policy Scraper — RBI + PIB Press Release Monitor (5.0)
 ========================================================
 Scrapes RBI and PIB press releases weekly, classifies them
-using keyword matching, and saves signals to policy_signals.json.
+across 20 NSE sectors using LLM (Claude Haiku) as the primary
+classifier with keyword matching as fallback, and saves signals
+to policy_signals.json.
 
 Scheduled on Railway: every Monday at 7:00 AM IST
 
@@ -46,126 +48,433 @@ HEADERS = {
 # KEYWORD CLASSIFICATION ENGINE
 # ─────────────────────────────────────────────
 
-# Each bucket has positive and negative keywords.
+# Each sector has positive and negative keyword lists.
 # Multi-word phrases are matched as substrings (case-insensitive).
 # Phrases listed first have higher priority.
 
-BUCKET_KEYWORDS = {
-    "BFSI_IT": {
+SECTOR_POLICY_KEYWORDS = {
+    "Financial Services": {
         "positive": [
-            "rate cut", "repo rate cut", "reduces repo", "rate reduction",
+            "repo rate cut", "rate cut", "reduces repo", "rate reduction",
             "accommodative", "liquidity infusion", "credit growth",
-            "npa reduction", "npa declined", "bad loan recovery",
+            "crr cut", "crr reduction", "npa reduction", "npa declined",
+            "bad loan recovery", "bank recapitalisation", "bank recap",
             "digital banking", "upi", "fintech", "insurance fdi",
-            "it exports", "software exports", "digital india",
-            "semiconductor", "electronics manufacturing",
-            "bank profit", "banking sector", "rbi policy", "monetary policy",
+            "rupee strengthens", "inr strengthens", "rupee stable",
             "credit offtake", "loan growth", "deposit growth",
-            "it hiring", "tech deal", "software deal", "it order",
-            "rupee strengthens", "inr strengthens",
-            "sbi profit", "hdfc profit", "icici profit",
-            "infosys revenue", "tcs revenue", "wipro revenue",
-            "market rally", "sensex gains", "nifty gains",
+            "rbi policy", "monetary policy", "rbi circular",
+            "bank profit", "banking sector", "credit offtake",
+            "payment system", "neft", "rtgs", "imps",
+            "microfinance", "priority sector lending", "financial inclusion",
         ],
         "negative": [
-            "rate hike", "repo rate hike", "raises repo", "tightening",
+            "repo rate hike", "rate hike", "raises repo", "tightening",
             "withdrawal of accommodation", "hawkish",
+            "crr hike", "crr increase",
             "npa increase", "npa rise", "bad loans surge",
             "bank fraud", "penalty on bank", "rbi penalty",
-            "it slowdown", "visa restriction", "h1b",
-            "cybersecurity breach", "data breach",
             "banking crisis", "bank collapse", "credit crunch",
             "rupee falls", "rupee weakens", "inr depreciates",
+            "pca framework", "prompt corrective action",
+        ],
+    },
+
+    "Information Technology": {
+        "positive": [
+            "it exports", "software exports", "digital india",
+            "pli electronics", "pli semiconductor", "semiconductor",
+            "electronics manufacturing", "sez notification",
+            "it hiring", "tech deal", "software deal", "it order",
+            "data centre policy", "cloud policy", "ai policy",
+            "national data governance", "digital public infrastructure",
+            "meity", "it ministry", "chips mission",
+            "export incentive it", "seis scheme",
+        ],
+        "negative": [
+            "data localisation", "data localisation mandate",
+            "h1b visa", "h1b restriction", "visa restriction",
+            "it slowdown", "tech slowdown",
+            "cybersecurity regulation", "data privacy penalty",
             "it layoffs", "tech layoffs",
+            "digital services tax", "equalisation levy hike",
         ],
-        "neutral_override": ["rate manipulation", "rate rigging"],
     },
 
-    "DEFENCE_INFRA": {
+    "Oil Gas And Consumable Fuels": {
         "positive": [
-            "defence procurement", "defence capex", "defence outlay",
-            "defence budget increase", "make in india defence",
-            "atmanirbhar defence", "indigenous defence",
-            "hal order", "bel order", "drdo", "defence export",
-            "infrastructure outlay", "pli scheme", "capital expenditure",
-            "road construction", "railway capex", "smart city",
-            "port development", "airport development",
-            "construction boost", "cement demand",
-            "defence order", "defence contract", "ministry of defence",
-            "armed forces", "military", "fighter jet", "warship",
-            "infrastructure spending", "capex boost", "government spending",
-            "nhai", "railway expansion", "metro rail", "bullet train",
-            "power grid", "transmission line",
-            "l&t order", "engineers india", "rvnl order",
-        ],
-        "negative": [
-            "defence budget cut", "defence cut", "capex reduction",
-            "infrastructure delay", "project cancellation",
-            "import defence", "defence import increase",
-            "fiscal consolidation", "spending cut",
-            "infra project stalled", "construction slowdown",
-        ],
-        "neutral_override": [],
-    },
-
-    "GREEN_ENERGY_EV": {
-        "positive": [
-            "solar target", "renewable target", "green energy",
-            "mnre", "solar capacity", "wind energy",
-            "ev policy", "electric vehicle", "ev subsidy",
-            "green hydrogen", "battery storage",
-            "clean energy", "net zero", "renewable purchase",
-            "solar park", "offshore wind",
-            "pm kusum", "pm surya ghar", "rooftop solar",
-            "ireda", "ntpc green", "adani green",
+            "crude import duty cut", "fuel subsidy", "lpg subsidy",
             "oil price falls", "crude falls", "brent falls",
-            "oil crash", "crude crash", "oil slumps",
-            "eicher motors", "ev sales", "charging station",
-            "renewable energy capacity", "solar installation",
-            "wind power", "ev infrastructure",
+            "gas price revision upward", "upstream exploration",
+            "new oil block", "oalp round", "dsf round",
+            "petroleum export", "lng terminal",
+            "windfall tax removal", "windfall tax abolished",
+            "city gas distribution", "cng png expansion",
         ],
         "negative": [
-            "solar duty", "import duty solar", "bcd on solar",
-            "solar panel duty", "import duty on modules",
-            "renewable delay", "green energy delay",
-            "ev subsidy cut", "fame scheme cut",
-            "grid curtailment", "power sector stress",
-            "coal import", "fossil fuel expansion",
+            "windfall tax", "windfall tax imposed",
+            "crude import duty hike", "crude surcharge",
             "oil price surge", "crude surge", "brent surge",
-            "ev demand falls", "ev slowdown",
+            "lpg price hike", "fuel price hike",
+            "gas price cut", "gas price reduction",
+            "upstream policy uncertainty", "moratorium exploration",
+            "cess on crude", "additional cess petroleum",
         ],
-        "neutral_override": [],
     },
 
-    "FMCG_PHARMA": {
+    "Fast Moving Consumer Goods": {
         "positive": [
-            "msp increase", "rural income", "rural demand",
-            "minimum support price", "kharif msp", "rabi msp",
+            "msp increase", "minimum support price", "kharif msp", "rabi msp",
+            "rural income", "rural demand", "rural recovery",
             "monsoon forecast", "normal monsoon", "good rainfall",
-            "healthcare budget", "health outlay",
-            "pharma export", "drug approval", "fda approval",
-            "api production", "medical device",
-            "fmcg volume", "consumer demand",
-            "direct benefit transfer", "dbt",
-            "hindustan unilever", "nestle india", "dabur", "marico",
-            "britannia", "itc profit", "sun pharma", "dr reddy",
-            "cipla", "lupin", "drug launch", "new drug",
-            "fmcg sales", "consumer spending", "retail demand",
+            "direct benefit transfer", "dbt", "pm kisan",
+            "gst reduction food", "gst exemption food",
             "food inflation eases", "vegetable prices fall",
-            "rural recovery", "wage growth", "export opportunity",
+            "consumer demand", "fmcg volume", "wage growth",
+            "rural employment", "mgnrega allocation",
         ],
         "negative": [
-            "drug price control", "price cap pharma",
-            "fda import alert", "fda warning letter",
-            "drug recall", "pharma penalty",
-            "food inflation", "commodity inflation",
-            "palm oil duty", "edible oil price",
             "drought", "below normal monsoon", "deficit monsoon",
+            "food inflation", "commodity inflation",
+            "palm oil duty", "edible oil price rise",
             "rural distress", "consumer slowdown",
             "fmcg volume decline", "input cost pressure",
-            "raw material cost",
+            "gst hike food", "gst imposed food",
+            "raw material cost", "inflation rural",
         ],
-        "neutral_override": [],
+    },
+
+    "Healthcare": {
+        "positive": [
+            "drug approval", "cdsco approval", "fda approval",
+            "api pli", "pli pharma", "pharmaceutical pli",
+            "healthcare budget", "health outlay", "health capex",
+            "jan aushadhi", "generic drug", "pharma export",
+            "medical device approval", "medical device pli",
+            "nppa price revision upward", "drug price increase allowed",
+            "ayushman bharat", "health insurance",
+            "bulk drug park", "medical college",
+        ],
+        "negative": [
+            "drug price control", "dpco", "nppa price cap", "price cap pharma",
+            "fda import alert", "fda warning letter",
+            "drug recall", "pharma penalty",
+            "quality control order pharma", "export ban pharma",
+            "raw material shortage api", "china api dependency",
+            "healthcare budget cut", "health outlay reduced",
+        ],
+    },
+
+    "Automobile and Auto Components": {
+        "positive": [
+            "fame subsidy", "fame scheme", "ev subsidy",
+            "ev policy", "electric vehicle policy", "pli auto",
+            "pli automobile", "scrappage policy", "vehicle scrappage",
+            "auto pli", "auto component pli",
+            "ev charging infrastructure", "charging station policy",
+            "green mobility", "hybrid vehicle incentive",
+            "auto sales growth", "passenger vehicle demand",
+            "commercial vehicle demand",
+        ],
+        "negative": [
+            "fame subsidy cut", "ev subsidy cut", "fame scheme cut",
+            "bs emission norms tightened", "bs7", "emission norms",
+            "auto sector slowdown", "vehicle sales decline",
+            "chip shortage", "semiconductor shortage auto",
+            "import duty auto parts hike", "auto import duty",
+            "fuel economy norms", "cafe norms stricter",
+        ],
+    },
+
+    "Capital Goods": {
+        "positive": [
+            "infrastructure capex", "capital expenditure", "capex boost",
+            "pli capital goods", "pli machinery",
+            "defence procurement", "defence capex", "defence outlay",
+            "make in india", "atmanirbhar", "indigenous manufacturing",
+            "nip national infrastructure pipeline", "pm gati shakti",
+            "railway capex", "road construction", "port development",
+            "airport development", "smart city",
+            "government spending infra", "infra outlay",
+            "hal order", "bel order", "drdo",
+        ],
+        "negative": [
+            "capex reduction", "infrastructure delay",
+            "project cancellation", "fiscal consolidation",
+            "spending cut", "infra project stalled",
+            "defence budget cut", "defence cut",
+            "import capital goods hike", "tariff capital goods",
+            "construction slowdown",
+        ],
+    },
+
+    "Metals And Mining": {
+        "positive": [
+            "steel import duty", "anti-dumping steel", "anti-dumping metals",
+            "mining policy liberalised", "mining auction",
+            "coal block auction", "coal allocation",
+            "iron ore export duty removed", "mineral royalty reduced",
+            "infrastructure demand metals", "construction demand steel",
+            "steel export incentive", "metal export promotion",
+            "domestic steel demand", "aluminium demand",
+        ],
+        "negative": [
+            "steel export duty", "iron ore export duty",
+            "mining moratorium", "mining ban",
+            "royalty increase", "mineral royalty hike",
+            "coal import duty", "coke import duty",
+            "anti-dumping revoked", "steel import surge",
+            "construction slowdown metals", "infra slowdown metals",
+            "windfall tax metals", "excess profit levy",
+        ],
+    },
+
+    "Consumer Durables": {
+        "positive": [
+            "electronics pli", "pli electronics",
+            "anti-dumping duty imports electronics",
+            "anti-dumping on imports consumer",
+            "bis certification relaxed", "import substitution electronics",
+            "energy efficiency incentive", "star rating subsidy",
+            "consumer durables demand", "real estate demand durables",
+            "rural electrification", "household income rise",
+            "festive demand", "urban consumption",
+        ],
+        "negative": [
+            "anti-dumping revoked electronics", "import duty cut electronics",
+            "bis norms tightened", "quality control order strict",
+            "energy efficiency mandate cost", "bcd reduced electronics",
+            "consumer durables slowdown", "demand slowdown durables",
+            "input cost rise electronics", "commodity inflation durables",
+        ],
+    },
+
+    "Chemicals": {
+        "positive": [
+            "chemical pli", "pli chemicals", "specialty chemical",
+            "anti-dumping china chemicals", "anti-dumping duty chemicals",
+            "agrochemical export", "pesticide export",
+            "petrochemical capacity", "downstream petrochemical",
+            "chemical park", "plastic park",
+            "fertiliser subsidy", "fertiliser availability",
+            "chemical import substitution",
+        ],
+        "negative": [
+            "anti-dumping revoked chemicals", "chemical import surge",
+            "petrochemical import duty cut",
+            "agrochemical ban", "pesticide ban",
+            "environmental norms chemical", "pollution penalty chemical",
+            "fertiliser subsidy cut", "fertiliser price hike",
+            "raw material chemical import duty hike",
+        ],
+    },
+
+    "Construction Materials": {
+        "positive": [
+            "pmay", "pradhan mantri awas yojana",
+            "infrastructure demand cement", "cement demand infrastructure",
+            "housing project", "affordable housing",
+            "road construction cement", "rera reform",
+            "sand policy liberalised", "construction activity",
+            "smart city cement", "metro rail construction",
+            "government housing scheme", "urban housing",
+        ],
+        "negative": [
+            "cement import", "cement import duty cut",
+            "sand mining ban", "sand policy strict",
+            "rera penalty", "housing project delay",
+            "construction slowdown", "real estate slowdown",
+            "input cost cement", "energy cost cement",
+            "fly ash norms", "environmental norms construction",
+        ],
+    },
+
+    "Power": {
+        "positive": [
+            "renewable target", "solar target", "wind target",
+            "rpo renewable purchase obligation",
+            "green hydrogen", "green hydrogen mission",
+            "solar tariff competitive", "solar park",
+            "coal supply power", "coal linkage",
+            "electricity amendment", "power sector reform",
+            "transmission expansion", "power grid investment",
+            "pm kusum", "pm surya ghar", "rooftop solar",
+            "battery storage policy", "pumped hydro",
+            "nuclear power", "clean energy",
+        ],
+        "negative": [
+            "coal shortage power", "coal supply disruption",
+            "rpo target missed", "renewable curtailment",
+            "grid curtailment", "power sector stress",
+            "electricity tariff cap", "discom losses",
+            "coal import duty hike power",
+            "renewable project delay", "solar duty hike",
+            "basic customs duty solar", "bcd solar modules",
+            "power subsidy burden", "tariff revision delayed",
+        ],
+    },
+
+    "Telecommunication": {
+        "positive": [
+            "spectrum auction", "5g rollout", "5g spectrum",
+            "agr relief", "agr dues moratorium",
+            "telecom pli", "pli telecom", "telecom equipment pli",
+            "bharatnet", "broadband rural", "digital connectivity",
+            "fdi telecom", "telecom fdi increase",
+            "telecom reform", "iuc interconnect",
+            "satellite broadband policy", "4g 5g expansion",
+        ],
+        "negative": [
+            "agr dues", "agr liability",
+            "spectrum fee hike", "licence fee hike",
+            "telecom tax hike", "usof levy",
+            "import duty telecom equipment",
+            "data localisation telecom",
+            "ott regulation burden", "internet shutdown",
+            "telecom slowdown", "arpu pressure",
+        ],
+    },
+
+    "Consumer Services": {
+        "positive": [
+            "gst reduction services", "gst exemption services",
+            "tourism policy", "tourism incentive", "travel promotion",
+            "urban employment", "urban jobs", "urban income",
+            "e-commerce policy favourable", "online retail growth",
+            "hospitality demand", "hotel occupancy",
+            "consumer confidence", "services sector growth",
+            "food delivery regulation light", "qsr expansion",
+        ],
+        "negative": [
+            "gst hike services", "service tax increase",
+            "e-commerce regulation strict", "e-commerce compliance",
+            "fdi e-commerce restriction", "marketplace rules strict",
+            "urban unemployment", "urban job loss",
+            "consumer confidence fall", "services slowdown",
+            "tourism drop", "hospitality slowdown",
+        ],
+    },
+
+    "Services And Logistics": {
+        "positive": [
+            "national logistics policy", "logistics policy",
+            "pm gati shakti", "gati shakti",
+            "dedicated freight corridor", "freight corridor",
+            "warehousing policy", "cold chain",
+            "multimodal logistics", "logistics park",
+            "trade facilitation", "customs clearance faster",
+            "express logistics", "air freight",
+            "shipping policy", "coastal shipping",
+        ],
+        "negative": [
+            "logistics cost rise", "freight rate hike",
+            "customs delay", "port congestion",
+            "trucking strike", "transport disruption",
+            "fuel cost logistics", "diesel price hike logistics",
+            "warehousing regulation strict",
+            "trade barrier", "import restriction",
+        ],
+    },
+
+    "Realty": {
+        "positive": [
+            "home loan rate cut", "home loan subsidy",
+            "rera reform", "rera amendment favourable",
+            "pmay", "pradhan mantri awas yojana",
+            "stamp duty reduction", "stamp duty cut",
+            "reit policy", "reits notification",
+            "credit linked subsidy", "clss scheme",
+            "affordable housing", "housing demand",
+            "real estate fdi", "realty investment",
+            "infrastructure status real estate",
+        ],
+        "negative": [
+            "rera penalty", "rera action developer",
+            "home loan rate hike", "mortgage rate hike",
+            "stamp duty increase", "property tax hike",
+            "housing project delay", "real estate slowdown",
+            "npa real estate", "stressed realty",
+            "unsold inventory", "demand slowdown realty",
+        ],
+    },
+
+    "Diversified And Infrastructure": {
+        "positive": [
+            "infra budget", "infra capex", "budget capex allocation",
+            "nip national infrastructure pipeline",
+            "highway construction", "nhai",
+            "metro rail", "bullet train", "railway expansion",
+            "port development", "airport development",
+            "power grid", "transmission line",
+            "ppp policy", "public private partnership",
+            "smart city", "urban infra",
+            "rvnl order", "l&t order", "engineers india",
+        ],
+        "negative": [
+            "infra spending cut", "capex cut budget",
+            "infra project stalled", "project delay",
+            "fiscal deficit concern", "spending restraint",
+            "ppp dispute", "arbitration infra",
+            "land acquisition delay", "environment clearance delay",
+        ],
+    },
+
+    "Textiles And Apparel": {
+        "positive": [
+            "textile pli", "pli textiles", "pli mmt",
+            "cotton msp increase", "cotton msp",
+            "tufs technology upgradation", "tufs scheme",
+            "man-made fibre policy", "mmt policy",
+            "textile export promotion", "apparel export",
+            "garment export incentive", "rosl scheme",
+            "mega textile park", "pm mitra",
+            "man made fibre", "technical textile",
+        ],
+        "negative": [
+            "cotton msp burden", "cotton price high",
+            "textile import surge", "apparel import",
+            "anti-dumping revoked textile",
+            "export ban cotton", "cotton export restriction",
+            "textile demand slowdown", "apparel demand drop",
+            "power cost textile", "labour cost textile",
+        ],
+    },
+
+    "Media And Entertainment": {
+        "positive": [
+            "ott policy favourable", "ott regulation light",
+            "media fdi increase", "broadcasting fdi",
+            "digital media growth", "streaming policy",
+            "film incentive", "film production subsidy",
+            "content export promotion", "media export",
+            "ibc broadcasting liberalised",
+        ],
+        "negative": [
+            "ott regulation strict", "ott content regulation",
+            "media fdi cap", "fdi restriction media",
+            "broadcasting regulation", "cable tv regulation",
+            "content censorship", "content restriction",
+            "digital media tax", "advertising tax",
+            "media slowdown", "ad revenue decline",
+        ],
+    },
+
+    "Paper And Forest Products": {
+        "positive": [
+            "paper import duty", "anti-dumping paper",
+            "newsprint import duty hike",
+            "forest policy favourable", "agroforestry policy",
+            "recycling norms relaxed", "paper recycling incentive",
+            "pulp import duty cut", "raw material paper cheaper",
+            "plantation policy", "bamboo policy",
+        ],
+        "negative": [
+            "paper import duty cut", "newsprint duty cut",
+            "anti-dumping revoked paper",
+            "forest clearance strict", "forest conservation act",
+            "recycling mandate strict", "extended producer responsibility",
+            "pulp import duty hike", "raw material paper costly",
+            "paper demand decline", "digital substitution",
+        ],
     },
 }
 
@@ -174,6 +483,9 @@ HEADLINE_WEIGHT = 2.0   # headlines are more important than body text
 BODY_WEIGHT     = 1.0
 PHRASE_BONUS    = 0.5   # multi-word phrases score slightly higher than single words
 
+# Backward-compatibility alias — news_sentiment.py imports BUCKET_KEYWORDS
+BUCKET_KEYWORDS = SECTOR_POLICY_KEYWORDS
+
 
 # ─────────────────────────────────────────────
 # SCORING FUNCTION
@@ -181,19 +493,19 @@ PHRASE_BONUS    = 0.5   # multi-word phrases score slightly higher than single w
 
 def score_release(title: str, body: str = "") -> dict:
     """
-    Score a single press release against all bucket keywords.
+    Score a single press release against all sector keywords.
 
-    Returns {bucket_key: score} where:
-      positive score → good for bucket
-      negative score → bad for bucket
+    Returns {sector_key: score} where:
+      positive score → good for sector
+      negative score → bad for sector
       0 → not relevant
     """
     title_lower = title.lower()
     body_lower  = body.lower()
-    scores      = {k: 0.0 for k in BUCKET_KEYWORDS}
+    scores      = {k: 0.0 for k in SECTOR_POLICY_KEYWORDS}
 
-    for bucket, keywords in BUCKET_KEYWORDS.items():
-        bucket_score = 0.0
+    for sector, keywords in SECTOR_POLICY_KEYWORDS.items():
+        sector_score = 0.0
 
         # ── Positive keywords ─────────────────────────────────
         for phrase in keywords["positive"]:
@@ -202,9 +514,9 @@ def score_release(title: str, body: str = "") -> dict:
             word_bonus  = PHRASE_BONUS if is_multi else 0.0
 
             if phrase_l in title_lower:
-                bucket_score += HEADLINE_WEIGHT + word_bonus
+                sector_score += HEADLINE_WEIGHT + word_bonus
             elif phrase_l in body_lower:
-                bucket_score += BODY_WEIGHT + word_bonus
+                sector_score += BODY_WEIGHT + word_bonus
 
         # ── Negative keywords ─────────────────────────────────
         for phrase in keywords["negative"]:
@@ -213,17 +525,17 @@ def score_release(title: str, body: str = "") -> dict:
             word_bonus = PHRASE_BONUS if is_multi else 0.0
 
             if phrase_l in title_lower:
-                bucket_score -= HEADLINE_WEIGHT + word_bonus
+                sector_score -= HEADLINE_WEIGHT + word_bonus
             elif phrase_l in body_lower:
-                bucket_score -= BODY_WEIGHT + word_bonus
+                sector_score -= BODY_WEIGHT + word_bonus
 
         # ── Neutral override — suppress false positives ───────
         for phrase in keywords.get("neutral_override", []):
             if phrase.lower() in title_lower or phrase.lower() in body_lower:
-                bucket_score = 0.0  # cancel score if override phrase found
+                sector_score = 0.0  # cancel score if override phrase found
                 break
 
-        scores[bucket] = round(bucket_score, 2)
+        scores[sector] = round(sector_score, 2)
 
     return scores
 
@@ -231,36 +543,36 @@ def score_release(title: str, body: str = "") -> dict:
 def aggregate_scores(releases: list) -> dict:
     """
     Aggregate scores from multiple releases into a final
-    signal per bucket.
+    signal per sector.
 
     Returns:
     {
-      bucket_key: {
+      sector_key: {
         "score":   float,         # net score across all releases
-        "signal":  str,           # positive | neutral | cautious | negative
+        "signal":  str,           # positive | mild_positive | neutral | cautious | negative
         "reason":  str,           # top contributing release headline
         "releases_matched": int,  # how many releases were relevant
       }
     }
     """
-    bucket_totals  = {k: 0.0 for k in BUCKET_KEYWORDS}
-    bucket_reasons = {k: [] for k in BUCKET_KEYWORDS}
-    bucket_counts  = {k: 0  for k in BUCKET_KEYWORDS}
+    sector_totals  = {k: 0.0 for k in SECTOR_POLICY_KEYWORDS}
+    sector_reasons = {k: [] for k in SECTOR_POLICY_KEYWORDS}
+    sector_counts  = {k: 0  for k in SECTOR_POLICY_KEYWORDS}
 
     for r in releases:
         scores = score_release(r["title"], r.get("body", ""))
-        for bucket, score in scores.items():
+        for sector, score in scores.items():
             if abs(score) > 0:
-                bucket_totals[bucket]  += score
-                bucket_counts[bucket] += 1
+                sector_totals[sector]  += score
+                sector_counts[sector] += 1
                 if abs(score) >= HEADLINE_WEIGHT:
-                    bucket_reasons[bucket].append(
+                    sector_reasons[sector].append(
                         f"{'↑' if score > 0 else '↓'} {r['title'][:80]}"
                     )
 
     result = {}
-    for bucket in BUCKET_KEYWORDS:
-        total = round(bucket_totals[bucket], 2)
+    for sector in SECTOR_POLICY_KEYWORDS:
+        total = round(sector_totals[sector], 2)
 
         # Signal thresholds
         if total >= 4.0:
@@ -274,21 +586,96 @@ def aggregate_scores(releases: list) -> dict:
         else:
             signal = "neutral"
 
-        top_reasons = bucket_reasons[bucket][:3]  # top 3 relevant releases
+        top_reasons = sector_reasons[sector][:3]  # top 3 relevant releases
         reason = (
             "; ".join(top_reasons)
             if top_reasons
             else "No significant policy events in last 14 days"
         )
 
-        result[bucket] = {
+        result[sector] = {
             "score":            total,
             "signal":           signal,
             "reason":           reason,
-            "releases_matched": bucket_counts[bucket],
+            "releases_matched": sector_counts[sector],
         }
 
     return result
+
+
+# ─────────────────────────────────────────────
+# LLM CLASSIFICATION
+# ─────────────────────────────────────────────
+
+ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
+LLM_MODEL     = "claude-haiku-4-5-20251001"
+
+
+def llm_classify_releases(releases: list) -> dict | None:
+    """
+    Use Claude Haiku to classify releases across 20 NSE sectors.
+    Primary classifier when ANTHROPIC_API_KEY is set.
+    Returns {sector: {score, signal, reason}} or None on failure/no key.
+    """
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    if not api_key or not releases:
+        return None
+
+    # Build numbered release list (cap at 40 for token budget)
+    release_lines = []
+    for i, r in enumerate(releases[:40], 1):
+        src = r.get("ministry") or r.get("source", "")
+        release_lines.append(f"{i}. [{src}] {r['title'][:120]}")
+    releases_text = "\n".join(release_lines)
+
+    sectors_list = "\n".join(f"- {s}" for s in SECTOR_POLICY_KEYWORDS)
+
+    prompt = f"""You are an Indian equity macro analyst. Analyze these RBI and Government of India (PIB) press releases and determine their impact on 20 NSE stock sectors.
+
+Press releases from the last {SCAN_DAYS} days:
+{releases_text}
+
+Rate the policy impact on each sector:
+{sectors_list}
+
+Rules:
+- score: -10 (very negative) to +10 (very positive), 0 = no impact
+- signal: "positive" (score>=4), "mild_positive" (1.5 to 4), "neutral" (-1.5 to 1.5), "cautious" (-4 to -1.5), "negative" (score<=-4)
+- reason: one sentence citing the most relevant release number(s)
+- If no release is relevant to a sector, score=0, signal="neutral"
+
+Respond with ONLY valid JSON — no markdown, no explanation:
+{{"Financial Services": {{"score": 0.0, "signal": "neutral", "reason": "No relevant releases"}}, "Information Technology": {{...}}, ...all 20 sectors...}}"""
+
+    try:
+        resp = requests.post(
+            ANTHROPIC_API,
+            headers={
+                "Content-Type":      "application/json",
+                "x-api-key":         api_key,
+                "anthropic-version": "2023-06-01",
+            },
+            json={
+                "model":      LLM_MODEL,
+                "max_tokens": 1800,
+                "messages":   [{"role": "user", "content": prompt}],
+            },
+            timeout=40,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["content"][0]["text"].strip()
+        # strip markdown fences if present
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-z]*\n?", "", raw)
+            raw = re.sub(r"\n?```$", "", raw)
+        result = json.loads(raw)
+        # Validate — must have at least half the sectors
+        if len(result) >= 10:
+            print(f"  🤖 LLM classified {len(result)} sectors")
+            return result
+    except Exception as e:
+        print(f"  ⚠️  LLM classification failed: {e} — falling back to keywords")
+    return None
 
 
 # ─────────────────────────────────────────────
@@ -360,13 +747,18 @@ def scrape_rbi_releases() -> list:
 # PIB SCRAPER
 # ─────────────────────────────────────────────
 
-# Key ministries relevant to our buckets
+# Key ministries relevant to our sectors
 PIB_MINISTRY_URLS = {
-    "Finance":           "https://pib.gov.in/allRel.aspx?relid=&mnid=2",
-    "Defence":           "https://pib.gov.in/allRel.aspx?relid=&mnid=7",
-    "Renewable Energy":  "https://pib.gov.in/allRel.aspx?relid=&mnid=69",
-    "Health":            "https://pib.gov.in/allRel.aspx?relid=&mnid=24",
-    "Commerce":          "https://pib.gov.in/allRel.aspx?relid=&mnid=6",
+    "Finance":          "https://pib.gov.in/allRel.aspx?relid=&mnid=2",
+    "Defence":          "https://pib.gov.in/allRel.aspx?relid=&mnid=7",
+    "Renewable Energy": "https://pib.gov.in/allRel.aspx?relid=&mnid=69",
+    "Health":           "https://pib.gov.in/allRel.aspx?relid=&mnid=24",
+    "Commerce":         "https://pib.gov.in/allRel.aspx?relid=&mnid=6",
+    "Industry":         "https://pib.gov.in/allRel.aspx?relid=&mnid=19",
+    "Agriculture":      "https://pib.gov.in/allRel.aspx?relid=&mnid=1",
+    "Petroleum":        "https://pib.gov.in/allRel.aspx?relid=&mnid=46",
+    "Telecom":          "https://pib.gov.in/allRel.aspx?relid=&mnid=64",
+    "Road Transport":   "https://pib.gov.in/allRel.aspx?relid=&mnid=56",
 }
 
 def scrape_pib_releases() -> list:
@@ -530,7 +922,7 @@ def run_policy_scan(test_mode: bool = False):
     Full policy scan:
     1. Scrape RBI releases
     2. Scrape PIB releases
-    3. Classify with keyword matching
+    3. Classify with LLM (primary) or keyword matching (fallback)
     4. Save signals
     """
     print(f"\n{'='*55}")
@@ -539,26 +931,43 @@ def run_policy_scan(test_mode: bool = False):
     print(f"  Scanning last {SCAN_DAYS} days...")
     print(f"{'='*55}\n")
 
-    # Scrape
     rbi_releases = scrape_rbi_releases()
     time.sleep(1)
     pib_releases = scrape_pib_releases()
-
-    all_releases  = rbi_releases + pib_releases
-    total         = len(all_releases)
+    all_releases = rbi_releases + pib_releases
+    total = len(all_releases)
 
     print(f"\n  Total releases fetched: {total}")
-
     if total == 0:
         print("  ⚠️  No releases fetched — check scraper connectivity.")
         return None
 
-    # Classify
-    print(f"\n  🔍 Classifying {total} releases...")
-    signals = aggregate_scores(all_releases)
+    # Primary: LLM classification
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    print(f"\n  🔍 Classifying {total} releases ({'LLM + keywords' if api_key else 'keywords only'})...")
+
+    llm_signals = llm_classify_releases(all_releases)
+
+    if llm_signals:
+        # Convert LLM output to same format as aggregate_scores()
+        signals = {}
+        for sector in SECTOR_POLICY_KEYWORDS:
+            llm = llm_signals.get(sector, {})
+            signals[sector] = {
+                "score":            round(float(llm.get("score", 0.0)), 2),
+                "signal":           llm.get("signal", "neutral"),
+                "reason":           llm.get("reason", "LLM classification"),
+                "releases_matched": total,
+                "source":           "llm",
+            }
+    else:
+        # Fallback: keyword matching
+        signals = aggregate_scores(all_releases)
+        for s in signals.values():
+            s["source"] = "keywords"
 
     # Print results
-    print(f"\n  📊 POLICY SIGNALS:")
+    print(f"\n  📊 POLICY SIGNALS ({len(signals)} sectors):")
     signal_emoji = {
         "positive":     "🟢",
         "mild_positive":"🟡",
@@ -566,16 +975,18 @@ def run_policy_scan(test_mode: bool = False):
         "cautious":     "🟠",
         "negative":     "🔴",
     }
-    for bucket, sig in signals.items():
-        emoji = signal_emoji.get(sig["signal"], "⚪")
-        print(f"\n  {bucket}")
-        print(f"    Signal:  {emoji} {sig['signal'].replace('_',' ').title()}  (score: {sig['score']:+.1f})")
+    for sector, sig in signals.items():
+        emoji  = signal_emoji.get(sig["signal"], "⚪")
+        source = sig.get("source", "keywords")
+        print(f"\n  {sector}")
+        print(f"    Signal:  {emoji} {sig['signal'].replace('_',' ').title()}  "
+              f"(score: {sig['score']:+.1f}, source: {source})")
         print(f"    Matched: {sig['releases_matched']} releases")
-        if sig["reason"] != "No significant policy events in last 14 days":
+        if sig["reason"] not in ("No significant policy events in last 14 days", "LLM classification"):
             for line in sig["reason"].split(";")[:2]:
-                print(f"    {line.strip()}")
+                if line.strip():
+                    print(f"    {line.strip()}")
 
-    # Save
     if not test_mode:
         save_signals(signals, all_releases)
 
@@ -607,11 +1018,12 @@ def show_status():
         "negative":     "🔴",
     }
 
-    for bucket, sig in data.get("signals", {}).items():
-        emoji = signal_emoji.get(sig["signal"], "⚪")
-        print(f"\n  {bucket}")
+    for sector, sig in data.get("signals", {}).items():
+        emoji  = signal_emoji.get(sig["signal"], "⚪")
+        source = sig.get("source", "keywords")
+        print(f"\n  {sector}")
         print(f"    {emoji} {sig['signal'].replace('_',' ').title()}  "
-              f"(score: {sig['score']:+.1f}, {sig['releases_matched']} releases)")
+              f"(score: {sig['score']:+.1f}, {sig['releases_matched']} releases, src: {source})")
         if sig.get("reason") and "No significant" not in sig["reason"]:
             for line in sig["reason"].split(";")[:2]:
                 if line.strip():
