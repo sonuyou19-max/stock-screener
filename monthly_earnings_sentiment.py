@@ -369,19 +369,27 @@ def fetch_rss_feed(source_name: str, url: str) -> list[dict]:
             xml_str = "".join(c for c in xml_str if ord(c) >= 0x20 or c in "\t\n\r")
             root = ET.fromstring(xml_str.encode("utf-8"))
 
-        entries = root.findall(".//item") or root.findall(".//atom:entry", ns) or root.findall(".//entry")
+        entries = root.findall(".//item")
+        if not entries:
+            entries = root.findall(".//atom:entry", ns) or root.findall(".//entry")
 
         for entry in entries[:MAX_ITEMS]:
-            title_el = entry.find("title") or entry.find("atom:title", ns)
+            title_el = entry.find("title")
+            if title_el is None:
+                title_el = entry.find("atom:title", ns)
             title = re.sub(r'<[^>]+>', '', (title_el.text or "") if title_el is not None else "").strip()
             if not title or len(title) < 10:
                 continue
 
-            desc_el = entry.find("description") or entry.find("atom:summary", ns) or entry.find("summary")
+            desc_el = entry.find("description")
+            if desc_el is None: desc_el = entry.find("atom:summary", ns)
+            if desc_el is None: desc_el = entry.find("summary")
             desc = re.sub(r'<[^>]+>', '', (desc_el.text or "") if desc_el is not None else "").strip()[:400]
 
-            date_el = (entry.find("pubDate") or entry.find("published")
-                       or entry.find("atom:published", ns) or entry.find("updated"))
+            date_el = entry.find("pubDate")
+            if date_el is None: date_el = entry.find("published")
+            if date_el is None: date_el = entry.find("atom:published", ns)
+            if date_el is None: date_el = entry.find("updated")
             pub_date = _parse_rss_date(date_el.text) if date_el is not None and date_el.text else None
 
             if pub_date is not None and pub_date < cutoff:
