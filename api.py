@@ -543,20 +543,28 @@ def prices():
         import math
         from datetime import datetime
 
-        # Get tickers from current portfolio — try cache first, then disk
-        port = _portfolio_cache
+        # Get tickers from LIVE portfolio (what user actually holds), not screener picks
+        port = _live_cache
         if not port:
-            latest = _find_latest_portfolio()
-            if latest:
-                port = _load_json(latest) or {}
-                port = _sanitise(port)
+            live_path = os.path.join(DATA_DIR, "portfolio_live.json")
+            port = _load_json(live_path) or {}
+        if not port:
+            # Fall back to screener picks only if no live portfolio exists yet
+            port = _portfolio_cache
+            if not port:
+                latest = _find_latest_portfolio()
+                if latest:
+                    port = _load_json(latest) or {}
+                    port = _sanitise(port)
 
         tickers = []
+        seen: set = set()
         for bucket in (port or {}).values():
             for s in bucket.get("stocks", []):
                 t = s.get("ticker")
-                if t:
+                if t and t not in seen:
                     tickers.append(t)
+                    seen.add(t)
 
         if not tickers:
             return jsonify({"error": "No portfolio loaded", "prices": {}})

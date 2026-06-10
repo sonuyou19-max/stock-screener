@@ -1047,7 +1047,7 @@ async function fetchIndSnap(){
   const[port,prices]=await Promise.all([fd('/portfolio/live'),fd('/prices')]);
   if(!port||!prices)return;
   let inv=0,cur=0,day=0,cnt=0;
-  for(const b of Object.values(port)){for(const s of(b.stocks||[])){const i=prices.prices?.[s.ticker];if(!i)continue;const sh=s.approx_shares||0,bp=s.price||0,cp=i.price,pv=cp/(1+(i.change_pct||0)/100);inv+=bp*sh;cur+=cp*sh;day+=(cp-pv)*sh;cnt++;}}
+  for(const b of Object.values(port)){for(const s of(b.stocks||[])){const i=prices.prices?.[s.ticker];if(!i)continue;const sh=s.approx_shares||0,bp=s.price||s.buy_price||0,cp=i.price,pv=cp/(1+(i.change_pct||0)/100);inv+=bp*sh;cur+=cp*sh;day+=(cp-pv)*sh;cnt++;}}
   if(!cnt)return;
   const pnl=cur-inv,pct=inv?(pnl/inv*100):0,sign=pnl>=0?'+':'',cls=pnl>0?'up':pnl<0?'down':'neu';
   const dc=day>0?'up':day<0?'down':'';
@@ -1063,7 +1063,7 @@ async function fetchUsSnap(){
   const[port,prices]=await Promise.all([fd('/us/portfolio/live'),fd('/us/prices')]);
   if(!port||!prices)return;
   let inv=0,cur=0,day=0,cnt=0;
-  for(const b of Object.values(port)){for(const s of(b.stocks||[])){const i=prices.prices?.[s.ticker];if(!i)continue;const sh=s.approx_shares||0,bp=s.price||0,cp=i.price,pv=cp/(1+(i.change_pct||0)/100);inv+=bp*sh;cur+=cp*sh;day+=(cp-pv)*sh;cnt++;}}
+  for(const b of Object.values(port)){for(const s of(b.stocks||[])){const i=prices.prices?.[s.ticker];if(!i)continue;const sh=s.approx_shares||0,bp=s.price||s.buy_price||0,cp=i.price,pv=cp/(1+(i.change_pct||0)/100);inv+=bp*sh;cur+=cp*sh;day+=(cp-pv)*sh;cnt++;}}
   if(!cnt)return;
   const pnl=cur-inv,pct=inv?(pnl/inv*100):0,sign=pnl>=0?'+':'',cls=pnl>0?'up':pnl<0?'down':'neu';
   const dc=day>0?'up':day<0?'down':'';
@@ -1156,7 +1156,7 @@ async function fetchIndPrices(){
   _iP=data.prices;let inv=0,cur=0,day=0,cnt=0;
   for(const b of Object.values(indPortfolio)){for(const s of(b.stocks||[])){
     const i=_iP[s.ticker];if(!i)continue;
-    const key=s.ticker.replace('.','_'),{price,change_pct}=i,sh=s.approx_shares||0,bp=s.price||0;
+    const key=s.ticker.replace('.','_'),{price,change_pct}=i,sh=s.approx_shares||0,bp=s.price||s.buy_price||0;
     const pv=price/(1+(change_pct||0)/100),di=(price-pv)*sh,pp=bp?((price-bp)/bp*100):0;
     inv+=bp*sh;cur+=price*sh;day+=di;cnt++;
     const lp=document.getElementById(`lp-${key}`);if(lp)lp.textContent='₹'+price.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -1207,7 +1207,7 @@ async function fetchUsPrices(){
   _uP=data.prices;let inv=0,cur=0,day=0,cnt=0;
   for(const b of Object.values(usPortfolio)){for(const s of(b.stocks||[])){
     const i=_uP[s.ticker];if(!i)continue;
-    const key=s.ticker.replace('.','_').replace('-','_'),{price,change_pct}=i,sh=s.approx_shares||0,bp=s.price||0;
+    const key=s.ticker.replace('.','_').replace('-','_'),{price,change_pct}=i,sh=s.approx_shares||0,bp=s.price||s.buy_price||0;
     const pv=price/(1+(change_pct||0)/100),di=(price-pv)*sh,pp=bp?((price-bp)/bp*100):0;
     inv+=bp*sh;cur+=price*sh;day+=di;cnt++;
     const lp=document.getElementById(`us-lp-${key}`);if(lp)lp.textContent='$'+price.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -1247,7 +1247,7 @@ function buildCard(s,i,bk,prefix,cur){
   const lpId=prefix==='ind'?`lp-${key}`:`us-lp-${key}`;
   const lcId=prefix==='ind'?`lc-${key}`:`us-lc-${key}`;
   const llId=prefix==='ind'?`ll-${key}`:`us-ll-${key}`;
-  const bp=s.price||0,alloc=prefix==='ind'?(s.allocation_inr||0):(s.allocation_usd||0);
+  const bp=s.price||s.buy_price||0,alloc=prefix==='ind'?(s.allocation_inr||0):(s.allocation_usd||0);
   const bpS=prefix==='ind'?'₹'+bp.toLocaleString('en-IN',{minimumFractionDigits:2}):'$'+bp.toFixed(2);
   const allocS=prefix==='ind'?'₹'+alloc.toLocaleString('en-IN'):'$'+alloc.toFixed(0);
   const slS=prefix==='ind'?'₹'+(s.stop_loss_price||0).toLocaleString('en-IN',{minimumFractionDigits:2}):'$'+(s.stop_loss_price||0).toFixed(2);
