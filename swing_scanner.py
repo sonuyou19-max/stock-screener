@@ -10,13 +10,20 @@ Entry signals scored 0–7 (need ≥5 for candidate):
   3. Bollinger Bands   — price crossing middle band or near lower band
   4. Volume Surge      — today's volume > 2× 20-day average (real conviction)
   5. Momentum Breakout — within 8% of 52w high or broke 20d resistance
-  6. FII/DII Flow      — net FII positive in at least 1 of last 3 days
+  6. FII/DII Flow      — net FII positive in at least 2 of last 3 days
   7. Sector Sentiment  — news sentiment per NSE sector bucket
                          negative → HARD EXCLUDE (overrides all technicals)
                          cautious → −1 penalty
                          neutral  → no effect
                          mild_positive → +0.5
                          positive → +1 full signal
+
+Risk gates (before a candidate is reported):
+  - Market regime: Nifty below its 50-DMA → min signals raised to 6/7
+    and candidate list halved (breakouts fail more often below trend)
+  - Earnings blackout: stock reporting within 14 calendar days is skipped
+    (a 10-day swing should not gamble on quarterly results)
+  - Sector cap: max 3 candidates from one sector
 
 Exit rules (applied by alerter.py):
   - Stop-loss: buy_price − 1.5× ATR-14
@@ -70,7 +77,8 @@ BB_STD           = 2.0
 VOL_SURGE_MULT   = 2.0     # real conviction — volume > 2× 20-day avg
 BREAKOUT_PCT     = 0.08    # within 8% of 52-week high or broke 20d resistance
 FII_LOOKBACK     = 3       # days of FII data to check
-FII_MIN_POSITIVE = 1       # FII positive in at least 1 of last 3 days
+FII_MIN_POSITIVE = 2       # FII positive in at least 2 of last 3 days
+                           # (1/3 was nearly always true — a free signal point)
 
 MIN_SIGNALS      = 5       # high-conviction only — 5 of 7 must pass
 MAX_CANDIDATES   = 10      # max candidates to report
@@ -159,12 +167,13 @@ def fetch_ohlcv(ticker: str) -> Optional[pd.DataFrame]:
 # ─────────────────────────────────────────────
 
 def calc_rsi(closes: pd.Series, period: int = RSI_PERIOD) -> float:
-    """RSI calculation — same formula as TradingView."""
+    """RSI with Wilder's smoothing — matches TradingView/Kite chart values.
+    (A plain rolling mean gives noticeably different readings near the 42/70 gates.)"""
     delta  = closes.diff().dropna()
     gain   = delta.clip(lower=0)
     loss   = (-delta).clip(lower=0)
-    avg_g  = gain.rolling(period).mean()
-    avg_l  = loss.rolling(period).mean()
+    avg_g  = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
+    avg_l  = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     rs     = avg_g / avg_l.replace(0, np.nan)
     rsi    = 100 - (100 / (1 + rs))
     return round(float(rsi.iloc[-1]), 2) if not rsi.empty else 50.0
@@ -292,6 +301,62 @@ def calc_fii_signal(fii_data: list) -> dict:
     }
 
 
+def fetch_market_regime() -> dict:
+    """
+    Nifty 50 vs its 50-DMA. Breakout/momentum entries have a much lower
+    hit rate when the index is below trend, so the scan raises the signal
+    bar and cuts the candidate count instead of buying every bounce in a
+    falling market.
+    """
+    try:
+        hist = yf.Ticker("^NSEI").history(period="6mo")
+        if hist.empty or len(hist) < 50:
+            raise ValueError("insufficient index history")
+        close = float(hist["Close"].iloc[-1])
+        dma50 = float(hist["Close"].rolling(50).mean().iloc[-1])
+        return {
+            "nifty_close": round(close, 1),
+            "dma_50":      round(dma50, 1),
+            "bullish":     close > dma50,
+        }
+    except Exception as e:
+        return {"nifty_close": None, "dma_50": None, "bullish": True,
+                "note": f"regime check failed ({e}) — defaulting to bullish"}
+
+
+EARNINGS_BLACKOUT_DAYS = 14   # calendar days — covers the 10-trading-day max hold
+
+def earnings_within_blackout(ticker: str) -> Optional[str]:
+    """
+    Return the earnings date string if the stock reports within the blackout
+    window, else None. A swing entry that holds through results is a coin
+    flip, not a setup. Only called for stocks that already passed signals,
+    so the extra API call is cheap.
+    """
+    try:
+        cal = yf.Ticker(ticker).calendar
+        dates = []
+        if isinstance(cal, dict):
+            ed = cal.get("Earnings Date")
+            if isinstance(ed, (list, tuple)):
+                dates = list(ed)
+            elif ed is not None:
+                dates = [ed]
+        elif cal is not None and hasattr(cal, "loc"):   # old DataFrame API
+            if "Earnings Date" in getattr(cal, "index", []):
+                dates = [d for d in cal.loc["Earnings Date"] if d is not None]
+        for d in dates:
+            if hasattr(d, "date") and not isinstance(d, date):
+                d = d.date()
+            if isinstance(d, date):
+                delta = (d - date.today()).days
+                if 0 <= delta <= EARNINGS_BLACKOUT_DAYS:
+                    return str(d)
+    except Exception:
+        pass
+    return None
+
+
 def calc_atr(hist: pd.DataFrame, period: int = SWING_ATR_PERIOD) -> Optional[float]:
     """ATR calculation — same as screener.py."""
     try:
@@ -367,10 +432,12 @@ def compute_swing_levels(hist: pd.DataFrame, buy_price: float) -> dict:
 # SINGLE STOCK ANALYSER
 # ─────────────────────────────────────────────
 
-def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict) -> Optional[dict]:
+def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
+                  min_signals: int = MIN_SIGNALS) -> Optional[dict]:
     """
-    Run all 6 signals on a single stock.
-    Returns candidate dict if ≥ MIN_SIGNALS pass, else None.
+    Run all signals on a single stock.
+    Returns candidate dict if score ≥ min_signals, else None.
+    min_signals is raised by one when the market regime is bearish.
     """
     hist = fetch_ohlcv(ticker)
     if hist is None:
@@ -483,7 +550,14 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict) -> Optio
     # Final score = technical (0-6) + sentiment modifier (-1 / 0 / +0.5 / +1)
     score = tech_score + sentiment_score_adj
 
-    if score < MIN_SIGNALS:
+    if score < min_signals:
+        return None
+
+    # Earnings blackout — don't hold a 10-day swing through quarterly results
+    earnings_date = earnings_within_blackout(ticker)
+    if earnings_date:
+        print(f"  📅 {ticker} skipped — earnings {earnings_date} inside "
+              f"{EARNINGS_BLACKOUT_DAYS}-day blackout window")
         return None
 
     # ── Swing levels ──────────────────────────────────────────
@@ -636,10 +710,24 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
     Scan Nifty 500 for swing trade candidates.
     Returns sorted list of candidates (best score first).
     """
+    # ── Step 0: Market regime — tighten the bar in a falling market ──
+    regime = fetch_market_regime()
+    if regime["bullish"]:
+        min_signals    = MIN_SIGNALS
+        max_candidates = MAX_CANDIDATES
+        regime_label   = "🟢 BULLISH (Nifty above 50-DMA)"
+    else:
+        min_signals    = MIN_SIGNALS + 1
+        max_candidates = max(MAX_CANDIDATES // 2, 3)
+        regime_label   = "🔴 BEARISH (Nifty below 50-DMA) — bar raised"
+
     print(f"\n{'='*58}")
     print(f"  📈 SWING SCANNER — INDIA NSE")
     print(f"  {datetime.now(IST).strftime('%d %B %Y, %I:%M %p IST')}")
-    print(f"  Min signals: {MIN_SIGNALS}/7  |  Max candidates: {MAX_CANDIDATES}")
+    print(f"  Regime: {regime_label}")
+    if regime.get("nifty_close"):
+        print(f"  Nifty: {regime['nifty_close']:,.1f}  |  50-DMA: {regime['dma_50']:,.1f}")
+    print(f"  Min signals: {min_signals}/7  |  Max candidates: {max_candidates}")
     print(f"  Holding: 1-2 weeks  |  Targets: +{SWING_TARGET_1*100:.0f}% / +{SWING_TARGET_2*100:.0f}%")
     print(f"{'='*58}\n")
 
@@ -677,7 +765,7 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
 
     for ticker in tickers:
         try:
-            result = analyse_stock(ticker, fii_data, sentiment_signals)
+            result = analyse_stock(ticker, fii_data, sentiment_signals, min_signals)
             scanned += 1
 
             if result is None:
@@ -703,9 +791,19 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
             print(f"  ⚠️  {ticker}: {e}")
             continue
 
-    # ── Step 4: Sort and filter ───────────────────────────────
+    # ── Step 4: Sort and filter (max 3 per sector so one hot sector
+    #            can't fill the whole list) ─────────────────────
     candidates.sort(key=lambda x: (x["score"], x["rr_ratio"]), reverse=True)
-    top = candidates[:MAX_CANDIDATES]
+    MAX_PER_SECTOR = 3
+    top, sector_count = [], {}
+    for c in candidates:
+        sec = c.get("sector") or "Unknown"
+        if sector_count.get(sec, 0) >= MAX_PER_SECTOR:
+            continue
+        top.append(c)
+        sector_count[sec] = sector_count.get(sec, 0) + 1
+        if len(top) >= max_candidates:
+            break
 
     # ── Step 5: Print report ──────────────────────────────────
     print(f"\n{'='*58}")
@@ -730,7 +828,7 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
 
     # ── Step 6: Save and post ─────────────────────────────────
     if not test_mode:
-        save_candidates(top)
+        save_candidates(top, regime)
         send_telegram_alert(top)
 
     return top
@@ -740,7 +838,7 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
 # SAVE + POST TO API
 # ─────────────────────────────────────────────
 
-def save_candidates(candidates: list):
+def save_candidates(candidates: list, regime: dict = None):
     """Save candidates to disk and POST to API."""
     os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -748,6 +846,7 @@ def save_candidates(candidates: list):
         "generated_at":   datetime.now(IST).strftime("%Y-%m-%d %H:%M IST"),
         "scan_date":      str(date.today()),
         "total_candidates": len(candidates),
+        "market_regime":  regime or {},
         "candidates":     candidates,
     }
 

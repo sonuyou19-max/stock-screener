@@ -124,6 +124,7 @@ BUCKET_FILTERS = {
         "max_price_usd":         200,
         "min_profit_margin":     0.05,      # must have 5%+ net margin (excludes loss-makers)
         "max_beta":              1.2,       # low volatility — true defensive characteristic
+        "min_dividend_yield":    0.015,     # 1.5%+ yield — bucket must actually pay dividends
     },
 }
 
@@ -271,6 +272,20 @@ def passes_fundamental_filters(data: dict, bucket_key: str) -> tuple[bool, str]:
         pm = data.get("profit_margin")
         if pm is None or pm < min_pm:
             return False, f"Profit margin {(pm or 0)*100:.1f}% < min {min_pm*100:.0f}%"
+
+    # ── Dividend yield filter (the bucket is sold as "Dividend + Stability") ─
+    min_dy = filters.get("min_dividend_yield")
+    if min_dy is not None:
+        dy = data.get("dividend_yield")
+        # yfinance has flipped this field between fraction (0.025) and
+        # percent (2.5) across versions — normalise to a fraction.
+        if dy is not None and dy > 1:
+            dy = dy / 100.0
+        if dy is None or dy < min_dy:
+            return False, (
+                f"Dividend yield {(dy or 0)*100:.2f}% < min {min_dy*100:.1f}% "
+                f"— not a dividend payer"
+            )
 
     # ── Beta filter (ensures true defensive low-volatility) ───────
     max_beta = filters.get("max_beta")

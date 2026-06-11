@@ -270,10 +270,12 @@ def score_stock(row, weights):
     return scores
 
 def normalise_and_compute_final(df, weights):
+    # Percentile rank instead of min-max: one extreme outlier no longer
+    # compresses every other stock's score toward 0 on that dimension.
     def minmax(series, invert=False):
         clean=series.dropna()
         if clean.empty or clean.max()==clean.min(): return pd.Series([50.0]*len(series),index=series.index)
-        n=(series-clean.min())/(clean.max()-clean.min())*100
+        n=series.rank(pct=True)*100
         return (100-n if invert else n).fillna(50)
     df["peg_score"]            = minmax(df["peg_raw"],invert=True)
     df["roe_score"]            = minmax(df["roe_raw"])
@@ -345,31 +347,27 @@ def check_earnings_freshness(ticker):
         age=(datetime.now().date()-last_date).days
         result["last_reported_date"]=str(last_date); result["data_age_days"]=age
         if age>STALE_DATA_DAYS: result["notes"]+=f"Stale data ({age}d). "; result["freshness_penalty"]+=5
-        e=stock.quarterly_earnings
-        if e is not None and not e.empty and len(e)>=2 and "Actual" in e.columns:
-            eps=e["Actual"].dropna()
-            if len(eps)>=2:
-                latest=float(eps.iloc[0]); prior=float(eps.iloc[1])
-                qoq=(latest-prior)/abs(prior)*100 if prior!=0 else 0
-                if qoq<-DETERIORATION_PCT:
-                    result["notes"]+=f"EPS down {abs(qoq):.1f}% QoQ. "
-                    if len(eps)>=3:
-                        prior2=float(eps.iloc[2])
-                        prev_chg=(prior-prior2)/abs(prior2)*100 if prior2!=0 else 0
-                        if prev_chg<-DETERIORATION_PCT:
-                            result["earnings_trend"]="double_deterioration"; result["exclude"]=True
-                            result["freshness_penalty"]+=15; result["notes"]+="⛔ Double deterioration."; return result
-                    result["earnings_trend"]="deteriorating"; result["freshness_penalty"]+=10
-                elif qoq>5: result["earnings_trend"]="improving"; result["notes"]+=f"EPS up {qoq:.1f}% ✅. "
-                else: result["earnings_trend"]="stable"; result["notes"]+=f"EPS stable ({qoq:+.1f}%). "
-            if "Estimate" in e.columns:
-                ests=e["Estimate"].dropna(); acts=e["Actual"].dropna()
-                if len(ests)>=1 and len(acts)>=1:
-                    la=float(acts.iloc[0]); le=float(ests.iloc[0])
-                    if le!=0:
-                        surp=(la-le)/abs(le)*100
-                        if surp<-MISS_THRESHOLD_PCT: result["earnings_miss"]=True; result["freshness_penalty"]+=10; result["notes"]+=f"Missed by {abs(surp):.1f}% ⚠️. "
-                        elif surp>5: result["notes"]+=f"Beat by {surp:.1f}% ✅. "
+        # Net income QoQ trend from quarterly_financials (already fetched).
+        # The old quarterly_earnings "Actual"/"Estimate" check was dead code —
+        # that API was removed from yfinance and never carried those columns.
+        ni=None
+        for label in ("Net Income","Net Income Common Stockholders"):
+            if label in q.index: ni=q.loc[label].dropna(); break
+        if ni is not None and len(ni)>=2:
+            latest=float(ni.iloc[0]); prior=float(ni.iloc[1])
+            qoq=(latest-prior)/abs(prior)*100 if prior!=0 else 0
+            if qoq<-DETERIORATION_PCT:
+                result["notes"]+=f"Net income down {abs(qoq):.1f}% QoQ. "
+                if len(ni)>=3:
+                    prior2=float(ni.iloc[2])
+                    prev_chg=(prior-prior2)/abs(prior2)*100 if prior2!=0 else 0
+                    if prev_chg<-DETERIORATION_PCT:
+                        result["earnings_trend"]="double_deterioration"; result["exclude"]=True
+                        result["freshness_penalty"]+=15; result["notes"]+="⛔ Double deterioration."; return result
+                result["earnings_trend"]="deteriorating"; result["freshness_penalty"]+=10
+            elif qoq>5: result["earnings_trend"]="improving"; result["notes"]+=f"Net income up {qoq:.1f}% ✅. "
+            else: result["earnings_trend"]="stable"; result["notes"]+=f"Net income stable ({qoq:+.1f}%). "
+            if latest<0: result["freshness_penalty"]+=5; result["notes"]+="⚠️ Latest quarter loss-making. "
         result["freshness_penalty"]=min(result["freshness_penalty"],20)
         if not result["notes"]: result["notes"]="Earnings data healthy ✅"
     except Exception as ex:

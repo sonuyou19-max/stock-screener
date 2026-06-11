@@ -44,6 +44,7 @@ from nse_universe import (
 
 BUDGET         = 100_000   # Total corpus in INR
 TOP_PICKS      = 7         # Global top-N to select
+MAX_PER_SECTOR = 2         # Diversification cap — max picks from one NSE sector
 
 ATR_MULT       = 2.5       # Stop-loss = buy_price - ATR_MULT * ATR
 ATR_TRAIL_MULT = 1.5       # Trailing stop = ATR_TRAIL_MULT * ATR below peak
@@ -328,7 +329,10 @@ def fetch_stock_data(ticker: str) -> Optional[dict]:
             "roe":                  roe_raw,
             "revenue_growth":       rev_g_raw,
             "earnings_growth":      earn_g_raw,
-            "debt_to_equity":       info.get("debtToEquity"),
+            # yfinance reports debtToEquity as a percentage (41.2 = 0.41x).
+            # Convert to a ratio so filters, scoring, audit and display all use one unit.
+            "debt_to_equity":       round(info.get("debtToEquity") / 100.0, 3)
+                                    if info.get("debtToEquity") is not None else None,
             "current_ratio":        info.get("currentRatio"),
             "profit_margin":        info.get("profitMargins"),
             "gross_margin":         info.get("grossMargins"),
@@ -404,7 +408,9 @@ def normalise_and_compute_final(df: pd.DataFrame, weights: dict) -> pd.DataFrame
         clean = series.dropna()
         if clean.empty or clean.max() == clean.min():
             return pd.Series([50.0] * len(series), index=series.index)
-        normed = (series - clean.min()) / (clean.max() - clean.min()) * 100
+        # Percentile rank instead of min-max: one extreme outlier no longer
+        # compresses every other stock's score toward 0 on that dimension.
+        normed = series.rank(pct=True) * 100
         if invert:
             normed = 100 - normed
         return normed.fillna(50)
@@ -478,70 +484,51 @@ def check_earnings_freshness(ticker: str) -> dict:
             result["notes"]            += f"Stale data ({age_days} days old). "
             result["freshness_penalty"] += 5
 
-        earnings = stock.quarterly_earnings
-        if earnings is not None and not earnings.empty and len(earnings) >= 2:
-            if "Actual" in earnings.columns:
-                eps_vals = earnings["Actual"].dropna()
+        # Net income QoQ trend from quarterly_financials (already fetched above).
+        # The old quarterly_earnings "Actual"/"Estimate" check was dead code —
+        # that API was removed from yfinance and never carried those columns.
+        ni_series = None
+        for label in ("Net Income", "Net Income Common Stockholders"):
+            if label in quarterly.index:
+                ni_series = quarterly.loc[label].dropna()
+                break
 
-                if len(eps_vals) >= 2:
-                    latest_eps = float(eps_vals.iloc[0])
-                    prior_eps  = float(eps_vals.iloc[1])
+        if ni_series is not None and len(ni_series) >= 2:
+            latest_ni = float(ni_series.iloc[0])
+            prior_ni  = float(ni_series.iloc[1])
 
-                    if prior_eps != 0:
-                        qoq_change = (latest_eps - prior_eps) / abs(prior_eps) * 100
-                    else:
-                        qoq_change = 0
+            if prior_ni != 0:
+                qoq_change = (latest_ni - prior_ni) / abs(prior_ni) * 100
+            else:
+                qoq_change = 0
 
-                    if qoq_change < -DETERIORATION_PCT:
-                        result["notes"] += (
-                            f"EPS down {abs(qoq_change):.1f}% QoQ "
-                            f"(₹{latest_eps:.2f} vs ₹{prior_eps:.2f}). "
-                        )
+            if qoq_change < -DETERIORATION_PCT:
+                result["notes"] += f"Net income down {abs(qoq_change):.1f}% QoQ. "
 
-                        if len(eps_vals) >= 3:
-                            prior2_eps = float(eps_vals.iloc[2])
-                            if prior2_eps != 0:
-                                prev_change = (prior_eps - prior2_eps) / abs(prior2_eps) * 100
-                                if prev_change < -DETERIORATION_PCT:
-                                    result["earnings_trend"]    = "double_deterioration"
-                                    result["exclude"]           = True
-                                    result["freshness_penalty"] += 15
-                                    result["notes"]             += "⛔ Double deterioration — excluding. "
-                                    return result
+                if len(ni_series) >= 3:
+                    prior2_ni = float(ni_series.iloc[2])
+                    if prior2_ni != 0:
+                        prev_change = (prior_ni - prior2_ni) / abs(prior2_ni) * 100
+                        if prev_change < -DETERIORATION_PCT:
+                            result["earnings_trend"]    = "double_deterioration"
+                            result["exclude"]           = True
+                            result["freshness_penalty"] += 15
+                            result["notes"]             += "⛔ Double deterioration — excluding. "
+                            return result
 
-                        result["earnings_trend"]    = "deteriorating"
-                        result["freshness_penalty"] += 10
+                result["earnings_trend"]    = "deteriorating"
+                result["freshness_penalty"] += 10
 
-                    elif qoq_change > 5:
-                        result["earnings_trend"] = "improving"
-                        result["notes"]         += f"EPS up {qoq_change:.1f}% QoQ ✅. "
-                    else:
-                        result["earnings_trend"] = "stable"
-                        result["notes"]         += f"EPS stable ({qoq_change:+.1f}% QoQ). "
+            elif qoq_change > 5:
+                result["earnings_trend"] = "improving"
+                result["notes"]         += f"Net income up {qoq_change:.1f}% QoQ ✅. "
+            else:
+                result["earnings_trend"] = "stable"
+                result["notes"]         += f"Net income stable ({qoq_change:+.1f}% QoQ). "
 
-                if "Estimate" in earnings.columns:
-                    estimates = earnings["Estimate"].dropna()
-                    actuals   = earnings["Actual"].dropna()
-
-                    if len(estimates) >= 1 and len(actuals) >= 1:
-                        latest_actual   = float(actuals.iloc[0])
-                        latest_estimate = float(estimates.iloc[0])
-
-                        if latest_estimate != 0:
-                            surprise_pct = (
-                                (latest_actual - latest_estimate)
-                                / abs(latest_estimate) * 100
-                            )
-                            if surprise_pct < -MISS_THRESHOLD_PCT:
-                                result["earnings_miss"]      = True
-                                result["freshness_penalty"] += 10
-                                result["notes"]             += (
-                                    f"Missed estimates by {abs(surprise_pct):.1f}% ⚠️. "
-                                )
-                            elif surprise_pct > 5:
-                                result["notes"] += (
-                                    f"Beat estimates by {surprise_pct:.1f}% ✅. "
-                                )
+            if latest_ni < 0:
+                result["freshness_penalty"] += 5
+                result["notes"]             += "⚠️ Latest quarter loss-making. "
 
         result["freshness_penalty"] = min(result["freshness_penalty"], 20)
 
@@ -1447,9 +1434,32 @@ def screen_all(
         all_df["policy_adj"]    = 0.0
 
     all_df = all_df.sort_values("final_score", ascending=False).reset_index(drop=True)
-    top_df = all_df.head(TOP_PICKS).copy()
+    top_df = select_top_diversified(all_df, TOP_PICKS, MAX_PER_SECTOR)
 
     return top_df, all_df
+
+
+def select_top_diversified(all_df: pd.DataFrame, n_picks: int, max_per_sector: int) -> pd.DataFrame:
+    """
+    Walk down the ranked list, capping picks per NSE sector so one hot
+    sector (sentiment boost + sector-wide rally) cannot fill the whole
+    portfolio. Skipped stocks remain in all_df for the full ranking report.
+    """
+    picked_idx   = []
+    sector_count: dict[str, int] = {}
+
+    for idx, row in all_df.iterrows():
+        sector = row.get("nse_sector", "Unknown")
+        if sector_count.get(sector, 0) >= max_per_sector:
+            print(f"  ⏭️  {row['ticker']} skipped for diversification — "
+                  f"already {max_per_sector} picks from {sector}")
+            continue
+        picked_idx.append(idx)
+        sector_count[sector] = sector_count.get(sector, 0) + 1
+        if len(picked_idx) >= n_picks:
+            break
+
+    return all_df.loc[picked_idx].copy()
 
 
 # ─────────────────────────────────────────────

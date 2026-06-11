@@ -278,9 +278,13 @@ def passes_fundamental_filters(data: dict, bucket_key: str = "") -> tuple[bool, 
     if rev_g is not None and rev_g < f["min_revenue_growth"]:
         return False, f"Rev growth {rev_g:.1f}% < min {f['min_revenue_growth']}%"
 
+    # D/E gate — skipped for lenders, where borrowing is raw material and
+    # accounting D/E says nothing about balance-sheet risk.
     de = data.get("debt_to_equity")
-    if de is not None and de > f["max_debt_equity"]:
-        return False, f"D/E {de:.2f} > max {f['max_debt_equity']}"
+    industry_de = (data.get("industry") or "").lower()
+    is_lender = any(k in industry_de for k in ("bank", "financial", "insurance"))
+    if de is not None and not is_lender and de > f["max_debt_equity"]:
+        return False, f"D/E {de:.2f}x > max {f['max_debt_equity']}x"
 
     # Data quality gate — must have at least one growth metric
     earn_g = data.get("earnings_growth_pct")
