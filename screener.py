@@ -1830,16 +1830,16 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
     if api_key and live_holdings:
         live_str = "\n".join(
             f"  {i+1}. {h['ticker'].replace('.NS','')} ({h['name'][:28]}) "
-            f"| bought ₹{h.get('buy_price',0):,.0f} on {h.get('buy_date','?')} "
-            f"| PnL {h.get('pnl_pct', 0):+.1f}% "
+            f"| bought ₹{(h.get('buy_price') or 0):,.0f} on {h.get('buy_date','?')} "
+            f"| PnL {(h.get('pnl_pct') or 0):+.1f}% "
             f"| rebalancer verdict: {h.get('rebalancer_verdict','?')} "
             f"| reason: {str(h.get('rebalancer_reason',''))[:60]}"
             for i, h in enumerate(live_holdings)
         )
         picks_str = "\n".join(
             f"  {i+1}. {p['ticker'].replace('.NS','')} ({p['name'][:28]}) "
-            f"| {p['sector']} | Score {p['score']} | Mom-3M {p['mom_3m']:+.1f}% "
-            f"| ROE {p['roe']:.0f}% | PE {p['pe']:.0f}"
+            f"| {p['sector']} | Score {p['score']} | Mom-3M {(p.get('mom_3m') or 0):+.1f}% "
+            f"| ROE {(p.get('roe') or 0):.0f}% | PE {(p.get('pe') or 0):.0f}"
             for i, p in enumerate(new_entry_picks[:7])
         )
 
@@ -1939,18 +1939,18 @@ Respond with ONLY valid JSON (action must be: HOLD / EXIT / EXIT_AND_ADD / ADD):
     # Sort by PnL descending so we bank the most profit first
     exit_candidates = sorted(
         [h for h in live_holdings
-         if h.get("rebalancer_verdict") in ("EXIT", "TRIM") and h.get("pnl_pct", 0) > 0],
-        key=lambda h: h.get("pnl_pct", 0), reverse=True,
+         if h.get("rebalancer_verdict") in ("EXIT", "TRIM") and (h.get("pnl_pct") or 0) > 0],
+        key=lambda h: (h.get("pnl_pct") or 0), reverse=True,
     )
     watch_candidates = sorted(
         [h for h in live_holdings
-         if h.get("rebalancer_verdict") == "WATCH" and h.get("pnl_pct", 0) > 0],
-        key=lambda h: h.get("exit_score", 0), reverse=True,
+         if h.get("rebalancer_verdict") == "WATCH" and (h.get("pnl_pct") or 0) > 0],
+        key=lambda h: (h.get("exit_score") or 0), reverse=True,
     )
 
     if exit_candidates:
         sell    = exit_candidates[0]
-        pnl     = sell.get("pnl_pct", 0)
+        pnl     = (sell.get("pnl_pct") or 0)
         verdict = sell.get("rebalancer_verdict", "EXIT")
         rb_rsn  = sell.get("rebalancer_reason", "")
         rsn     = (
@@ -1983,7 +1983,7 @@ Respond with ONLY valid JSON (action must be: HOLD / EXIT / EXIT_AND_ADD / ADD):
             "action": "HOLD",
             "sell_ticker": None, "buy_ticker": None,
             "reasoning": (
-                f"{w['name']} is in WATCH territory (PnL {w.get('pnl_pct', 0):+.0f}%). "
+                f"{w['name']} is in WATCH territory (PnL {(w.get('pnl_pct') or 0):+.0f}%). "
                 f"{w.get('rebalancer_reason', '')} Not strong enough to act yet — monitor next month."
             ),
         })
