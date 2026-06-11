@@ -1428,7 +1428,15 @@ function renderAdvisory(adv){
     el.innerHTML=`<div class="adv-card adv-hold"><div class="adv-action">⏳ Not yet generated</div><div class="adv-reason">Run screener.py to generate this month's advisory.</div></div>`;
     return;
   }
-  const action=adv.action||'HOLD';
+  // Compute current live tickers — may differ from when advisory was generated (e.g. after exits)
+  const liveTkrs=new Set();
+  for(const b of Object.values(indPortfolio||{}))for(const s of(b.stocks||[]))liveTkrs.add(s.ticker);
+
+  // Mirror current portfolio state: filter out exited holdings
+  const health=(adv.holdings_health||[]).filter(h=>liveTkrs.has(h.ticker));
+
+  // If portfolio is now empty but advisory still says HOLD, show ADD instead
+  const action=(liveTkrs.size===0&&(adv.action||'HOLD')==='HOLD')?'ADD':(adv.action||'HOLD');
   const isExit=action==='EXIT'||action==='EXIT_AND_ADD';
   const isAdd =action==='ADD'||action==='EXIT_AND_ADD';
   const cls   =action==='HOLD'?'adv-hold':isExit?'adv-replace':'adv-add';
@@ -1437,10 +1445,8 @@ function renderAdvisory(adv){
     action==='HOLD'       ?'Hold — No Changes This Month':
     action==='EXIT'       ?`Exit ${(adv.sell_ticker||'').replace('.NS','')} — Bank Profits`:
     action==='EXIT_AND_ADD'?`Exit ${(adv.sell_ticker||'').replace('.NS','')} → Add ${(adv.buy_ticker||'').replace('.NS','')}`:
-    `Add ${(adv.buy_ticker||'').replace('.NS','')}`;
-
-  // Build portfolio rebalancer health check
-  const health=(adv.holdings_health||[]);
+    adv.buy_ticker        ?`Add ${(adv.buy_ticker||'').replace('.NS','')}`:
+                           'Portfolio Empty — Add a New Position';
   const rbIcon=v=>(v==='EXIT'||v==='TRIM')?'🔴':v==='WATCH'?'👁':v==='HOLD'?'🟢':'⚪';
   const rbCls =v=>(v==='EXIT'||v==='TRIM')?'h-excluded':v==='WATCH'?'h-top15':v==='HOLD'?'h-top7':'';
   const rbDate=adv.rebalance_report_date?`<span style="font-size:9px;color:var(--text3)"> · report: ${adv.rebalance_report_date}</span>`:'';
@@ -1464,10 +1470,7 @@ function renderAdvisory(adv){
       </div>`;}).join('')}
     </div>`:'';
 
-  // Build top picks reference table
-  // Filter out stocks already in live portfolio to avoid duplicates
-  const liveTkrs=new Set();
-  for(const b of Object.values(indPortfolio||{}))for(const s of(b.stocks||[]))liveTkrs.add(s.ticker);
+  // Build top picks reference table (liveTkrs computed above)
   const picks=(adv.top_picks||[]).filter(p=>!liveTkrs.has(p.ticker)).slice(0,7);
   const picksHtml=picks.length?`
     <div class="adv-picks-lbl">This month's screener top picks — tap + to add:</div>
@@ -1475,7 +1478,7 @@ function renderAdvisory(adv){
       <div class="adv-pick-row ${adv.buy_ticker===p.ticker?'adv-pick-highlight':''}">
         <span class="adv-pick-rank">${i+1}</span>
         <div class="adv-pick-main">
-          <span class="adv-pick-ticker">${p.ticker.replace('.NS','')}</span>
+          <span class="adv-pick-ticker">${p.ticker.replace('.NS','')}${_iP?.[p.ticker]?.price?` <span style="color:var(--text2);font-weight:400;font-size:10px">(₹${_iP[p.ticker].price.toLocaleString('en-IN',{maximumFractionDigits:1})})</span>`:''}</span>
           <div class="adv-pick-sub">${p.name.slice(0,28)} · ${p.sector.slice(0,20)}</div>
         </div>
         <span class="adv-pick-score">${p.score}</span>
@@ -1499,7 +1502,7 @@ function renderAdvisory(adv){
       ${src}
     </div>
     ${healthHtml}
-    <div class="adv-reason">${adv.reasoning||''}</div>
+    <div class="adv-reason">${liveTkrs.size===0&&(adv.action||'HOLD')==='HOLD'?'Portfolio is empty — all positions exited. Consider adding from this month\'s picks below.':(adv.reasoning||'')}</div>
     ${execBtn}
     ${picksHtml}
     <div class="adv-meta">Generated: ${adv.generated_at||''} · Holdings: ${adv.current_holdings||0}</div>
