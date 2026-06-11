@@ -1482,20 +1482,36 @@ function renderAdvisory(adv){
       </div>`;}).join('')}
     </div>`:'';
 
-  // Build top picks reference table (liveTkrs computed above)
-  const picks=(adv.top_picks||[]).filter(p=>!liveTkrs.has(p.ticker)).slice(0,7);
+  // ── Balance-aware picks ─────────────────────────────────────────────────
+  let _raDep=0;
+  for(const b of Object.values(indPortfolio||{}))for(const s of(b.stocks||[]))_raDep+=s.allocation_inr||0;
+  const _raAvail=Math.max(0,100000-_raDep);
+  const _raSlots=Math.max(0,7-liveTkrs.size);
+  const allPicks=(adv.top_picks||[]).filter(p=>!liveTkrs.has(p.ticker));
+  // Show as many picks as open slots (all 7 if portfolio is full, for reference)
+  const picks=allPicks.slice(0,_raSlots>0?_raSlots:7);
+  const perAlloc=picks.length>0&&_raSlots>0?Math.floor(_raAvail/picks.length):0;
   const picksHtml=picks.length?`
-    <div class="adv-picks-lbl">This month's screener top picks — tap + to add:</div>
-    <div class="adv-picks-list">${picks.map((p,i)=>`
-      <div class="adv-pick-row ${adv.buy_ticker===p.ticker?'adv-pick-highlight':''}">
+    <div class="adv-picks-lbl">${_raSlots>0?`${_raSlots} open slot${_raSlots!==1?'s':''} · ₹${perAlloc.toLocaleString('en-IN',{maximumFractionDigits:0})} each`:'Portfolio full — reference picks:'}</div>
+    <div class="adv-picks-list">${picks.map((p,i)=>{
+      const price=_iP?.[p.ticker]?.price;
+      const qty=price&&perAlloc>0?Math.floor(perAlloc/price):null;
+      const priceHtml=price?` <span style="color:var(--text2);font-weight:400;font-size:10px">(₹${price.toLocaleString('en-IN',{maximumFractionDigits:1})})</span>`:'';
+      const qtyHtml=qty!=null?qty>0
+        ?`<div class="adv-pick-sub" style="color:#2d8a6a;font-size:9px">~${qty} shares · ₹${perAlloc.toLocaleString('en-IN',{maximumFractionDigits:0})} alloc</div>`
+        :`<div class="adv-pick-sub" style="color:#c04040;font-size:9px">₹${price.toLocaleString('en-IN',{maximumFractionDigits:0})}/sh — exceeds slot budget</div>`
+        :'';
+      const yfUrl=`https://finance.yahoo.com/quote/${p.ticker}`;
+      return `<div class="adv-pick-row ${adv.buy_ticker===p.ticker?'adv-pick-highlight':''}">
         <span class="adv-pick-rank">${i+1}</span>
         <div class="adv-pick-main">
-          <span class="adv-pick-ticker">${p.ticker.replace('.NS','')}${_iP?.[p.ticker]?.price?` <span style="color:var(--text2);font-weight:400;font-size:10px">(₹${_iP[p.ticker].price.toLocaleString('en-IN',{maximumFractionDigits:1})})</span>`:''}</span>
-          <div class="adv-pick-sub">${p.name.slice(0,28)} · ${p.sector.slice(0,20)}</div>
+          <span class="adv-pick-ticker">${p.ticker.replace('.NS','')}${priceHtml}</span>
+          <div class="adv-pick-sub"><a href="${yfUrl}" target="_blank" rel="noopener" style="color:var(--text2);text-decoration:none">${(p.name||'').slice(0,26)}</a> · ${(p.sector||'').slice(0,18)}</div>
+          ${qtyHtml}
         </div>
         <span class="adv-pick-score">${p.score}</span>
         <button class="pick-add-btn" onclick="addToPickedPortfolio('${p.ticker}')" title="Add to portfolio">+</button>
-      </div>`).join('')}
+      </div>`;}).join('')}
     </div>`:''
 
   // Execute button
