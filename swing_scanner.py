@@ -78,7 +78,7 @@ from nse_universe import fetch_nifty500
 
 IST             = ZoneInfo("Asia/Kolkata")
 DATA_DIR        = os.getenv("DATA_DIR", "/data")
-API_URL         = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+API_URL         = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
 CANDIDATES_FILE = os.path.join(DATA_DIR, "swing_candidates.json")
 
 # Signal parameters

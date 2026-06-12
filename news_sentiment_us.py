@@ -405,7 +405,7 @@ def save_news_signals(signals: dict, items: list):
 def _post_signal_to_api(signal_type: str, payload: dict):
     """POST to /signals/upload — identical to India version."""
     import urllib.request as _urllib
-    api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+    api_url = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
     url = f"{api_url}/signals/upload"
     try:
         body = json.dumps({"type": signal_type, "payload": payload}).encode("utf-8")

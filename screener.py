@@ -99,7 +99,7 @@ POLICY_SCORE_ADJ = {
 }
 
 DATA_DIR = os.getenv("DATA_DIR", "/data")
-API_URL  = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+API_URL  = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
 
 
 # ─────────────────────────────────────────────

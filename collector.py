@@ -69,7 +69,7 @@ def load_history() -> list:
     import urllib.request as _ur
     import urllib.error   as _ure
 
-    api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+    api_url = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
 
     # ── Source 1: API (always authoritative) ──────────────────────
     try:
@@ -272,7 +272,7 @@ def _post_to_api(history: list):
     """POST FII/DII history to the web API so it can serve fresh data."""
     import urllib.request as _urllib
     import urllib.error as _urlerr
-    api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+    api_url = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
     url = f"{api_url}/fiidii/upload"
     try:
         payload = json.dumps(history).encode("utf-8")

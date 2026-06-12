@@ -61,7 +61,7 @@ except ImportError:
 # CONSTANTS
 # ─────────────────────────────────────────────
 
-API_URL      = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+API_URL      = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
 IST          = ZoneInfo("Asia/Kolkata")
 
 # Profit booking stages: (threshold_pct, label, sell_fraction)

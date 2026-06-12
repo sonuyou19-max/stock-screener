@@ -816,7 +816,7 @@ def save_results(portfolio, all_results):
     for bk,df in all_results.items():
         if not df.empty: df.to_csv(_os.path.join(dd,f"us_ranking_{bk}_{ts}.csv"),index=False)
     print(f"  ✅ Full rankings saved as CSV")
-    api=_os.getenv("API_URL","https://web-production-2d832.up.railway.app")
+    api=_os.getenv("API_URL","https://web-production-50eee.up.railway.app")
     def _post(url,data):
         req=_ur.Request(url,data=data,headers={"Content-Type": "application/json", **_UPLOAD_AUTH},method="POST")
         with _ur.urlopen(req,timeout=15) as r: return r.read().decode()

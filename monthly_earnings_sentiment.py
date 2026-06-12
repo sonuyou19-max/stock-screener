@@ -61,7 +61,7 @@ from swing_news_sentiment import SECTOR_KEYWORDS, SIGNAL_EMOJI
 
 IST              = ZoneInfo("Asia/Kolkata")
 DATA_DIR         = os.getenv("DATA_DIR", "/data")
-API_URL          = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+API_URL          = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
 ANTHROPIC_API    = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_KEY    = os.getenv("ANTHROPIC_API_KEY", "")
 LLM_MODEL        = "claude-haiku-4-5-20251001"   # cost-efficient; 1 call/month

@@ -47,7 +47,7 @@ import requests
 
 IST                      = ZoneInfo("Asia/Kolkata")
 DATA_DIR                 = os.getenv("DATA_DIR", "/data")
-API_URL                  = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+API_URL                  = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
 SWING_SENTIMENT_FILE     = os.path.join(DATA_DIR, "swing_news_sentiment.json")
 
 SCAN_DAYS   = 7     # last 7 days — wider window to catch more headlines

@@ -49,7 +49,7 @@ import yfinance as yf
 # ─────────────────────────────────────────────
 
 IST     = ZoneInfo("Asia/Kolkata")
-API_URL = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+API_URL = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
 DATA_DIR= os.getenv("DATA_DIR", "/data")
 
 # Dedup file — separate from long-term alerter's dedup
