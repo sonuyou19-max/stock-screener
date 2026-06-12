@@ -860,10 +860,10 @@ async function fetchIndPrices(){
 
 /* ═══ US DETAIL ═══ */
 async function loadUS(){
-  const[port,picks,swaps]=await Promise.all([fd('/us/portfolio/live'),fd('/us/portfolio/picks'),fd('/us/portfolio/swap')]);
+  const[port,adv]=await Promise.all([fd('/us/portfolio/live'),fd('/us/advisory')]);
   if(port)usPortfolio=port;
   renderBuckets('us',usPortfolio,'usStocks','$');renderUsStats();
-  renderUsAdvisory(picks,swaps);loadPerf('US');loadClosed('us');
+  renderUsAdvisory(adv);loadPerf('US');loadClosed('us');
   loadUsNewsSignals();loadUsVerdict();
   await fetchUsPrices();
 }
@@ -872,7 +872,7 @@ function renderUsStats(){
   if(!usPortfolio)return;
   let dep=0,cnt=0;for(const b of Object.values(usPortfolio)){for(const s of(b.stocks||[])){dep+=s.allocation_usd||0;cnt++;}}
   document.getElementById('us-dep').textContent='$'+dep.toLocaleString('en-US',{maximumFractionDigits:0});
-  document.getElementById('us-stocks').textContent=cnt+' stocks · 4 buckets';
+  document.getElementById('us-stocks').textContent=cnt+' stock'+(cnt!==1?'s':'')+' · Tech/Semi';
   document.getElementById('us-cash').textContent='$'+(1000-dep).toLocaleString('en-US',{maximumFractionDigits:0});
 }
 
@@ -1262,101 +1262,87 @@ function renderAdvisory(adv){
   </div>`;
 }
 
-function renderUsAdvisory(picks,swapsData){
+function renderUsAdvisory(adv){
   const el=document.getElementById('usAdvisory');if(!el)return;
-
-  // Flatten all picks sorted by score
-  const allPicks=[];
-  for(const[bk,bucket]of Object.entries(picks||{})){
-    for(const s of(bucket.stocks||[]))allPicks.push({...s,bk,bkt_label:bucket.label||bk});
-  }
-  allPicks.sort((a,b)=>(b.final_score||0)-(a.final_score||0));
-
-  if(!allPicks.length){
-    el.innerHTML=`<div class="adv-card" style="margin:0 20px"><div class="adv-reason">No US picks yet. Run screener_us.py first.</div></div>`;
+  if(!adv||adv.error){
+    el.innerHTML=`<div class="adv-card adv-hold" style="margin:0 20px"><div class="adv-action">⏳ Not yet generated</div><div class="adv-reason">Run screener_us.py to generate this month's advisory.</div></div>`;
     return;
   }
 
-  // Build swap lookup keyed by buy_ticker
-  const swaps=(swapsData?.swaps||[]).filter(s=>s.action!=='KEEP');
-  const swapByBuy={};
-  for(const sw of swaps){if(sw.buy_ticker)swapByBuy[sw.buy_ticker]=sw;}
-
-  // Live tickers
   const liveTkrs=new Set();
   for(const b of Object.values(usPortfolio||{}))for(const s of(b.stocks||[]))liveTkrs.add(s.ticker);
 
-  // Derive overall action
-  const nSwaps=swaps.filter(s=>s.action==='SWAP').length;
-  const nNew  =swaps.filter(s=>s.action==='NEW BUY').length;
-  const action=nSwaps?'SWAP':nNew?'ADD':'HOLD';
-  const actionIcon =action==='HOLD'?'✅':action==='SWAP'?'🔄':'➕';
-  const actionLabel=action==='HOLD'?'Hold — No Changes This Month':
-    action==='SWAP'?`${nSwaps} swap${nSwaps!==1?'s':''} recommended`:
-    `${nNew} new position${nNew!==1?'s':''} to add`;
-  const cls=action==='SWAP'?'adv-replace':action==='ADD'?'adv-add':'';
+  const health=(adv.holdings_health||[]).filter(h=>liveTkrs.has(h.ticker));
+  const action=(liveTkrs.size===0&&(adv.action||'HOLD')==='HOLD')?'ADD':(adv.action||'HOLD');
+  const isExit=action==='EXIT'||action==='EXIT_AND_ADD';
+  const isAdd =action==='ADD'||action==='EXIT_AND_ADD';
+  const cls   =action==='HOLD'?'adv-hold':isExit?'adv-replace':'adv-add';
+  const actionIcon=action==='HOLD'?'✅':isExit&&isAdd?'🔄':isExit?'📤':'➕';
+  const actionLabel=
+    action==='HOLD'       ?'Hold — No Changes This Month':
+    action==='EXIT'       ?'Exit '+(adv.sell_ticker||'')+' — Bank Profits':
+    action==='EXIT_AND_ADD'?'Exit '+(adv.sell_ticker||'')+' → Add '+(adv.buy_ticker||''):
+    adv.buy_ticker        ?'Add '+(adv.buy_ticker||''):
+                           'Portfolio Empty — Add a New Position';
 
-  // Holdings health strip
-  const kept=[...liveTkrs].filter(t=>allPicks.some(p=>p.ticker===t));
-  const healthHtml=liveTkrs.size?`
+  const rbDate=adv.rebalance_report_date?'report: '+adv.rebalance_report_date:'';
+  const exitCount=health.filter(h=>h.rebalancer_verdict==='EXIT'||h.rebalancer_verdict==='TRIM').length;
+  const healthHtml=health.length?`
     <div style="font-size:10px;color:var(--text3);margin-bottom:8px;padding:6px 10px;background:var(--surface2);border-radius:8px;">
-      📊 Holdings: ${liveTkrs.size} live · ${kept.length} still in top picks
-      ${nSwaps?` · <span style="color:var(--gold);font-weight:700">${nSwaps} upgrade${nSwaps!==1?'s':''} available</span>`:''}
+      📊 Rebalancer: ${health.length} holding${health.length!==1?'s':''} analysed${rbDate?' · '+rbDate:''}${exitCount?' · <span style="color:var(--red);font-weight:700">'+exitCount+' EXIT/TRIM flagged</span>':''}
+      <span style="color:var(--text3)"> — verdicts shown on each stock card above</span>
+    </div>`:'';
+
+  // Balance-aware picks
+  let _raDep=0;
+  for(const b of Object.values(usPortfolio||{}))for(const s of(b.stocks||[]))_raDep+=s.allocation_usd||0;
+  const _raAvail=Math.max(0,1000-_raDep);
+  const _raSlots=Math.max(0,7-liveTkrs.size);
+  const allPicks=(adv.top_picks||[]).filter(p=>!liveTkrs.has(p.ticker));
+  const picks=allPicks.slice(0,_raSlots>0?_raSlots:7);
+  const perAlloc=picks.length>0&&_raSlots>0?Math.floor(_raAvail/picks.length):0;
+  const picksHtml=picks.length?`
+    <div class="adv-picks-lbl">${_raSlots>0?_raSlots+' open slot'+(_raSlots!==1?'s':'')+' · $'+perAlloc.toLocaleString('en-US',{maximumFractionDigits:0})+' each':'Portfolio full — reference picks:'}</div>
+    <div class="adv-picks-list">${picks.map((p,i)=>{
+      const price=_uP?.[p.ticker]?.price;
+      const qty=price&&perAlloc>0?Math.floor(perAlloc/price):null;
+      const priceHtml=price?' <span style="color:var(--text2);font-weight:400;font-size:10px">($'+price.toLocaleString('en-US',{maximumFractionDigits:2})+')</span>':'';
+      const qtyHtml=qty!=null?qty>0
+        ?'<div class="adv-pick-sub" style="color:var(--green);font-size:9px">~'+qty+' shares · $'+perAlloc.toLocaleString('en-US',{maximumFractionDigits:0})+' alloc</div>'
+        :'<div class="adv-pick-sub" style="color:var(--red);font-size:9px">$'+price.toLocaleString('en-US',{maximumFractionDigits:0})+'/sh — exceeds slot budget</div>'
+        :'';
+      const yfUrl='https://finance.yahoo.com/quote/'+p.ticker;
+      return '<div class="adv-pick-row '+(adv.buy_ticker===p.ticker?'adv-pick-highlight':'')+'">'+
+        '<span class="adv-pick-rank">'+(i+1)+'</span>'+
+        '<div class="adv-pick-main">'+
+        '<span class="adv-pick-ticker">'+p.ticker+priceHtml+'</span>'+
+        '<div class="adv-pick-sub"><a href="'+yfUrl+'" target="_blank" rel="noopener" style="color:var(--text2);text-decoration:none">'+(p.name||'').slice(0,26)+'</a> · '+(p.sector||'').slice(0,18)+'</div>'+
+        qtyHtml+
+        '</div>'+
+        '<span class="adv-pick-score">'+(p.score||0)+'</span>'+
+        '<button class="pick-add-btn" onclick="addUsToPickedPortfolio(\''+p.ticker+'\')" title="Add to portfolio">+</button>'+
+        '</div>';
+    }).join('')}
     </div>`:''
 
-  // Reasoning line
-  const reason=action==='HOLD'?'All current positions remain in the screener\'s top picks. No changes needed this month.':
-    action==='SWAP'?`Screener found ${nSwaps} higher-scoring stock${nSwaps!==1?'s':''} that outrank current holdings. Review swap${nSwaps!==1?'s':''} below.`:
-    `${nNew} screener pick${nNew!==1?'s':''} not yet in your portfolio. Consider adding the highest-conviction positions.`;
+  const canExec=action!=='HOLD';
+  const execBtn=canExec
+    ?'<button class="exec-btn adv-exec" onclick="execUsAdvisory(\''+(adv.buy_ticker||'')+'\',\''+(adv.sell_ticker||'')+'\')">'
+      +(isExit&&isAdd?'✅ Sell + Buy on Bolero':isExit?'📤 Sell on Bolero':'➕ Buy on Bolero')
+      +'</button>'
+    :'';
 
-  // Picks list — show new (not held) picks; fall back to all
-  let _dep=0;for(const b of Object.values(usPortfolio||{}))for(const s of(b.stocks||[]))_dep+=s.allocation_usd||0;
-  const _avail=Math.max(0,1000-_dep);
-  const newPicks=allPicks.filter(p=>!liveTkrs.has(p.ticker));
-  const show=newPicks.length?newPicks:allPicks.slice(0,8);
-  const perAlloc=show.length&&newPicks.length?Math.floor(_avail/show.length):0;
-
-  // Live stock allocation lookup for swap sizing
-  const liveFlat={};for(const b of Object.values(usPortfolio||{}))for(const s of(b.stocks||[]))liveFlat[s.ticker]=s;
-
-  const picksHtml=`
-    <div class="adv-picks-lbl">${newPicks.length?(show.length+' new pick'+(show.length!==1?'s':'')+(perAlloc?' · $'+perAlloc.toLocaleString()+' each':'')):'Portfolio full — reference picks'} · sorted by score</div>
-    <div class="adv-picks-list">${show.map((p,i)=>{
-      const sw=swapByBuy[p.ticker];
-      const price=p.price||0;
-      const alloc=sw?(liveFlat[sw.sell_ticker]?.allocation_usd||p.allocation_usd||0):(perAlloc||p.allocation_usd||0);
-      const shares=price&&alloc?Math.floor(alloc/price):(p.approx_shares||null);
-      const priceHtml=price?` <span style="color:var(--text2);font-weight:400;font-size:10px">($${price.toFixed(2)})</span>`:'';
-      const qtyHtml=shares!=null?shares>0
-        ?`<div class="adv-pick-sub" style="color:var(--green);font-size:9px">~${shares}sh · $${alloc.toFixed(0)} alloc</div>`
-        :`<div class="adv-pick-sub" style="color:var(--red);font-size:9px">$${price.toFixed(0)}/sh — exceeds slot budget</div>`
-        :'';
-      const swapHtml=sw?`<div class="adv-pick-sub" style="color:var(--gold);font-size:9px">↔ Replace ${sw.sell_ticker} · +${sw.score_diff?.toFixed(1)||'?'} pts · ${sw.conviction||''}</div>`:'';
-      const yfUrl=`https://finance.yahoo.com/quote/${p.ticker}`;
-      return `<div class="adv-pick-row ${sw?'adv-pick-highlight':''}">
-        <span class="adv-pick-rank">${i+1}</span>
-        <div class="adv-pick-main">
-          <span class="adv-pick-ticker"><a href="${yfUrl}" target="_blank" rel="noopener" style="color:var(--text);text-decoration:none">${p.ticker}</a>${priceHtml}</span>
-          <div class="adv-pick-sub">${(p.name||'').slice(0,24)} · ${(p.bkt_label||'').slice(0,14)}</div>
-          ${qtyHtml}${swapHtml}
-        </div>
-        <span class="adv-pick-score">${(p.final_score||0).toFixed(0)}</span>
-        <button class="pick-add-btn" onclick="markUsBought('${p.ticker}','${sw?.sell_ticker||''}',${p.final_score||0})" title="${sw?'Execute swap':'Add to portfolio'}">${sw?'⇄':'+'}</button>
-      </div>`;
-    }).join('')}
-    </div>`;
-
-  const genDate=allPicks[0]?.buy_date||'';
-  el.innerHTML=`<div class="adv-card ${cls}" style="margin:0 20px">
-    <div class="adv-header">
-      <span class="adv-action-badge">${actionIcon} ${actionLabel}</span>
-      <span class="adv-src">📊 S&P 500 Screener</span>
-    </div>
-    ${healthHtml}
-    <div class="adv-reason">${reason}</div>
-    ${picksHtml}
-    <div class="adv-meta">Screened: ${allPicks.length} stocks · Universe: S&P 500${genDate?' · '+genDate:''}</div>
-  </div>`;
+  el.innerHTML='<div class="adv-card '+cls+'" style="margin:0 20px">'+
+    '<div class="adv-header">'+
+    '<span class="adv-action-badge">'+actionIcon+' '+actionLabel+'</span>'+
+    '<span class="adv-src">📊 Tech/Semi Screener</span>'+
+    '</div>'+
+    healthHtml+
+    '<div class="adv-reason">'+(liveTkrs.size===0&&(adv.action||'HOLD')==='HOLD'?'Portfolio is empty — all positions exited. Consider adding from this month\'s picks below.':(adv.reasoning||''))+'</div>'+
+    execBtn+
+    picksHtml+
+    '<div class="adv-meta">Generated: '+(adv.generated_at||'')+' · Holdings: '+(adv.current_holdings||0)+'</div>'+
+    '</div>';
 }
 
 async function addToPickedPortfolio(ticker){
@@ -1390,6 +1376,31 @@ async function addToPickedPortfolio(ticker){
   alert(`✅ ${ticker.replace('.NS','')} added at ₹${buyPrice.toLocaleString('en-IN')}`);
   _iL=false;loadIndia();
 }
+
+async function addUsToPickedPortfolio(ticker){
+  const[liveRaw,picksRaw]=await Promise.all([fd('/us/portfolio/live'),fd('/us/portfolio/picks')]);
+  const live=liveRaw||{};
+  for(const bk of Object.keys(live)){
+    if((live[bk].stocks||[]).find(s=>s.ticker===ticker)){alert(ticker+' is already in your US portfolio.');return;}
+  }
+  let fullStock=null;
+  for(const b of Object.values(picksRaw||{})){fullStock=(b.stocks||[]).find(s=>s.ticker===ticker);if(fullStock)break;}
+  const inputPrice=prompt('Add '+ticker+' to US portfolio\nEnter your buy price ($):');
+  if(inputPrice===null)return;
+  const buyPrice=parseFloat(inputPrice);
+  if(!buyPrice||isNaN(buyPrice)||buyPrice<=0){alert('Please enter a valid buy price.');return;}
+  if(!live.top_picks)live.top_picks={label:'Monthly Top Picks',stocks:[]};
+  const entry=fullStock
+    ?{...fullStock,price:buyPrice,buy_price:buyPrice,buy_date:new Date().toISOString().split('T')[0]}
+    :{ticker,name:ticker,sector:'Technology',final_score:0,price:buyPrice,buy_price:buyPrice,
+      buy_date:new Date().toISOString().split('T')[0],allocation_usd:0,approx_shares:0};
+  live.top_picks.stocks.push(entry);
+  await fetch(`${API}/us/portfolio/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
+  alert('✅ '+ticker+' added at $'+buyPrice.toLocaleString('en-US'));
+  _uL=false;loadUS();
+}
+
+function execUsAdvisory(buy,sell){markUsBought(buy,sell,0);}
 
 async function exitIndiaStock(ticker){
   // Find stock in live portfolio
