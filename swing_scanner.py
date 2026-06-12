@@ -53,6 +53,12 @@ Usage:
 """
 
 import yfinance as yf
+
+# Sent with every API POST; uploads are rejected when the server has
+# UPLOAD_TOKEN set and this env var is missing or wrong.
+import os as _os_tok
+_UPLOAD_AUTH = {"X-Upload-Token": _os_tok.environ["UPLOAD_TOKEN"]} if _os_tok.getenv("UPLOAD_TOKEN") else {}
+
 import pandas as pd
 import numpy as np
 import json
@@ -979,7 +985,7 @@ def save_candidates(candidates: list, regime: dict = None):
         req1 = _urllib.Request(
             f"{API_URL}/swing/candidates/upload",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **_UPLOAD_AUTH},
             method="POST"
         )
         with _urllib.urlopen(req1, timeout=15) as r:

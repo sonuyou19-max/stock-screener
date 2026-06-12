@@ -121,7 +121,7 @@ BUCKET_FILTERS = {
         "max_debt_equity":       250,
         "max_peg":               2.5,
         "min_profit_growth":     3,
-        "max_price_usd":         200,
+        "max_price_usd":         100,   # per-stock budget is $200*0.20/2 — a $150 stock passed the filter then got dropped at allocation
         "min_profit_margin":     0.05,      # must have 5%+ net margin (excludes loss-makers)
         "max_beta":              1.2,       # low volatility — true defensive characteristic
         "min_dividend_yield":    0.015,     # 1.5%+ yield — bucket must actually pay dividends
@@ -326,15 +326,20 @@ def passes_fundamental_filters(data: dict, bucket_key: str) -> tuple[bool, str]:
         if price_pos > max_prox:
             return False, f"Price at {price_pos*100:.0f}% of 52w high > max {max_prox*100:.0f}%"
 
-    # ── ROE filter ────────────────────────────────────────────
+    # ── ROE filter (fail closed: a floor cannot be verified on missing data,
+    #    matching how min_profit_margin and min_dividend_yield already behave) ──
     min_roe = filters.get("min_roe")
-    if min_roe and roe is not None:
+    if min_roe:
+        if roe is None:
+            return False, f"ROE unavailable — cannot verify min {min_roe}%"
         if roe < min_roe:
             return False, f"ROE {roe:.1f}% < min {min_roe}%"
 
-    # ── Revenue growth filter ─────────────────────────────────
+    # ── Revenue growth filter (fail closed) ───────────────────
     min_rev_g = filters.get("min_revenue_growth")
-    if min_rev_g and rev_g is not None:
+    if min_rev_g:
+        if rev_g is None:
+            return False, f"Revenue growth unavailable — cannot verify min {min_rev_g}%"
         if rev_g < min_rev_g:
             return False, f"Revenue growth {rev_g:.1f}% < min {min_rev_g}%"
 

@@ -13,6 +13,12 @@ Schedule: 30 2 3 * *
 """
 
 import yfinance as yf
+
+# Sent with every API POST; uploads are rejected when the server has
+# UPLOAD_TOKEN set and this env var is missing or wrong.
+import os as _os_tok
+_UPLOAD_AUTH = {"X-Upload-Token": _os_tok.environ["UPLOAD_TOKEN"]} if _os_tok.getenv("UPLOAD_TOKEN") else {}
+
 import pandas as pd
 import numpy as np
 import json
@@ -41,6 +47,7 @@ warnings.filterwarnings("ignore")
 def _load_prev_institutional(output_dir="./outputs"):
     import glob, os
     patterns = [
+        os.path.join(os.getenv("DATA_DIR", "."), "us_portfolio_*.json"),
         os.path.join(output_dir, "us_portfolio_*.json"),
         "/data/us_portfolio_*.json",
     ]
@@ -165,7 +172,9 @@ def fetch_stock_data(ticker, bucket_key=""):
         info = stock.info
         if not info or info.get("regularMarketPrice") is None:
             return None
-        hist = stock.history(period="6mo")
+        # 1y history: gives a true 6-month momentum window plus a 200-DMA
+        # for the downtrend gate (6mo data could not support either).
+        hist = stock.history(period="1y")
         if hist.empty or len(hist) < 20:
             return None
 
@@ -200,15 +209,29 @@ def fetch_stock_data(ticker, bucket_key=""):
 
         p1m = hist["Close"].iloc[-22] if len(hist)>=22 else hist["Close"].iloc[0]
         p3m = hist["Close"].iloc[-66] if len(hist)>=66 else hist["Close"].iloc[0]
-        p6m = hist["Close"].iloc[0]
+        p6m = hist["Close"].iloc[-126] if len(hist)>=126 else hist["Close"].iloc[0]
         mom_1m = (current_price/p1m - 1)*100
         mom_3m = (current_price/p3m - 1)*100
         mom_6m = (current_price/p6m - 1)*100
+
+        # ── Downtrend hard gates (mirror of swing scanner fix) ──
+        # A monthly pick held 30+ days must not be a falling knife: deep
+        # 6-month declines and entries below a falling long-term average
+        # were the main source of instant stop-loss hits.
+        closes = hist["Close"].dropna()
+        dma200 = float(closes.rolling(200).mean().iloc[-1]) if len(closes) >= 200 else None
+        if mom_6m < -25:
+            print(f"    ⛔ {ticker} excluded — 6M momentum {mom_6m:.0f}% (falling knife)")
+            return None
+        if dma200 and current_price < dma200 and mom_3m < 0:
+            print(f"    ⛔ {ticker} excluded — below 200-DMA with negative 3M momentum (downtrend)")
+            return None
         vol_10d = hist["Volume"].iloc[-10:].mean()
         vol_30d_v = hist["Volume"].iloc[-30:].mean()
         volume_ratio = vol_10d/vol_30d_v if vol_30d_v > 0 else 1.0
-        h52 = info.get("fiftyTwoWeekHigh", current_price)
-        l52 = info.get("fiftyTwoWeekLow",  current_price)
+        # `or` not `.get(default)`: yfinance returns these keys with None
+        h52 = info.get("fiftyTwoWeekHigh") or (float(closes.max()) if len(closes) else current_price)
+        l52 = info.get("fiftyTwoWeekLow")  or (float(closes.min()) if len(closes) else current_price)
         price_pos = (current_price-l52)/(h52-l52) if h52!=l52 else 0.5
 
         pe = info.get("trailingPE")
@@ -222,7 +245,7 @@ def fetch_stock_data(ticker, bucket_key=""):
             peg = min(round(pe/earn_g_pct,2), 10.0)
         else:
             peg = None
-        mktcap_m = round(info.get("marketCap",0)/1_000_000, 0)
+        mktcap_m = round((info.get("marketCap") or 0)/1_000_000, 0)
 
         return {
             "ticker": ticker,
@@ -262,7 +285,7 @@ def score_stock(row, weights):
     if peg and peg>0: scores["peg_raw"]=peg; scores["pe_raw"]=pe
     elif pe and pe>0: scores["peg_raw"]=round(pe/10,2); scores["pe_raw"]=pe
     else: scores["peg_raw"]=None; scores["pe_raw"]=None
-    roe = row.get("roe"); scores["roe_raw"]=(roe*100) if roe else None
+    roe = row.get("roe"); scores["roe_raw"]=(roe*100) if roe is not None else None
     rg = row.get("revenue_growth"); scores["revenue_growth_raw"]=(rg*100) if rg is not None else None
     de = row.get("debt_to_equity"); scores["debt_raw"]=de if de is not None else None
     m1=row.get("momentum_1m",0) or 0; m3=row.get("momentum_3m",0) or 0; vr=row.get("volume_ratio",1.0) or 1.0
@@ -354,19 +377,26 @@ def check_earnings_freshness(ticker):
         for label in ("Net Income","Net Income Common Stockholders"):
             if label in q.index: ni=q.loc[label].dropna(); break
         if ni is not None and len(ni)>=2:
-            latest=float(ni.iloc[0]); prior=float(ni.iloc[1])
-            qoq=(latest-prior)/abs(prior)*100 if prior!=0 else 0
-            if qoq<-DETERIORATION_PCT:
-                result["notes"]+=f"Net income down {abs(qoq):.1f}% QoQ. "
-                if len(ni)>=3:
-                    prior2=float(ni.iloc[2])
-                    prev_chg=(prior-prior2)/abs(prior2)*100 if prior2!=0 else 0
+            latest=float(ni.iloc[0])
+            # Same-quarter YoY when 5 quarters exist — sequential QoQ flags
+            # every seasonal business as "deteriorating" each soft quarter.
+            if len(ni)>=5:
+                base=float(ni.iloc[4]); lbl="YoY"
+                prior_latest=float(ni.iloc[1]); prior_base=float(ni.iloc[5]) if len(ni)>=6 else None
+            else:
+                base=float(ni.iloc[1]); lbl="QoQ"
+                prior_latest=float(ni.iloc[1]); prior_base=float(ni.iloc[2]) if len(ni)>=3 else None
+            chg=(latest-base)/abs(base)*100 if base!=0 else 0
+            if chg<-DETERIORATION_PCT:
+                result["notes"]+=f"Net income down {abs(chg):.1f}% {lbl}. "
+                if prior_base is not None:
+                    prev_chg=(prior_latest-prior_base)/abs(prior_base)*100 if prior_base!=0 else 0
                     if prev_chg<-DETERIORATION_PCT:
                         result["earnings_trend"]="double_deterioration"; result["exclude"]=True
                         result["freshness_penalty"]+=15; result["notes"]+="⛔ Double deterioration."; return result
                 result["earnings_trend"]="deteriorating"; result["freshness_penalty"]+=10
-            elif qoq>5: result["earnings_trend"]="improving"; result["notes"]+=f"Net income up {qoq:.1f}% ✅. "
-            else: result["earnings_trend"]="stable"; result["notes"]+=f"Net income stable ({qoq:+.1f}%). "
+            elif chg>5: result["earnings_trend"]="improving"; result["notes"]+=f"Net income up {chg:.1f}% {lbl} ✅. "
+            else: result["earnings_trend"]="stable"; result["notes"]+=f"Net income stable ({chg:+.1f}% {lbl}). "
             if latest<0: result["freshness_penalty"]+=5; result["notes"]+="⚠️ Latest quarter loss-making. "
         result["freshness_penalty"]=min(result["freshness_penalty"],20)
         if not result["notes"]: result["notes"]="Earnings data healthy ✅"
@@ -708,14 +738,23 @@ def build_portfolio(budget=BUDGET):
             else:
                 print(f"  ⚠️  Skipping {row['ticker']} (${p:,.0f} > ${per:.0f} per-stock budget)")
 
-        # Fallback: find next affordable stock from full ranked list
-        if not affordable_rows and not df.empty:
+        # Backfill every dropped slot from the full ranked list — previously a
+        # single unaffordable pick simply shrank the bucket and left budget idle.
+        if len(affordable_rows)<n:
+            picked={r["ticker"] for r in affordable_rows} | set(top["ticker"])
             for _,row in df.iterrows():
-                p=row.get("current_price",0)
-                if p>0 and int(per//p)>=1:
-                    affordable_rows.append(row)
-                    print(f"  ✅ Fallback affordable pick: {row['ticker']} (${p:.0f})")
-                    break
+                if len(affordable_rows)>=n: break
+                t=row["ticker"]; p=row.get("current_price",0)
+                if t in picked or p<=0 or int(per//p)<1: continue
+                too_corr=False
+                if not corr.empty:
+                    for r2 in affordable_rows:
+                        s=r2["ticker"]
+                        if t in corr.index and s in corr.index and abs(corr.loc[t,s])>0.85:
+                            too_corr=True; break
+                if too_corr: continue
+                affordable_rows.append(row); picked.add(t)
+                print(f"  ✅ Backfilled slot with {t} (${p:.0f}, score {row['final_score']:.1f})")
 
         portfolio[bk]={"label":cfg["label"],"allocation_pct":round(cfg["allocation_pct"]*100,1),"total_allocation":alloc,"per_stock_allocation":per,"stocks":[]}
 
@@ -779,7 +818,7 @@ def save_results(portfolio, all_results):
     print(f"  ✅ Full rankings saved as CSV")
     api=_os.getenv("API_URL","https://web-production-2d832.up.railway.app")
     def _post(url,data):
-        req=_ur.Request(url,data=data,headers={"Content-Type":"application/json"},method="POST")
+        req=_ur.Request(url,data=data,headers={"Content-Type": "application/json", **_UPLOAD_AUTH},method="POST")
         with _ur.urlopen(req,timeout=15) as r: return r.read().decode()
     payload=json.dumps(portfolio,default=str).encode()
     try: body=_post(f"{api}/us/portfolio/picks/upload",payload); print(f"  ✅ US picks POSTed: {body}")

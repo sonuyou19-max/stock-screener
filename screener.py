@@ -20,6 +20,12 @@ Railway Cron setup (dashboard → New Service → Cron):
 """
 
 import os
+
+# Sent with every API POST; uploads are rejected when the server has
+# UPLOAD_TOKEN set and this env var is missing or wrong.
+import os as _os_tok
+_UPLOAD_AUTH = {"X-Upload-Token": _os_tok.environ["UPLOAD_TOKEN"]} if _os_tok.getenv("UPLOAD_TOKEN") else {}
+
 import json
 import time
 import warnings
@@ -2006,7 +2012,7 @@ def _post_to_api(path: str, payload: dict):
         body = json.dumps(payload).encode("utf-8")
         req = _urllib.Request(
             f"{API_URL}{path}", data=body,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **_UPLOAD_AUTH},
             method="POST",
         )
         with _urllib.urlopen(req, timeout=10) as resp:
@@ -2479,7 +2485,7 @@ def save_results(portfolio: dict, all_df: pd.DataFrame):
     def _post(url, payload_bytes):
         req = _urllib.Request(
             url, data=payload_bytes,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **_UPLOAD_AUTH},
             method="POST",
         )
         with _urllib.urlopen(req, timeout=15) as resp:

@@ -16,6 +16,36 @@ import os
 
 app = Flask(__name__)
 
+# ── Write protection ─────────────────────────────────────────────
+# Every /upload endpoint is reachable from the public internet and the
+# API URL ships inside the public dashboard HTML. When UPLOAD_TOKEN is
+# set (Railway env var), all POST */upload* requests must carry a
+# matching X-Upload-Token header. Unset = open (backwards compatible).
+UPLOAD_TOKEN = os.getenv("UPLOAD_TOKEN", "")
+
+@app.before_request
+def _enforce_upload_token():
+    if request.method != "POST" or "/upload" not in request.path:
+        return None
+    if not UPLOAD_TOKEN:
+        return None
+    if request.headers.get("X-Upload-Token", "") != UPLOAD_TOKEN:
+        return jsonify({"error": "unauthorized — missing or bad X-Upload-Token"}), 401
+    return None
+
+
+@app.route("/auth/verify", methods=["POST", "OPTIONS"])
+def auth_verify():
+    """Dashboard PIN check. With UPLOAD_TOKEN set the PIN lives only in
+    the server env; the public HTML no longer needs a hardcoded PIN."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    if not UPLOAD_TOKEN:
+        return jsonify({"ok": True, "enforced": False})
+    pin = (request.get_json(silent=True) or {}).get("pin", "")
+    return jsonify({"ok": pin == UPLOAD_TOKEN, "enforced": True})
+
+
 DATA_DIR = os.getenv("DATA_DIR", "/data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
@@ -106,7 +136,7 @@ def _find_latest_portfolio():
 @app.after_request
 def add_cors(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Upload-Token"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
     return response
 

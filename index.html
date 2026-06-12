@@ -388,12 +388,21 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
   </div>
 </div>
 <script>
-const CORRECT_PIN='2608',SK='ea_v3';let pe='';
+const CORRECT_PIN='2608',SK='ea_v3',TK='ea_tok';let pe='';
 (()=>{if(sessionStorage.getItem(SK)==='ok'){document.getElementById('pinGate').classList.add('hidden');}})();
+function _postHeaders(){const h={'Content-Type':'application/json'};const t=sessionStorage.getItem(TK);if(t)h['X-Upload-Token']=t;return h;}
 function pinPress(d){if(pe.length>=4)return;pe+=d;ud();if(pe.length===4)setTimeout(cp,120);}
 function pinDel(){if(!pe.length)return;pe=pe.slice(0,-1);ud();document.getElementById('pinError').textContent='';}
 function ud(st){for(let i=0;i<4;i++){const el=document.getElementById('d'+i);el.className='pin-dot';if(st==='err')el.classList.add('error');else if(i<pe.length)el.classList.add('filled');}}
-function cp(){if(pe===CORRECT_PIN){sessionStorage.setItem(SK,'ok');document.getElementById('pinGate').classList.add('hidden');if(typeof initApp==='function')initApp();}else{ud('err');document.getElementById('pinBox').classList.add('shake');document.getElementById('pinError').textContent='Incorrect PIN';setTimeout(()=>{document.getElementById('pinBox').classList.remove('shake');pe='';ud();document.getElementById('pinError').textContent='';},650);}}
+async function cp(){
+  let ok=null;
+  try{
+    const r=await fetch('https://web-production-2d832.up.railway.app/auth/verify',{method:'POST',headers:_postHeaders(),body:JSON.stringify({pin:pe})});
+    const j=await r.json();
+    if(j.enforced)ok=!!j.ok; // server is the authority when UPLOAD_TOKEN is set
+  }catch(e){/* offline / server down — fall back to local check */}
+  if(ok===null)ok=(pe===CORRECT_PIN);
+  if(ok){sessionStorage.setItem(SK,'ok');sessionStorage.setItem(TK,pe);document.getElementById('pinGate').classList.add('hidden');if(typeof initApp==='function')initApp();}else{ud('err');document.getElementById('pinBox').classList.add('shake');document.getElementById('pinError').textContent='Incorrect PIN';setTimeout(()=>{document.getElementById('pinBox').classList.remove('shake');pe='';ud();document.getElementById('pinError').textContent='';},650);}}
 document.addEventListener('keydown',e=>{if(document.getElementById('pinGate').classList.contains('hidden'))return;if(e.key>='0'&&e.key<='9')pinPress(e.key);else if(e.key==='Backspace')pinDel();});
 </script>
 
@@ -1256,7 +1265,7 @@ async function addToPickedPortfolio(ticker){
        price:buyPrice, buy_price:buyPrice, buy_date:new Date().toISOString().split('T')[0],
        allocation_inr:0, approx_shares:0};
   live.top_picks.stocks.push(entry);
-  await fetch(`${API}/portfolio/live/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(live)});
+  await fetch(`${API}/portfolio/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
   alert(`✅ ${ticker.replace('.NS','')} added at ₹${buyPrice.toLocaleString('en-IN')}`);
   _iL=false;loadIndia();
 }
@@ -1294,7 +1303,7 @@ async function exitIndiaStock(ticker){
     `P&L: ${pnl_pct>=0?'+':''}${pnl_pct.toFixed(1)}% (${pnl_inr>=0?'+':''}₹${Math.abs(pnl_inr).toLocaleString('en-IN',{maximumFractionDigits:0})})`
   ))return;
   // Save to trade history (keeps PnL in memory)
-  await fetch(`${API}/portfolio/history/upload`,{method:'POST',headers:{'Content-Type':'application/json'},
+  await fetch(`${API}/portfolio/history/upload`,{method:'POST',headers:_postHeaders(),
     body:JSON.stringify({
       ticker,name:stockData.name||ticker.replace('.NS',''),
       buy_price:bp,sell_price:sellPrice,
@@ -1307,7 +1316,7 @@ async function exitIndiaStock(ticker){
   // Remove from live portfolio
   const live=await fd('/portfolio/live')||{};
   for(const bk of Object.keys(live))live[bk].stocks=(live[bk].stocks||[]).filter(s=>s.ticker!==ticker);
-  await fetch(`${API}/portfolio/live/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(live)});
+  await fetch(`${API}/portfolio/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
   alert(`✅ ${ticker.replace('.NS','')} exited.\nP&L: ${pnl_pct>=0?'+':''}${pnl_pct.toFixed(1)}%\nSaved to trade history.`);
   _iL=false;loadIndia();
 }
@@ -1342,7 +1351,7 @@ async function execAdvisory(buyTicker,sellTicker){
   if(!(live[targetBucket].stocks||[]).find(s=>s.ticker===buyTicker)){
     live[targetBucket].stocks.push({...newStock,buy_date:new Date().toISOString().split('T')[0]});
   }
-  await fetch('/portfolio/live/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(live)});
+  await fetch('/portfolio/live/upload',{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
   alert('Executed! Portfolio updated.');
   loadIndia();
 }
@@ -1505,7 +1514,7 @@ async function execTrade(buy,sell,bp,sp,ss){
       const sh=ss.approx_shares||0,ba=ss.price||0,pnl=(sp-ba)*sh,pct=ba?((sp-ba)/ba*100):0;
       let bl='';
       for(const[bk,b]of Object.entries(live||{})){if((b.stocks||[]).find(s=>s.ticker===sell)){bl=b.label||bk;break;}}
-      await fetch(`${API}/portfolio/history/upload`,{method:'POST',headers:{'Content-Type':'application/json'},
+      await fetch(`${API}/portfolio/history/upload`,{method:'POST',headers:_postHeaders(),
         body:JSON.stringify({ticker:sell,name:ss.name||sell.replace('.NS',''),bucket:bl,buy_price:ba,sell_price:sp,shares:sh,
           buy_date:ss.buy_date||'',sell_date:new Date().toISOString().split('T')[0],
           realised_pnl_inr:parseFloat(pnl.toFixed(2)),realised_pnl_pct:parseFloat(pct.toFixed(2)),
@@ -1547,7 +1556,7 @@ async function execTrade(buy,sell,bp,sp,ss){
       alert(`⚠️ Could not find ${buy} in screener picks.`);return;
     }
 
-    const r=await fetch(`${API}/portfolio/live/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(live)});
+    const r=await fetch(`${API}/portfolio/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
     const res=await r.json();
     if(res.status==='ok'){alert(`✅ Updated! Alerter now tracks ${buy.replace('.NS','')}.`);loadIndia();}
     else alert('Error: '+JSON.stringify(res));
@@ -1564,7 +1573,7 @@ async function execUsTrade(buy,sell,bp,sp,ss){
       const sh=ss.approx_shares||0,ba=ss.price||0,pnl=(sp-ba)*sh,pct=ba?((sp-ba)/ba*100):0;
       let bl='';
       for(const[bk,b]of Object.entries(live||{})){if((b.stocks||[]).find(s=>s.ticker===sell)){bl=b.label||bk;break;}}
-      await fetch(`${API}/us/portfolio/history/upload`,{method:'POST',headers:{'Content-Type':'application/json'},
+      await fetch(`${API}/us/portfolio/history/upload`,{method:'POST',headers:_postHeaders(),
         body:JSON.stringify({ticker:sell,name:ss.name||sell,bucket:bl,buy_price:ba,sell_price:sp,shares:sh,
           buy_date:ss.buy_date||'',sell_date:new Date().toISOString().split('T')[0],
           realised_pnl_inr:parseFloat(pnl.toFixed(2)),realised_pnl_pct:parseFloat(pct.toFixed(2)),
@@ -1611,7 +1620,7 @@ async function execUsTrade(buy,sell,bp,sp,ss){
       alert(`⚠️ Could not find ${buy} in screener picks. Run the US screener first.`);return;
     }
 
-    const r=await fetch(`${API}/us/portfolio/live/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(live)});
+    const r=await fetch(`${API}/us/portfolio/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
     const res=await r.json();
     if(res.status==='ok'){
       const addedMsg=buyBucket&&picks[buyBucket]?.stocks?.length>1?' All bucket picks added.':'';
@@ -1668,7 +1677,7 @@ async function editBuyPrice(ticker, prefix, bucket, currentBp){
   if(!found){alert(`${ticker.replace('.NS','')} not found in live portfolio`);return;}
 
   const uploadEp=prefix==='ind'?'/portfolio/live/upload':'/us/portfolio/live/upload';
-  const r=await fetch(`${API}${uploadEp}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(live)});
+  const r=await fetch(`${API}${uploadEp}`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
   const res=await r.json();
   if(res.status==='ok'||res.buckets>=0){
     alert(`✅ Buy price updated!\n${ticker.replace('.NS','')} → ${cur}${parsed.toFixed(2)}`);
@@ -2039,7 +2048,7 @@ async function enterSwingTrade(candidate){
     shares:      1,
     signals:     candidate.signals,
   };
-  const r=await fetch(`${API}/swing/live/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(position)});
+  const r=await fetch(`${API}/swing/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(position)});
   const res=await r.json();
   if(res.status==='ok'||res.positions>=0){
     alert(`✅ ${ticker.replace('.NS','')} added to swing positions!\nSet GTT stop at ₹${candidate.stop_loss} on Kite.`);
@@ -2079,7 +2088,7 @@ async function exitSwingTrade(ticker,buyPrice){
   const pnl=(sellPrice-bp)*sh;
   const pct=bp?((sellPrice-bp)/bp*100):0;
   // Record to history
-  await fetch(`${API}/swing/history/upload`,{method:'POST',headers:{'Content-Type':'application/json'},
+  await fetch(`${API}/swing/history/upload`,{method:'POST',headers:_postHeaders(),
     body:JSON.stringify({ticker,name:pos.name||ticker.replace('.NS',''),
       buy_price:bp,sell_price:sellPrice,shares:sh,
       entry_date:pos.entry_date||pos.buy_date||'',
@@ -2090,7 +2099,7 @@ async function exitSwingTrade(ticker,buyPrice){
     })});
   // Remove from live
   const newLive=_swLive.filter(p=>p.ticker!==ticker);
-  await fetch(`${API}/swing/live/upload`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(newLive)});
+  await fetch(`${API}/swing/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(newLive)});
   alert(`✅ ${ticker.replace('.NS','')} closed.\nP&L: ${pnl>=0?'+':''}₹${Math.abs(pnl).toFixed(0)} (${pct>=0?'+':''}${pct.toFixed(2)}%)`);
   _swL=false;loadSwing();
 }
