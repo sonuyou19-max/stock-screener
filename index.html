@@ -385,14 +385,52 @@ header{
 
 /* Stock cards */
 .stock-list{display:flex;flex-direction:column;gap:10px;}
+.stock-carousel{
+  display:flex;flex-direction:row;gap:14px;
+  overflow-x:auto;padding:0 20px 16px;
+  scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;
+}
+.stock-carousel::-webkit-scrollbar{display:none;}
 .stock-card{
   background:rgba(255,255,255,0.55);
   backdrop-filter:blur(12px);
   border:1px solid rgba(255,255,255,0.09);
-  border-radius:18px;padding:18px 16px;
+  border-radius:18px;padding:16px;
   box-shadow:0 8px 32px rgba(0,0,0,.35);
   transition:border-color .2s;
+  flex:0 0 290px;scroll-snap-align:start;
 }
+.sc-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:4px;}
+.sc-rb-badge{font-size:8px;font-weight:800;text-transform:uppercase;letter-spacing:.08em;padding:2px 7px;border-radius:20px;margin-top:4px;display:inline-block;}
+.sc-rb-badge.HOLD{background:rgba(34,197,94,.15);color:#2d8a6a;border:1px solid rgba(34,197,94,.35);}
+.sc-rb-badge.WATCH{background:rgba(251,191,36,.15);color:#92700a;border:1px solid rgba(251,191,36,.35);}
+.sc-rb-badge.TRIM{background:rgba(251,146,60,.15);color:#9a4a08;border:1px solid rgba(251,146,60,.35);}
+.sc-rb-badge.EXIT{background:rgba(239,68,68,.15);color:#b82020;border:1px solid rgba(239,68,68,.35);}
+.sc-levels-block{margin-bottom:10px;}
+.sc-level-row{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:8px;margin-bottom:4px;font-size:11px;}
+.sc-level-row.stop-row{background:rgba(224,112,112,0.10);border:1px solid rgba(224,112,112,0.18);}
+.sc-level-row.t1-row,.sc-level-row.t2-row,.sc-level-row.t3-row{background:rgba(76,175,138,0.08);border:1px solid rgba(76,175,138,0.18);}
+.sc-level-icon{font-size:12px;flex-shrink:0;}
+.sc-level-lbl{font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:.06em;}
+.sc-level-val{font-family:var(--mono);font-size:11px;font-weight:700;}
+.sc-level-val.stop-val{color:var(--red);}
+.sc-level-val.t-val{color:var(--green);}
+.sc-level-pct{font-size:9px;color:var(--text3);font-weight:400;margin-left:4px;}
+.sc-why-block{border-top:1px solid rgba(255,255,255,0.12);padding-top:8px;margin-bottom:8px;}
+.sc-why-title{font-size:8px;color:var(--text3);text-transform:uppercase;letter-spacing:.1em;margin-bottom:5px;font-weight:700;}
+.sc-fund-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:4px;margin-bottom:10px;}
+.sc-fund-cell{background:rgba(255,255,255,0.35);border-radius:6px;padding:5px 4px;text-align:center;}
+.sc-f-lbl{font-size:8px;color:var(--text3);text-transform:uppercase;}
+.sc-f-val{font-family:var(--mono);font-size:10px;color:var(--text);font-weight:600;margin-top:2px;}
+.sc-actions{display:flex;gap:8px;margin-top:10px;}
+.sc-act-btn{flex:1;padding:7px 0;border-radius:10px;border:none;font-size:11px;font-weight:700;cursor:pointer;font-family:var(--sans);}
+.sc-act-edit{background:rgba(91,141,238,0.12);color:var(--blue2);border:1px solid rgba(91,141,238,0.3);}
+.sc-act-exit{background:rgba(224,112,112,0.12);color:#c04040;border:1px solid rgba(224,112,112,0.3);}
+.sc-act-enter{background:rgba(34,197,94,0.12);color:#2d8a6a;border:1px solid rgba(34,197,94,0.3);}
+/* Swing cards horizontal */
+.swing-carousel{display:flex;flex-direction:row;gap:14px;overflow-x:auto;padding:0 20px 14px;scroll-snap-type:x mandatory;-webkit-overflow-scrolling:touch;}
+.swing-carousel::-webkit-scrollbar{display:none;}
+.sw-pos-card,.sw-cand-card{flex:0 0 290px;scroll-snap-align:start;}
 .sc-top{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px;}
 .sc-tkr{font-family:var(--display);font-size:17px;font-weight:900;color:var(--text);letter-spacing:-.01em;}
 .sc-name{font-size:10px;color:var(--text3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:170px;}
@@ -1048,35 +1086,41 @@ async function fetchMarket(){
 
 /* ═══ SNAPSHOTS ═══ */
 async function fetchIndSnap(){
-  const[port,prices]=await Promise.all([fd('/portfolio/live'),fd('/prices')]);
+  const[port,prices,hist]=await Promise.all([fd('/portfolio/live'),fd('/prices'),fd('/portfolio/history')]);
   if(!port||!prices)return;
   let inv=0,cur=0,day=0,cnt=0;
   for(const b of Object.values(port)){for(const s of(b.stocks||[])){const i=prices.prices?.[s.ticker];if(!i)continue;const sh=s.approx_shares||0,bp=s.price||s.buy_price||0,cp=i.price,pv=cp/(1+(i.change_pct||0)/100);inv+=bp*sh;cur+=cp*sh;day+=(cp-pv)*sh;cnt++;}}
-  if(!cnt)return;
-  const pnl=cur-inv,pct=inv?(pnl/inv*100):0,sign=pnl>=0?'+':'',cls=pnl>0?'up':pnl<0?'down':'neu';
+  // Add realised PnL from closed trades
+  const closedPnl=(hist?.trades||[]).reduce((sum,t)=>sum+(t.realised_pnl_inr||0),0);
+  const totalPnl=(cur-inv)+closedPnl;
+  const totalPct=inv+Math.abs(closedPnl)>0?((cur-inv)/Math.max(inv,1)*100):0;
+  const sign=totalPnl>=0?'+':'',cls=totalPnl>0?'up':totalPnl<0?'down':'neu';
   const dc=day>0?'up':day<0?'down':'';
-  document.getElementById('snapIndPnl').textContent=`${sign}₹${Math.abs(pnl).toLocaleString('en-IN',{maximumFractionDigits:0})}`;
+  document.getElementById('snapIndPnl').textContent=`${sign}₹${Math.abs(totalPnl).toLocaleString('en-IN',{maximumFractionDigits:0})}`;
   document.getElementById('snapIndPnl').className=`snap-pnl ${cls}`;
-  document.getElementById('snapIndPct').textContent=`${sign}${pct.toFixed(2)}% all-time`;
+  const openLbl=cnt>0?`Open: ${(cur-inv)>=0?'+':''}₹${Math.abs(cur-inv).toLocaleString('en-IN',{maximumFractionDigits:0})}`:closedPnl!==0?`Closed: ${closedPnl>=0?'+':''}₹${Math.abs(closedPnl).toLocaleString('en-IN',{maximumFractionDigits:0})}`:`${sign}${(cnt?totalPct:0).toFixed(2)}% all-time`;
+  document.getElementById('snapIndPct').textContent=openLbl;
   document.getElementById('snapIndPct').className=`snap-pct ${cls}`;
   document.getElementById('snapIndDay').innerHTML=`Today: <span class="${dc}">${day>=0?'+':''}₹${Math.abs(day).toLocaleString('en-IN',{maximumFractionDigits:0})}</span>`;
-  _iP=prices.prices||{};indPortfolio=port;updateIndPnl(pnl,pct,day,cur,cnt);
+  _iP=prices.prices||{};indPortfolio=port;updateIndPnl(cur-inv,totalPct,day,cur,cnt);
 }
 
 async function fetchUsSnap(){
-  const[port,prices]=await Promise.all([fd('/us/portfolio/live'),fd('/us/prices')]);
+  const[port,prices,hist]=await Promise.all([fd('/us/portfolio/live'),fd('/us/prices'),fd('/us/portfolio/history')]);
   if(!port||!prices)return;
   let inv=0,cur=0,day=0,cnt=0;
   for(const b of Object.values(port)){for(const s of(b.stocks||[])){const i=prices.prices?.[s.ticker];if(!i)continue;const sh=s.approx_shares||0,bp=s.price||s.buy_price||0,cp=i.price,pv=cp/(1+(i.change_pct||0)/100);inv+=bp*sh;cur+=cp*sh;day+=(cp-pv)*sh;cnt++;}}
-  if(!cnt)return;
-  const pnl=cur-inv,pct=inv?(pnl/inv*100):0,sign=pnl>=0?'+':'',cls=pnl>0?'up':pnl<0?'down':'neu';
+  const closedPnl=(hist?.trades||[]).reduce((sum,t)=>sum+(t.realised_pnl_inr||0),0);
+  const totalPnl=(cur-inv)+closedPnl;
+  const sign=totalPnl>=0?'+':'',cls=totalPnl>0?'up':totalPnl<0?'down':'neu';
   const dc=day>0?'up':day<0?'down':'';
-  document.getElementById('snapUsPnl').textContent=`${sign}$${Math.abs(pnl).toFixed(0)}`;
+  document.getElementById('snapUsPnl').textContent=`${sign}$${Math.abs(totalPnl).toFixed(0)}`;
   document.getElementById('snapUsPnl').className=`snap-pnl ${cls}`;
-  document.getElementById('snapUsPct').textContent=`${sign}${pct.toFixed(2)}% all-time`;
+  const openLbl=cnt>0?`Open: ${(cur-inv)>=0?'+':''}$${Math.abs(cur-inv).toFixed(0)}`:closedPnl!==0?`Closed: ${closedPnl>=0?'+':''}$${Math.abs(closedPnl).toFixed(0)}`:`All-time P&L`;
+  document.getElementById('snapUsPct').textContent=openLbl;
   document.getElementById('snapUsPct').className=`snap-pct ${cls}`;
   document.getElementById('snapUsDay').innerHTML=`Today: <span class="${dc}">${day>=0?'+':''}$${Math.abs(day).toFixed(0)}</span>`;
-  _uP=prices.prices||{};usPortfolio=port;updateUsPnl(pnl,pct,day,cur,cnt);
+  _uP=prices.prices||{};usPortfolio=port;updateUsPnl(cur-inv,inv?(cur-inv)/inv*100:0,day,cur,cnt);
 }
 
 /* ═══ INDIA DETAIL ═══ */
@@ -1244,77 +1288,134 @@ function buildCard(s,i,bk,prefix,cur){
   const thr=(prefix==='ind'?IT:UT)[bk]||{};
   const sc=s.final_score>=70?'high':s.final_score>=50?'mid':'low';
   const at=s.audit_trail||{};
-  const reasons=(at.why_picked||[]).slice(0,3).map(r=>`<div class="a-reason">${r}</div>`).join('');
-  const risks=(at.risks||[]).filter(r=>!r.includes('No significant')).slice(0,2).map(r=>`<div class="a-risk">${r}</div>`).join('');
-  const tkr=s.ticker.replace('.NS','');
+  const reasons=(at.why_picked||[]).slice(0,4);
+  const risks=(at.risks||[]).filter(r=>!r.includes('No significant')).slice(0,3);
+  const tkr=s.ticker.replace('.NS','').replace('.O','');
   const key=s.ticker.replace('.','_').replace('-','_');
   const lpId=prefix==='ind'?`lp-${key}`:`us-lp-${key}`;
   const lcId=prefix==='ind'?`lc-${key}`:`us-lc-${key}`;
   const llId=prefix==='ind'?`ll-${key}`:`us-ll-${key}`;
   const bp=s.price||s.buy_price||0,alloc=prefix==='ind'?(s.allocation_inr||0):(s.allocation_usd||0);
-  const bpS=prefix==='ind'?'₹'+bp.toLocaleString('en-IN',{minimumFractionDigits:2}):'$'+bp.toFixed(2);
-  const allocS=prefix==='ind'?'₹'+alloc.toLocaleString('en-IN'):'$'+alloc.toFixed(0);
-  const slS=prefix==='ind'?'₹'+(s.stop_loss_price||0).toLocaleString('en-IN',{minimumFractionDigits:2}):'$'+(s.stop_loss_price||0).toFixed(2);
-  const trS=prefix==='ind'?'₹'+(s.trailing_stop_dist||0).toFixed(0):'$'+(s.trailing_stop_dist||0).toFixed(2);
-  const t1=(bp*1.2).toFixed(prefix==='us'?2:0),t2=(bp*1.35).toFixed(prefix==='us'?2:0),t3=(bp*1.5).toFixed(prefix==='us'?2:0);
-  const cid=`${prefix}-${bk}-${i}`;
-  const m1=s.momentum_1m,m3=s.momentum_3m;
+  const bpFmt=prefix==='ind'?'₹'+bp.toLocaleString('en-IN',{minimumFractionDigits:2}):'$'+bp.toFixed(2);
+  const allocFmt=prefix==='ind'?'₹'+alloc.toLocaleString('en-IN'):'$'+alloc.toFixed(0);
+  const sl=s.stop_loss_price||0;
+  const slPct=s.stop_loss_pct||0;
+  const slFmt=prefix==='ind'?'₹'+sl.toLocaleString('en-IN',{minimumFractionDigits:2}):'$'+sl.toFixed(2);
+  // Targets: use stored if available, else +20/+35/+50
+  const t1v=s.target1_price||(bp*1.2);
+  const t2v=s.target2_price||(bp*1.35);
+  const t3v=s.target3_price||(bp*1.5);
+  const t1Fmt=prefix==='ind'?'₹'+Math.round(t1v).toLocaleString('en-IN'):'$'+t1v.toFixed(2);
+  const t2Fmt=prefix==='ind'?'₹'+Math.round(t2v).toLocaleString('en-IN'):'$'+t2v.toFixed(2);
+  const t3Fmt=prefix==='ind'?'₹'+Math.round(t3v).toLocaleString('en-IN'):'$'+t3v.toFixed(2);
+  const t1pct=bp>0?((t1v/bp-1)*100).toFixed(0):0;
+  const t2pct=bp>0?((t2v/bp-1)*100).toFixed(0):0;
+  const t3pct=bp>0?((t3v/bp-1)*100).toFixed(0):0;
   const yfUrl=`https://finance.yahoo.com/quote/${s.ticker}`;
-  const mt=`
-    <div class="m-title">Fundamentals vs Filter Criteria</div>
-    <table class="m-table"><thead><tr><th>Metric</th><th>Stock</th><th>Min/Max</th><th>✓</th></tr></thead><tbody>
-    ${mr('Revenue Growth',s.rev_growth_pct,v=>v.toFixed(1)+'%',thr.min_rev,r=>'≥'+r+'%','above')}
-    ${mr('PE Ratio',s.pe_ratio,v=>v.toFixed(1)+'x',thr.max_pe,r=>'≤'+r+'x','below')}
-    ${mr('PB Ratio',s.pb_ratio,v=>v.toFixed(1)+'x',thr.max_pb,r=>'≤'+r+'x','below')}
-    ${thr.min_roe?mr('ROE',s.roe_pct,v=>v.toFixed(1)+'%',thr.min_roe,r=>'≥'+r+'%','above'):''}
-    ${mr('D/E',s.debt_equity,v=>v.toFixed(2),thr.max_de,r=>'≤'+r,'below')}
-    ${thr.max_peg?mr('PEG',s.peg_ratio,v=>v.toFixed(2),thr.max_peg,r=>'≤'+r,'below'):''}
-    ${mr('Mom 1M',s.momentum_1m,v=>(v>=0?'+':'')+v.toFixed(1)+'%',0,()=>'>0%','above')}
-    ${mr('Mom 3M',s.momentum_3m,v=>(v>=0?'+':'')+v.toFixed(1)+'%',0,()=>'>0%','above')}
-    </tbody></table>`;
+  const m1=s.momentum_1m,m3=s.momentum_3m;
+  // Rebalancer verdict from advisory data (no extra fetch)
+  const rbRow=(_advData?.holdings_health||[]).find(h=>h.ticker===s.ticker);
+  const verdict=rbRow?.rebalancer_verdict||null;
+  const rbBadge=verdict?`<span class="sc-rb-badge ${verdict}">${verdict}</span>`:'';
+  const rbReason=rbRow?.rebalancer_reason?`<div style="font-size:9px;color:var(--text3);margin-top:2px;line-height:1.4">${(rbRow.rebalancer_reason||'').slice(0,60)}</div>`:'';
+  // Fundamentals mini grid
+  const fundItems=[
+    {l:'PE', v:s.pe_ratio!=null?s.pe_ratio.toFixed(1)+'x':null},
+    {l:'ROE', v:s.roe_pct!=null?s.roe_pct.toFixed(0)+'%':null},
+    {l:'D/E', v:s.debt_equity!=null?s.debt_equity.toFixed(2):null},
+    {l:'Rev', v:s.rev_growth_pct!=null?(s.rev_growth_pct>=0?'+':'')+s.rev_growth_pct.toFixed(0)+'%':null},
+    {l:'1M', v:m1!=null?(m1>=0?'+':'')+m1+'%':null},
+    {l:'3M', v:m3!=null?(m3>=0?'+':'')+m3+'%':null},
+    {l:'PEG', v:s.peg_ratio!=null?s.peg_ratio.toFixed(1):null},
+    {l:'PB', v:s.pb_ratio!=null?s.pb_ratio.toFixed(1)+'x':null},
+  ].filter(x=>x.v!=null).slice(0,8);
+
   return`<div class="stock-card">
-    <div class="sc-top">
+    <div class="sc-header">
       <div>
         <a href="${yfUrl}" target="_blank" rel="noopener" style="text-decoration:none;">
-          <div class="sc-tkr">${tkr} <span style="font-size:10px;color:var(--blue2);font-weight:500;vertical-align:middle;">↗</span></div>
+          <span class="sc-tkr">${tkr} <span style="font-size:9px;color:var(--blue2)">↗</span></span>
         </a>
-        <div class="sc-name" title="${s.name||''}">${s.name||''}</div>
-        ${s.nse_sector?`<div class="sc-sector-tag">${SENT_EMOJI[s.sector_sentiment]||'⚪'} ${s.nse_sector}</div>`:''}
+        ${rbBadge}
+        ${rbReason}
       </div>
-      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:6px;">
-        <div style="text-align:right;"><div class="sc-score-num ${sc}">${(s.final_score||0).toFixed(1)}</div><div class="sc-score-lbl">Score</div></div>
-        <button onclick="editBuyPrice('${s.ticker}','${prefix}','${bk}',${bp})" style="font-size:9px;padding:3px 8px;border-radius:8px;border:1px solid rgba(91,141,238,0.35);background:rgba(91,141,238,0.10);color:var(--blue2);cursor:pointer;font-family:var(--sans);font-weight:600;">✏️ Edit</button>
+      <div style="text-align:right">
+        <div class="sc-score-num ${sc}">${(s.final_score||0).toFixed(1)}</div>
+        <div class="sc-score-lbl">Score</div>
       </div>
     </div>
-    <div class="sc-metrics">
-      <div><div class="sc-m-lbl">Buy Price</div><div class="sc-m-val">${bpS}</div></div>
-      <div><div class="sc-m-lbl">Allocation</div><div class="sc-m-val">${allocS}</div></div>
-      <div><div class="sc-m-lbl">Qty</div><div class="sc-m-val">${s.approx_shares||0} sh</div></div>
-    </div>
+    <div class="sc-name" style="max-width:200px" title="${s.name||''}">${s.name||''}</div>
+    ${s.nse_sector?`<div class="sc-sector-tag">${(SENT_EMOJI||{})[s.sector_sentiment]||'⚪'} ${s.nse_sector}</div>`:''}
+
     <div class="live-strip">
       <div class="l-dot"></div>
       <div class="l-item"><div class="l-lbl">Current</div><div class="l-val" id="${lpId}">—</div></div>
-      <div class="l-item"><div class="l-lbl">Today Mkt</div><div class="l-val" id="${lcId}">—</div></div>
+      <div class="l-item"><div class="l-lbl">Today</div><div class="l-val" id="${lcId}">—</div></div>
       <div class="l-item"><div class="l-lbl">My P&L</div><div class="l-val" id="${llId}">—</div></div>
     </div>
-    <div class="sl-row">
-      <span style="font-size:16px;flex-shrink:0">🛑</span>
-      <div style="flex:1">
-        <div class="sl-lbl">Stop-Loss</div>
-        <div class="sl-val">${slS} <span style="font-size:10px;color:var(--text3)">(${(s.stop_loss_pct||0).toFixed(1)}% below)</span></div>
-        <div class="sl-trail">Trail ${trS} below each new high</div>
+
+    <div class="sc-metrics">
+      <div><div class="sc-m-lbl">Buy Price</div>
+        <div class="sc-m-val">${bpFmt}
+          <button onclick="editBuyPrice('${s.ticker}','${prefix}','${bk}',${bp})" style="font-size:8px;padding:1px 5px;border-radius:6px;border:1px solid rgba(91,141,238,0.3);background:rgba(91,141,238,0.1);color:var(--blue2);cursor:pointer;margin-left:4px;">✏️</button>
+        </div>
       </div>
-      <div class="sl-risk ${s.circuit_risk||'low'}">${s.circuit_risk||'low'}</div>
+      <div><div class="sc-m-lbl">Quantity</div><div class="sc-m-val">${s.approx_shares||0} sh</div></div>
+      <div><div class="sc-m-lbl">Invested</div><div class="sc-m-val">${allocFmt}</div></div>
     </div>
-    <div class="targets">
-      <div class="tgt"><div class="tgt-lbl">+20% → 30%</div><div class="tgt-val">${cur}${Number(t1).toLocaleString()}</div></div>
-      <div class="tgt"><div class="tgt-lbl">+35% → 30%</div><div class="tgt-val">${cur}${Number(t2).toLocaleString()}</div></div>
-      <div class="tgt"><div class="tgt-lbl">+50% → 40%</div><div class="tgt-val">${cur}${Number(t3).toLocaleString()}</div></div>
+
+    <div class="sc-levels-block">
+      <div class="sc-level-row stop-row">
+        <span class="sc-level-icon">🛑</span>
+        <div style="flex:1">
+          <div class="sc-level-lbl">Stop-Loss${s.circuit_risk&&s.circuit_risk!=='low'?` · <span style="color:var(--red)">${s.circuit_risk} risk</span>`:''}${s.trailing_stop_dist?` · trail ₹${(s.trailing_stop_dist||0).toFixed(0)}`:''}</div>
+          <div class="sc-level-val stop-val">${slFmt} <span class="sc-level-pct">-${slPct.toFixed(1)}%</span></div>
+        </div>
+      </div>
+      <div class="sc-level-row t1-row">
+        <span class="sc-level-icon">🎯</span>
+        <div style="flex:1">
+          <div class="sc-level-lbl">Target 1 — sell 30%</div>
+          <div class="sc-level-val t-val">${t1Fmt} <span class="sc-level-pct">+${t1pct}%</span></div>
+        </div>
+      </div>
+      <div class="sc-level-row t2-row">
+        <span class="sc-level-icon">🎯</span>
+        <div style="flex:1">
+          <div class="sc-level-lbl">Target 2 — sell 30%</div>
+          <div class="sc-level-val t-val">${t2Fmt} <span class="sc-level-pct">+${t2pct}%</span></div>
+        </div>
+      </div>
+      <div class="sc-level-row t3-row">
+        <span class="sc-level-icon">🎯</span>
+        <div style="flex:1">
+          <div class="sc-level-lbl">Target 3 — sell 40%</div>
+          <div class="sc-level-val t-val">${t3Fmt} <span class="sc-level-pct">+${t3pct}%</span></div>
+        </div>
+      </div>
     </div>
-    ${m1!=null||m3!=null?`<div class="mom-chips">${m1!=null?`<span class="mom ${m1>0?'pos':m1<0?'neg':'neu'}">${m1>=0?'+':''}${m1}% 1M</span>`:''}${m3!=null?`<span class="mom ${m3>0?'pos':m3<0?'neg':'neu'}">${m3>=0?'+':''}${m3}% 3M</span>`:''}</div>`:''}
-    <button class="why-btn" onclick="toggleAudit('${cid}',this)"><span>Why picked</span><span>▾</span></button>
-    <div class="audit-panel" id="audit-${cid}">${reasons}${mt}${risks?`<div style="margin-top:8px">${risks}</div>`:''}</div>
-    ${prefix==='ind'?`<button class="exit-btn-india" onclick="exitIndiaStock('${s.ticker}')">📤 Exit Position</button>`:''}
+
+    ${reasons.length?`
+    <div class="sc-why-block">
+      <div class="sc-why-title">Why Picked</div>
+      ${reasons.map(r=>`<div class="a-reason">${r}</div>`).join('')}
+    </div>`:''}
+
+    ${risks.length?`
+    <div class="sc-why-block">
+      <div class="sc-why-title">Cautions</div>
+      ${risks.map(r=>`<div class="a-risk">${r}</div>`).join('')}
+    </div>`:''}
+
+    ${fundItems.length?`
+    <div class="sc-fund-grid">
+      ${fundItems.map(f=>`<div class="sc-fund-cell"><div class="sc-f-lbl">${f.l}</div><div class="sc-f-val">${f.v}</div></div>`).join('')}
+    </div>`:''}
+
+    <div class="sc-actions">
+      ${prefix==='ind'?`<button class="sc-act-btn sc-act-exit" onclick="exitIndiaStock('${s.ticker}')">📤 Exit</button>`:''}
+      ${prefix==='us'?`<button class="sc-act-btn sc-act-exit" onclick="exitUsStock('${s.ticker}')">📤 Exit</button>`:''}
+    </div>
   </div>`;
 }
 
@@ -1322,18 +1423,13 @@ function renderBuckets(prefix,portfolio,containerId,cur){
   const el=document.getElementById(containerId);
   if(!portfolio){el.innerHTML=`<div class="empty">No portfolio data. Run screener first.</div>`;return;}
   const tagMap=prefix==='ind'?IBT:UBT;
-  el.innerHTML=Object.entries(portfolio).map(([bk,bucket])=>{
-    const stocks=bucket.stocks||[],tag=tagMap[bk]||bk;
-    const label=IBT[bk]||(bucket.label||bk).replace(/^(Large Cap|Mid Cap|High Conviction|Defensive|Growth|🤖|⚙️|⚡|🌾)\s*[—–-]\s*/i,'').trim();
-    const cards=stocks.map((s,i)=>buildCard(s,i,bk,prefix,cur)).join('');
-    return`<div class="bkt-sec" id="${prefix}-b-${bk}">
-      <div class="bkt-hdr" onclick="toggleBkt('${prefix}-b-${bk}')">
-        <div><div class="bkt-tag">${tag}</div><div class="bkt-name">${label||bk}</div></div>
-        <div class="bkt-right"><span class="bkt-count">${stocks.length} stock${stocks.length!==1?'s':''}</span><span class="bkt-chev">▾</span></div>
-      </div>
-      <div class="bkt-body"><div class="stock-list">${stocks.length?cards:`<div class="empty">No picks this month.</div>`}</div></div>
-    </div>`;
-  }).join('');
+  // Collect all stocks across buckets into one flat carousel
+  const allStocks=[];
+  Object.entries(portfolio).forEach(([bk,bucket])=>{
+    (bucket.stocks||[]).forEach(s=>allStocks.push({s,bk}));
+  });
+  if(!allStocks.length){el.innerHTML=`<div class="empty" style="padding:0 20px">No portfolio data. Run screener first.</div>`;return;}
+  el.innerHTML=`<div class="stock-carousel">${allStocks.map(({s,bk},i)=>buildCard(s,i,bk,prefix,cur)).join('')}</div>`;
 }
 
 function toggleBkt(id){document.getElementById(id)?.classList.toggle('collapsed');}
@@ -1341,14 +1437,12 @@ function toggleAudit(id){const el=document.getElementById('audit-'+id);el.classL
 
 function renderLiveFlat(portfolio,containerId,cur){
   const el=document.getElementById(containerId);
-  if(!portfolio){el.innerHTML=`<div class="empty">No portfolio data. Run screener first.</div>`;return;}
+  if(!portfolio){el.innerHTML=`<div class="empty" style="padding:0 20px">No portfolio data. Run screener first.</div>`;return;}
   const all=[];
   for(const[bk,bucket]of Object.entries(portfolio))
-    for(const s of(bucket.stocks||[]))all.push({s,bk,bucket});
+    for(const s of(bucket.stocks||[]))all.push({s,bk});
   if(!all.length){el.innerHTML=`<div class="empty" style="padding:20px 16px">No stocks yet. Tap <b>+</b> on any screener pick to add.</div>`;return;}
-  el.innerHTML=all.map(({s,bk},i)=>
-    `<div class="live-flat-item">${buildCard(s,i,bk,'ind',cur)}</div>`
-  ).join('');
+  el.innerHTML=`<div class="stock-carousel">${all.map(({s,bk},i)=>buildCard(s,i,bk,'ind',cur)).join('')}</div>`;
 }
 
 /* ═══ PERF CHARTS ═══ */
@@ -1459,27 +1553,12 @@ function renderAdvisory(adv){
     action==='EXIT_AND_ADD'?`Exit ${(adv.sell_ticker||'').replace('.NS','')} → Add ${(adv.buy_ticker||'').replace('.NS','')}`:
     adv.buy_ticker        ?`Add ${(adv.buy_ticker||'').replace('.NS','')}`:
                            'Portfolio Empty — Add a New Position';
-  const rbIcon=v=>(v==='EXIT'||v==='TRIM')?'🔴':v==='WATCH'?'👁':v==='HOLD'?'🟢':'⚪';
-  const rbCls =v=>(v==='EXIT'||v==='TRIM')?'h-excluded':v==='WATCH'?'h-top15':v==='HOLD'?'h-top7':'';
-  const rbDate=adv.rebalance_report_date?`<span style="font-size:9px;color:var(--text3)"> · report: ${adv.rebalance_report_date}</span>`:'';
+  const rbDate=adv.rebalance_report_date?`report: ${adv.rebalance_report_date}`:'';
+  const exitCount=health.filter(h=>h.rebalancer_verdict==='EXIT'||h.rebalancer_verdict==='TRIM').length;
   const healthHtml=health.length?`
-    <div class="adv-health-lbl">Rebalancer${rbDate} — ${health.length} holdings:</div>
-    <div class="adv-health-list">${health.map(h=>{
-      const v=h.rebalancer_verdict||'HOLD';
-      const rawPnl=h.pnl_pct!=null?h.pnl_pct:(h.gain_pct!=null?h.gain_pct:null);
-      const pnlHtml=rawPnl!=null
-        ?`<span style="color:${rawPnl>=0?'#2d8a6a':'#c04040'};font-weight:700;white-space:nowrap">${rawPnl>=0?'+':''}${rawPnl.toFixed(1)}%</span>`
-        :'—';
-      const detail=(h.rebalancer_reason||h.reason||'').slice(0,55);
-      return `<div class="adv-hrow ${rbCls(v)}">
-        <span class="adv-hicon">${rbIcon(v)}</span>
-        <div class="adv-pick-main">
-          <span class="adv-hname">${h.ticker.replace('.NS','')} · ${(h.name||'').slice(0,20)}</span>
-          ${detail?`<div class="adv-pick-sub" style="font-size:9px">${detail}</div>`:''}
-        </div>
-        ${pnlHtml}
-        <span class="adv-hscore" style="font-size:10px">${v}</span>
-      </div>`;}).join('')}
+    <div style="font-size:10px;color:var(--text3);margin-bottom:8px;padding:6px 10px;background:rgba(255,255,255,0.25);border-radius:8px;">
+      📊 Rebalancer: ${health.length} holding${health.length!==1?'s':''} analysed${rbDate?' · '+rbDate:''}${exitCount?` · <span style="color:#c04040;font-weight:700">${exitCount} EXIT/TRIM flagged</span>`:''}
+      <span style="color:var(--text3)"> — verdicts shown on each stock card above</span>
     </div>`:'';
 
   // ── Balance-aware picks ─────────────────────────────────────────────────
@@ -2068,44 +2147,91 @@ function renderSwingStats(){
 function renderSwingOpen(){
   const el=document.getElementById('swOpenPositions');
   if(!_swLive.length){
-    el.innerHTML=`<div class="empty">No open swing positions.<br><span style="font-size:11px;color:var(--text3)">Enter a trade by tapping "Enter Trade" on a candidate below.</span></div>`;
+    el.innerHTML=`<div class="empty" style="padding:0 20px">No open swing positions.<br><span style="font-size:11px;color:var(--text3)">Enter a trade from candidates below.</span></div>`;
     return;
   }
-  el.innerHTML=_swLive.map((p,i)=>{
+  el.innerHTML=`<div class="swing-carousel">${_swLive.map((p,i)=>{
     const bp=p.buy_price||p.price||0;
-    const t1=p.target1||0, t2=p.target2||0;
+    const t1=p.target1||0,t2=p.target2||0;
+    const sl=p.stop_loss||p.stop_loss_price||0;
+    const slPct=bp>0?((bp-sl)/bp*100).toFixed(1):0;
     const t1pct=bp>0?((t1/bp-1)*100).toFixed(0):'';
     const t2pct=bp>0?((t2/bp-1)*100).toFixed(0):'';
-    const sl=p.stop_loss||p.stop_loss_price||0;
     const trail=p.trailing_stop||p.trailing_stop_dist||0;
     const edate=p.entry_date||p.buy_date||'';
-    const key=(p.ticker||'').replace('.','_');
-    return`<div class="sw-pos-card">
-      <div class="sc-top">
+    const key=(p.ticker||'').replace('.','_').replace('-','_');
+    const maxD=p.max_days||10;
+    const limitP=p.limit_price;
+    const entryNote=p.entry_note||'';
+    const sigs=p.signals||{};
+    const passedSigs=Object.entries(sigs).filter(([,v])=>v.pass).map(([k])=>k);
+    return`<div class="sw-pos-card stock-card">
+      <div class="sc-header">
         <div>
-          <a href="https://finance.yahoo.com/quote/${p.ticker}" target="_blank" rel="noopener" style="text-decoration:none;"><div class="sw-tkr">${(p.ticker||'').replace('.NS','')} <span style="font-size:10px;color:var(--blue2);">↗</span></div></a>
-          <div class="sw-name">${p.name||''}</div>
-          ${edate?`<div style="font-size:10px;color:var(--text3);margin-top:3px;">Entered ${edate}</div>`:''}
+          <a href="https://finance.yahoo.com/quote/${p.ticker}" target="_blank" rel="noopener" style="text-decoration:none;">
+            <span class="sc-tkr">${(p.ticker||'').replace('.NS','')} <span style="font-size:9px;color:var(--blue2);">↗</span></span>
+          </a>
+          ${edate?`<div style="font-size:9px;color:var(--text3);margin-top:2px;">Entered ${edate} · max ${maxD}d</div>`:''}
         </div>
-        <div class="sc-score">
+        <div style="text-align:right">
           <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--blue2)" id="swlp-${key}">—</div>
           <div class="sc-score-lbl">Current</div>
         </div>
       </div>
-      <div class="sc-metrics">
-        <div><div class="sc-m-lbl">Buy Price</div><div class="sc-m-val">₹${bp.toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
-        <div><div class="sc-m-lbl">Today P&L</div><div class="sc-m-val" id="swlc-${key}">—</div></div>
-        <div><div class="sc-m-lbl">My P&L</div><div class="sc-m-val" id="swll-${key}">—</div></div>
+      <div class="sc-name">${p.name||''}</div>
+
+      <div class="live-strip" style="margin-top:10px">
+        <div class="l-dot"></div>
+        <div class="l-item"><div class="l-lbl">Buy</div><div class="l-val">₹${bp.toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
+        <div class="l-item"><div class="l-lbl">Today</div><div class="l-val" id="swlc-${key}">—</div></div>
+        <div class="l-item"><div class="l-lbl">P&L</div><div class="l-val" id="swll-${key}">—</div></div>
       </div>
-      <div class="sw-levels">
-        <div class="sw-level"><div class="sw-level-lbl">🛑 Stop</div><div class="sw-level-val stop">₹${sl.toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
-        <div class="sw-level"><div class="sw-level-lbl">🎯 T1 ${t1pct?`+${t1pct}%`:''}</div><div class="sw-level-val t1">₹${t1.toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
-        <div class="sw-level"><div class="sw-level-lbl">🎯 T2 ${t2pct?`+${t2pct}%`:''}</div><div class="sw-level-val t2">₹${t2.toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
+
+      <div class="sc-metrics" style="margin-top:10px">
+        <div><div class="sc-m-lbl">Qty</div><div class="sc-m-val">${p.shares||p.approx_shares||'—'} sh</div></div>
+        <div><div class="sc-m-lbl">R/R</div><div class="sc-m-val">${(p.rr_ratio||0).toFixed(2)}×</div></div>
+        <div><div class="sc-m-lbl">ATR src</div><div class="sc-m-val" style="font-size:9px">${p.atr_source||'ATR'}</div></div>
       </div>
-      ${trail?`<div style="font-size:10px;color:var(--text2);margin-bottom:10px;">📈 Trail ₹${trail.toFixed(2)} below each new high</div>`:''}
-      <button class="sw-exit-btn" onclick="exitSwingTrade('${p.ticker}','${bp}')">🚪 Mark as Exited on Kite</button>
+
+      <div class="sc-levels-block" style="margin-top:8px">
+        <div class="sc-level-row stop-row">
+          <span class="sc-level-icon">🛑</span>
+          <div style="flex:1">
+            <div class="sc-level-lbl">Stop-Loss${trail?` · trail ₹${trail.toFixed(0)}`:''}  </div>
+            <div class="sc-level-val stop-val">₹${sl.toLocaleString('en-IN',{minimumFractionDigits:2})} <span class="sc-level-pct">-${slPct}%</span></div>
+          </div>
+        </div>
+        ${t1?`<div class="sc-level-row t1-row">
+          <span class="sc-level-icon">🎯</span>
+          <div style="flex:1">
+            <div class="sc-level-lbl">Target 1 — sell 50%</div>
+            <div class="sc-level-val t-val">₹${t1.toLocaleString('en-IN',{minimumFractionDigits:2})} <span class="sc-level-pct">+${t1pct}%</span></div>
+          </div>
+        </div>`:''}
+        ${t2?`<div class="sc-level-row t2-row">
+          <span class="sc-level-icon">🎯</span>
+          <div style="flex:1">
+            <div class="sc-level-lbl">Target 2 — sell 50%</div>
+            <div class="sc-level-val t-val">₹${t2.toLocaleString('en-IN',{minimumFractionDigits:2})} <span class="sc-level-pct">+${t2pct}%</span></div>
+          </div>
+        </div>`:''}
+      </div>
+
+      ${passedSigs.length?`
+      <div class="sc-why-block">
+        <div class="sc-why-title">Signals passed (${passedSigs.length}/${Object.keys(sigs).length})</div>
+        <div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">
+          ${passedSigs.map(s=>`<span style="font-size:9px;padding:2px 6px;border-radius:10px;background:rgba(34,197,94,.12);color:#2d8a6a;border:1px solid rgba(34,197,94,.3)">${s}</span>`).join('')}
+        </div>
+      </div>`:''}
+
+      ${limitP?`<div style="font-size:9px;color:var(--text3);margin-bottom:8px;padding:6px 8px;background:rgba(91,141,238,0.08);border-radius:8px;">📌 ${entryNote||`Enter ≤ ₹${limitP.toLocaleString('en-IN',{minimumFractionDigits:2})}`}</div>`:''}
+
+      <div class="sc-actions">
+        <button class="sc-act-btn sc-act-exit" onclick="exitSwingTrade('${p.ticker}','${bp}')">🚪 Mark Exited</button>
+      </div>
     </div>`;
-  }).join('');
+  }).join('')}</div>`;
 }
 
 /* ═══ SWING CANDIDATES ═══ */
@@ -2116,63 +2242,96 @@ function renderSwingCandidates(){
   const todayD=new Date().toISOString().split('T')[0];
   const stale=scanD&&scanD!==todayD&&scanD!==prevBizDay(new Date());
   if(!candidates.length){
-    el.innerHTML=`<div class="empty">No candidates today.<br><span style="font-size:11px;color:var(--text3)">Run swing_scanner.py after market close (8 PM IST).</span></div>`;
+    el.innerHTML=`<div class="empty" style="padding:0 20px">No candidates today.<br><span style="font-size:11px;color:var(--text3)">Run swing_scanner.py after market close.</span></div>`;
     return;
   }
-  el.innerHTML=candidates.map((c,i)=>{
+  el.innerHTML=`<div class="swing-carousel">${candidates.map((c,i)=>{
     const sigs=c.signals||{};
-    const sigPills=Object.entries(sigs).map(([k,v])=>
-      `<span class="sw-sig ${v.pass?'pass':'fail'}">${v.pass?'✓':''} ${k}</span>`
-    ).join('');
     const conv=c.conviction||'LOW';
-    return`<div class="sw-cand-card">
-      <div class="sw-cand-top">
+    const convClr=conv==='HIGH'?'#2d8a6a':conv==='MEDIUM'?'#8a6800':'#777';
+    const convBg=conv==='HIGH'?'rgba(34,197,94,.1)':conv==='MEDIUM'?'rgba(251,191,36,.1)':'rgba(255,255,255,.1)';
+    const limitP=c.limit_price;
+    const entryNote=c.entry_note||'';
+    const passedSigs=Object.entries(sigs).filter(([,v])=>v.pass).map(([k,v])=>({k,note:v.note}));
+    const failedSigs=Object.entries(sigs).filter(([,v])=>!v.pass).map(([k,v])=>({k,note:v.note}));
+    return`<div class="sw-cand-card stock-card">
+      <div class="sc-header">
         <div>
-          <a href="https://finance.yahoo.com/quote/${c.ticker}" target="_blank" rel="noopener" style="text-decoration:none;"><div class="sw-tkr">${(c.ticker||'').replace('.NS','')} <span style="font-size:10px;color:var(--blue2);">↗</span></div></a>
-          <div class="sw-name">${c.name||''}</div>
-          <div style="margin-top:6px;"><span class="sw-conv ${conv}">${conv}</span></div>
+          <a href="https://finance.yahoo.com/quote/${c.ticker}" target="_blank" rel="noopener" style="text-decoration:none;">
+            <span class="sc-tkr">${(c.ticker||'').replace('.NS','')} <span style="font-size:9px;color:var(--blue2);">↗</span></span>
+          </a>
+          <span style="font-size:9px;font-weight:700;padding:2px 7px;border-radius:20px;background:${convBg};color:${convClr};border:1px solid ${convClr}30;margin-top:3px;display:inline-block">${conv}</span>
         </div>
-        <div class="sw-score">
-          <div class="sw-score-num">${c.score||0}/${c.max_score||7}</div>
-          <div class="sw-score-lbl">Signals</div>
-        </div>
-      </div>
-      <div class="sw-levels">
-        <div class="sw-level">
-          <div class="sw-level-lbl">Entry</div>
-          <div class="sw-level-val" style="color:var(--text)">₹${(c.current_price||0).toLocaleString('en-IN',{minimumFractionDigits:2})}</div>
-        </div>
-        <div class="sw-level">
-          <div class="sw-level-lbl">🛑 Stop</div>
-          <div class="sw-level-val stop">₹${(c.stop_loss||0).toLocaleString('en-IN',{minimumFractionDigits:2})}<br><span style="font-size:8px;color:#c04040">${c.stop_pct||0}% below</span></div>
-        </div>
-        <div class="sw-level">
-          <div class="sw-level-lbl">R/R Ratio</div>
-          <div class="sw-level-val" style="color:var(--purple2)">${(c.rr_ratio||0).toFixed(2)}×</div>
+        <div style="text-align:right">
+          <div class="sc-score-num ${c.score>=(c.max_score||7)*.85?'high':c.score>=(c.max_score||7)*.6?'mid':'low'}">${c.score||0}<span style="font-size:10px;font-weight:400;color:var(--text3)">/${c.max_score||7}</span></div>
+          <div class="sc-score-lbl">Signals</div>
         </div>
       </div>
-      <div class="sw-levels">
-        <div class="sw-level"><div class="sw-level-lbl">T1 ${c.current_price>0?`+${((c.target1/c.current_price-1)*100).toFixed(0)}%`:''}</div><div class="sw-level-val t1">₹${(c.target1||0).toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
-        <div class="sw-level"><div class="sw-level-lbl">T2 ${c.current_price>0?`+${((c.target2/c.current_price-1)*100).toFixed(0)}%`:''}</div><div class="sw-level-val t2">₹${(c.target2||0).toLocaleString('en-IN',{minimumFractionDigits:2})}</div></div>
-        <div class="sw-level"><div class="sw-level-lbl">Max days</div><div class="sw-level-val" style="color:var(--text2)">${c.max_days||10}d</div></div>
+      <div class="sc-name">${c.name||''}</div>
+      ${c.sector?`<div class="sc-sector-tag">⬜ ${(c.sector||'').slice(0,30)}</div>`:''}
+      ${stale?`<div style="font-size:9px;color:var(--red);margin:4px 0;">⚠️ Stale scan — ${scanD}</div>`:''}
+
+      <div class="sc-levels-block" style="margin-top:10px">
+        <div class="sc-level-row" style="background:rgba(91,141,238,0.08);border:1px solid rgba(91,141,238,0.2)">
+          <span class="sc-level-icon">📍</span>
+          <div style="flex:1">
+            <div class="sc-level-lbl">Entry (scan close)</div>
+            <div class="sc-level-val" style="color:var(--text)">₹${(c.current_price||0).toLocaleString('en-IN',{minimumFractionDigits:2})}</div>
+          </div>
+        </div>
+        ${limitP?`<div class="sc-level-row" style="background:rgba(91,141,238,0.05);border:1px solid rgba(91,141,238,0.12)">
+          <span class="sc-level-icon">🚫</span>
+          <div style="flex:1">
+            <div class="sc-level-lbl">Entry limit — skip if gaps above</div>
+            <div class="sc-level-val" style="color:var(--blue2)">₹${limitP.toLocaleString('en-IN',{minimumFractionDigits:2})}</div>
+          </div>
+        </div>`:''}
+        <div class="sc-level-row stop-row">
+          <span class="sc-level-icon">🛑</span>
+          <div style="flex:1">
+            <div class="sc-level-lbl">Stop-Loss (structural)</div>
+            <div class="sc-level-val stop-val">₹${(c.stop_loss||0).toLocaleString('en-IN',{minimumFractionDigits:2})} <span class="sc-level-pct">-${c.stop_pct||0}%</span></div>
+          </div>
+        </div>
+        ${c.target1?`<div class="sc-level-row t1-row">
+          <span class="sc-level-icon">🎯</span>
+          <div style="flex:1">
+            <div class="sc-level-lbl">Target 1 — sell 50%</div>
+            <div class="sc-level-val t-val">₹${c.target1.toLocaleString('en-IN',{minimumFractionDigits:2})} <span class="sc-level-pct">+7%</span></div>
+          </div>
+        </div>`:''}
+        ${c.target2?`<div class="sc-level-row t2-row">
+          <span class="sc-level-icon">🎯</span>
+          <div style="flex:1">
+            <div class="sc-level-lbl">Target 2 — sell 50%</div>
+            <div class="sc-level-val t-val">₹${c.target2.toLocaleString('en-IN',{minimumFractionDigits:2})} <span class="sc-level-pct">+12%</span></div>
+          </div>
+        </div>`:''}
       </div>
-      <div class="sw-signals">${sigPills}</div>
-      <div class="sw-rr">
-        <span>RSI: ${(c.rsi||0).toFixed(0)}</span>
-        <span>·</span>
-        <span>Vol: ${(c.vol_ratio||0).toFixed(1)}×</span>
-        <span>·</span>
-        <span>ATR: ${c.atr_source||'ATR'}</span>
-        ${c.adtv_cr?`<span>· ADTV ₹${c.adtv_cr}Cr</span>`:''}
+
+      <div class="sc-metrics" style="margin-top:4px">
+        <div><div class="sc-m-lbl">R/R Ratio</div><div class="sc-m-val">${(c.rr_ratio||0).toFixed(2)}×</div></div>
+        <div><div class="sc-m-lbl">RSI(14)</div><div class="sc-m-val">${(c.rsi||0).toFixed(0)}</div></div>
+        <div><div class="sc-m-lbl">Vol Surge</div><div class="sc-m-val">${(c.vol_ratio||0).toFixed(1)}×</div></div>
       </div>
-      <button class="sw-enter-btn" onclick="enterSwingTrade(${JSON.stringify(c).replace(/"/g,'&quot;')})">✅ Enter Trade on Kite</button>
+
+      ${passedSigs.length?`
+      <div class="sc-why-block">
+        <div class="sc-why-title">Signals passed ✅</div>
+        ${passedSigs.map(({k,note})=>`<div class="a-reason" style="font-size:10px">${note||k}</div>`).join('')}
+      </div>`:''}
+
+      ${failedSigs.length?`
+      <div class="sc-why-block">
+        <div class="sc-why-title">Signals failed ❌</div>
+        ${failedSigs.map(({k,note})=>`<div class="a-risk" style="font-size:10px">${note||k}</div>`).join('')}
+      </div>`:''}
+
+      <div class="sc-actions">
+        <button class="sc-act-btn sc-act-enter" onclick="enterSwingTrade('${c.ticker}')">📈 Enter Trade</button>
+      </div>
     </div>`;
-  }).join('');
-  if(stale){
-    el.insertAdjacentHTML('afterbegin',`<div style="background:rgba(224,112,112,0.10);border:1px solid rgba(224,112,112,0.25);border-radius:12px;padding:12px 14px;margin-bottom:12px;font-size:11px;color:#b84040;">
-      ⚠️ <strong>Showing results from ${scanD}</strong> — today's scan hasn't run yet or hasn't been uploaded.<br>Fresh scan runs daily after 8 PM IST (Mon–Fri).
-    </div>`);
-  }
+  }).join('')}</div>`;
 }
 
 /* ═══ SWING CLOSED ═══ */
