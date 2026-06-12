@@ -72,14 +72,12 @@ body{
 .pin-glass{background:var(--surface);border:1px solid var(--line);border-radius:24px;padding:36px 28px;display:flex;flex-direction:column;align-items:center;gap:26px;width:min(300px,90vw);}
 .pin-glass.shake{animation:shake .4s;}
 @keyframes shake{0%,100%{transform:translateX(0)}25%{transform:translateX(-8px)}75%{transform:translateX(8px)}}
-.pin-dots{display:flex;gap:16px;}
-.pin-dot{width:12px;height:12px;border-radius:50%;border:1.5px solid var(--text3);transition:all .15s;}
-.pin-dot.filled{background:var(--text);border-color:var(--text);}
-.pin-dot.error{background:var(--red);border-color:var(--red);}
-.pin-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;}
-.pin-btn{width:64px;height:64px;border-radius:50%;border:1px solid var(--line);background:var(--surface2);color:var(--text);font-size:22px;font-weight:500;font-family:var(--mono);cursor:pointer;transition:background .12s;}
-.pin-btn:active{background:var(--line2);}
-.pin-err{font-size:12px;color:var(--red);min-height:16px;}
+.pin-field{width:100%;background:var(--bg);border:1px solid var(--line2);border-radius:14px;padding:16px;color:var(--text);font-family:var(--mono);font-size:16px;outline:none;letter-spacing:.06em;text-align:center;}
+.pin-field:focus{border-color:var(--text2);}
+.pin-field::placeholder{color:var(--text3);letter-spacing:normal;}
+.pin-submit{width:100%;padding:15px;border-radius:14px;background:var(--text);color:var(--bg);font-size:14px;font-weight:700;border:none;cursor:pointer;letter-spacing:.06em;transition:opacity .15s;}
+.pin-submit:active{opacity:.75;}
+.pin-err{font-size:12px;color:var(--red);min-height:16px;text-align:center;}
 
 /* ═══ MODAL ═══ */
 .modal-overlay{position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,.7);display:flex;align-items:flex-end;justify-content:center;}
@@ -365,45 +363,37 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
   <div class="pin-logo">Equity Advisor</div>
   <div class="pin-sub">Global Portfolio Intelligence</div>
   <div class="pin-glass" id="pinBox">
-    <div class="pin-dots" id="pinDots">
-      <div class="pin-dot" id="d0"></div>
-      <div class="pin-dot" id="d1"></div>
-      <div class="pin-dot" id="d2"></div>
-      <div class="pin-dot" id="d3"></div>
-    </div>
-    <div class="pin-grid">
-      <button class="pin-btn" onclick="pinPress('1')">1</button>
-      <button class="pin-btn" onclick="pinPress('2')">2</button>
-      <button class="pin-btn" onclick="pinPress('3')">3</button>
-      <button class="pin-btn" onclick="pinPress('4')">4</button>
-      <button class="pin-btn" onclick="pinPress('5')">5</button>
-      <button class="pin-btn" onclick="pinPress('6')">6</button>
-      <button class="pin-btn" onclick="pinPress('7')">7</button>
-      <button class="pin-btn" onclick="pinPress('8')">8</button>
-      <button class="pin-btn" onclick="pinPress('9')">9</button>
-      <button class="pin-btn wide" onclick="pinPress('0')">0</button>
-      <button class="pin-btn" onclick="pinDel()">⌫</button>
-    </div>
+    <input class="pin-field" id="pinInput" type="password" placeholder="Enter token" autocomplete="current-password" autofocus />
+    <button class="pin-submit" onclick="cp()">Unlock</button>
     <div class="pin-err" id="pinError"></div>
   </div>
 </div>
 <script>
-const CORRECT_PIN='2608',SK='ea_v3',TK='ea_tok';let pe='';
+const CORRECT_PIN='2608',SK='ea_v3',TK='ea_tok';
 (()=>{if(sessionStorage.getItem(SK)==='ok'){document.getElementById('pinGate').classList.add('hidden');}})();
 function _postHeaders(){const h={'Content-Type':'application/json'};const t=sessionStorage.getItem(TK);if(t)h['X-Upload-Token']=t;return h;}
-function pinPress(d){if(pe.length>=4)return;pe+=d;ud();if(pe.length===4)setTimeout(cp,120);}
-function pinDel(){if(!pe.length)return;pe=pe.slice(0,-1);ud();document.getElementById('pinError').textContent='';}
-function ud(st){for(let i=0;i<4;i++){const el=document.getElementById('d'+i);el.className='pin-dot';if(st==='err')el.classList.add('error');else if(i<pe.length)el.classList.add('filled');}}
 async function cp(){
+  const inp=document.getElementById('pinInput');
+  const pe=(inp.value||'').trim();
+  if(!pe)return;
   let ok=null;
   try{
-    const r=await fetch('https://web-production-2d832.up.railway.app/auth/verify',{method:'POST',headers:_postHeaders(),body:JSON.stringify({pin:pe})});
+    const r=await fetch('https://web-production-2d832.up.railway.app/auth/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pe})});
     const j=await r.json();
-    if(j.enforced)ok=!!j.ok; // server is the authority when UPLOAD_TOKEN is set
-  }catch(e){/* offline / server down — fall back to local check */}
+    if(j.enforced)ok=!!j.ok;
+  }catch(e){}
   if(ok===null)ok=(pe===CORRECT_PIN);
-  if(ok){sessionStorage.setItem(SK,'ok');sessionStorage.setItem(TK,pe);document.getElementById('pinGate').classList.add('hidden');if(typeof initApp==='function')initApp();}else{ud('err');document.getElementById('pinBox').classList.add('shake');document.getElementById('pinError').textContent='Incorrect PIN';setTimeout(()=>{document.getElementById('pinBox').classList.remove('shake');pe='';ud();document.getElementById('pinError').textContent='';},650);}}
-document.addEventListener('keydown',e=>{if(document.getElementById('pinGate').classList.contains('hidden'))return;if(e.key>='0'&&e.key<='9')pinPress(e.key);else if(e.key==='Backspace')pinDel();});
+  if(ok){
+    sessionStorage.setItem(SK,'ok');sessionStorage.setItem(TK,pe);
+    document.getElementById('pinGate').classList.add('hidden');
+    if(typeof initApp==='function')initApp();
+  }else{
+    document.getElementById('pinBox').classList.add('shake');
+    document.getElementById('pinError').textContent='Incorrect token';
+    setTimeout(()=>{document.getElementById('pinBox').classList.remove('shake');inp.value='';document.getElementById('pinError').textContent='';inp.focus();},650);
+  }
+}
+document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='Enter')cp();});
 </script>
 
 <!-- SELL MODAL -->
