@@ -6,13 +6,13 @@ Separate from the long-term alerter — runs independently.
 
 Monitors open swing positions every 30 minutes during market hours and alerts on:
   1. Stop-loss breach  → 🔴 EXIT NOW on Kite
-  2. Target 1 hit (+5%)→ 🟡 Sell 50% on Kite
-  3. Target 2 hit (+8%)→ 🟢 Sell remaining 50% on Kite
+  2. Target 1 hit (+7%)→ 🟡 Sell 50% on Kite
+  3. Target 2 hit (+12%)→ 🟢 Sell remaining 50% on Kite
   4. Time exit         → ⏰ 10 trading days elapsed — exit today
   5. Trailing stop     → 📈 Update your GTT stop on Kite
 
 Separate from alerter.py because:
-  - Different exit rules (tighter stops, +5%/+8% targets vs +20%/+35%/+50%)
+  - Different exit rules (tighter stops, +7%/+12% targets vs +20%/+35%/+50%)
   - Different holding period (10 days vs monthly)
   - Different dedup file (swing_dedup.json)
   - Can be deployed/modified independently
@@ -50,10 +50,10 @@ DATA_DIR= os.getenv("DATA_DIR", "/data")
 SWING_DEDUP_FILE = os.path.join(DATA_DIR, "swing_alerts_sent_today.json")
 
 # Swing exit rules — exact same values as swing_scanner.py
-SWING_STOP_MULT  = 1.5     # ATR multiplier for stop-loss
+SWING_STOP_MULT  = 2.0     # ATR multiplier for stop-loss (wider of 2 ATR / 5-day swing low)
 SWING_TRAIL_MULT = 1.0     # ATR multiplier for trailing stop
-SWING_TARGET_1   = 0.05   # +5%  → sell 50%
-SWING_TARGET_2   = 0.08   # +8%  → sell 50%
+SWING_TARGET_1   = 0.07   # +7%  → sell 50%
+SWING_TARGET_2   = 0.12   # +12% → sell 50%
 SWING_MAX_DAYS   = 10     # force exit after 10 trading days
 
 # Market hours (NSE)
@@ -217,8 +217,8 @@ def check_position(pos: dict, price_info: dict) -> Optional[dict]:
 
     Exit priority (same as rebalancer.py logic):
       1. Stop-loss breach
-      2. Target 2 (+8%)
-      3. Target 1 (+5%)
+      2. Target 2 (+12%)
+      3. Target 1 (+7%)
       4. Time exit (10 trading days)
       5. Trailing stop update
     """
@@ -261,7 +261,7 @@ def check_position(pos: dict, price_info: dict) -> Optional[dict]:
             "trading_days":trading_days,
         }
 
-    # ── Priority 2: Target 2 hit (+8%) ────────────────────────
+    # ── Priority 2: Target 2 hit (+12%) ────────────────────────
     if target2 and curr_price >= target2:
         # Check if target1 was already booked
         t1_booked = pos.get("target1_booked", False)
@@ -271,9 +271,9 @@ def check_position(pos: dict, price_info: dict) -> Optional[dict]:
             "alert_type":  "target2",
             "urgency":     "HIGH",
             "emoji":       "🟢",
-            "title":       f"TARGET 2 HIT (+8%) — {ticker.replace('.NS','')}",
+            "title":       f"TARGET 2 HIT (+12%) — {ticker.replace('.NS','')}",
             "message":     (
-                f"Price ₹{curr_price:.2f} ≥ Target ₹{target2:.2f} (+8%)\n"
+                f"Price ₹{curr_price:.2f} ≥ Target ₹{target2:.2f} (+12%)\n"
                 f"{'Sell remaining 50% on Kite' if t1_booked else 'Sell 50% on Kite (T1 may not have been booked yet)'}\n"
                 f"P&L: {gain_pct:+.1f}% in {trading_days} trading days 🎯"
             ),
@@ -285,7 +285,7 @@ def check_position(pos: dict, price_info: dict) -> Optional[dict]:
             "trading_days":trading_days,
         }
 
-    # ── Priority 3: Target 1 hit (+5%) ────────────────────────
+    # ── Priority 3: Target 1 hit (+7%) ────────────────────────
     if target1 and curr_price >= target1 and not pos.get("target1_booked", False):
         return {
             "ticker":      ticker,
@@ -293,10 +293,10 @@ def check_position(pos: dict, price_info: dict) -> Optional[dict]:
             "alert_type":  "target1",
             "urgency":     "MEDIUM",
             "emoji":       "🟡",
-            "title":       f"TARGET 1 HIT (+5%) — {ticker.replace('.NS','')}",
+            "title":       f"TARGET 1 HIT (+7%) — {ticker.replace('.NS','')}",
             "message":     (
-                f"Price ₹{curr_price:.2f} ≥ Target ₹{target1:.2f} (+5%)\n"
-                f"Sell 50% on Kite. Hold rest for T2 at ₹{target2:.2f} (+8%)\n"
+                f"Price ₹{curr_price:.2f} ≥ Target ₹{target1:.2f} (+7%)\n"
+                f"Sell 50% on Kite. Hold rest for T2 at ₹{target2:.2f} (+12%)\n"
                 f"Update stop-loss to break-even ₹{buy_price:.2f}"
             ),
             "buy_price":   buy_price,

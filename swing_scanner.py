@@ -4,33 +4,44 @@ Swing Scanner — India NSE
 Daily scan of Nifty 500 for swing trade candidates.
 Runs after market close (8:00 PM IST weekdays).
 
+Hard gates (fail any one → skipped, regardless of score):
+  - Stock above its OWN 50-DMA, 20-DMA rising (no bear-rally bounces)
+  - Not >10% above 20-DMA (overextended setups mean-revert first)
+  - Scan-day gain ≤7% (a news spike entered next morning = chasing)
+  - Price ≥ ₹50, liquidity ADV ≥3L shares / ₹5Cr ADTV
+  - Structural stop within 6% (a wider stop means the setup isn't tight
+    — skip the trade, never tighten the stop to force it)
+  - Earnings blackout: reports within 14 calendar days → skipped
+  - Market regime: Nifty below its 50-DMA → min signals raised to 6/7
+    and candidate list halved
+
 Entry signals scored 0–7 (need ≥5 for candidate):
-  1. RSI(14)           — 42–70 confirmed momentum zone (not still declining)
+  1. RSI(14)           — 45–75 confirmed momentum zone
   2. MACD(12,26,9)     — bullish crossover OR (above signal + histogram growing)
-  3. Bollinger Bands   — price crossing middle band or near lower band
-  4. Volume Surge      — today's volume > 2× 20-day average (real conviction)
+  3. Bollinger Bands   — price crossing middle band from below (momentum
+                         confirmation only — lower-band "bounces" removed,
+                         they were knife-catches)
+  4. Volume Surge      — volume > 2× 20-day average ON AN UP-DAY
+                         (close > prev close and close > open; direction-blind
+                         volume let distribution days score this point)
   5. Momentum Breakout — within 8% of 52w high or broke 20d resistance
   6. FII/DII Flow      — net FII positive in at least 2 of last 3 days
   7. Sector Sentiment  — news sentiment per NSE sector bucket
                          negative → HARD EXCLUDE (overrides all technicals)
-                         cautious → −1 penalty
-                         neutral  → no effect
-                         mild_positive → +0.5
-                         positive → +1 full signal
+                         cautious → −1 penalty / mild_positive → +0.5 / positive → +1
 
-Risk gates (before a candidate is reported):
-  - Market regime: Nifty below its 50-DMA → min signals raised to 6/7
-    and candidate list halved (breakouts fail more often below trend)
-  - Earnings blackout: stock reporting within 14 calendar days is skipped
-    (a 10-day swing should not gamble on quarterly results)
-  - Sector cap: max 3 candidates from one sector
+Entry discipline:
+  - limit_price = scan close +2%. If it opens above that, the R/R you
+    scanned no longer exists — skip, don't chase.
 
-Exit rules (applied by alerter.py):
-  - Stop-loss: buy_price − 1.5× ATR-14
+Exit rules (applied by swing_alerter.py):
+  - Stop-loss: wider of (buy − 2.0× ATR-14) and 0.5% below the 5-day
+    swing low — i.e. below structure, outside one normal day's noise
   - Target 1:  +7%  (book 50%)
   - Target 2:  +12% (book remaining 50%)
-  - Min R/R:   1.5 (skip trade if reward < 1.5× risk)
+  - Min R/R:   1.5 on the blended exit (50% T1 + 50% T2 = +9.5%)
   - Time exit: force exit after 10 trading days
+  - Sector cap: max 3 candidates from one sector
 
 Schedule: 0 14 * * 1-5   (8:00 PM IST = 14:00 UTC on weekdays)
 
@@ -66,15 +77,15 @@ CANDIDATES_FILE = os.path.join(DATA_DIR, "swing_candidates.json")
 
 # Signal parameters
 RSI_PERIOD       = 14
-RSI_MIN          = 42      # confirmed upswing — not still declining from oversold
-RSI_MAX          = 70      # not yet overbought
+RSI_MIN          = 45      # confirmed upswing — not still declining from oversold
+RSI_MAX          = 75      # strong breakouts often run 70-75; don't exclude them
 MACD_FAST        = 12
 MACD_SLOW        = 26
 MACD_SIGNAL      = 9
 MACD_CROSS_DAYS  = 5       # crossover within last 5 days
 BB_PERIOD        = 20
 BB_STD           = 2.0
-VOL_SURGE_MULT   = 2.0     # real conviction — volume > 2× 20-day avg
+VOL_SURGE_MULT   = 2.0     # real conviction — volume > 2× 20-day avg ON AN UP-DAY
 BREAKOUT_PCT     = 0.08    # within 8% of 52-week high or broke 20d resistance
 FII_LOOKBACK     = 3       # days of FII data to check
 FII_MIN_POSITIVE = 2       # FII positive in at least 2 of last 3 days
@@ -83,8 +94,19 @@ FII_MIN_POSITIVE = 2       # FII positive in at least 2 of last 3 days
 MIN_SIGNALS      = 5       # high-conviction only — 5 of 7 must pass
 MAX_CANDIDATES   = 10      # max candidates to report
 
-# Swing-specific ATR stop (tighter than long-term 2.5x)
-SWING_ATR_MULT   = 1.5
+# ── Hard gates (not scored — fail any one and the stock is skipped) ──
+TREND_DMA            = 50    # stock must close above its own 50-DMA
+EXT_MAX_ABOVE_20DMA  = 0.10  # skip if >10% above 20-DMA — overextended, mean-reverts
+MAX_DAY_GAIN         = 0.07  # skip if scan-day gain >7% — news spike, you'd be chasing
+MIN_PRICE            = 50.0  # skip penny-ish stocks — wide spreads, wild gaps
+MAX_STOP_PCT         = 6.0   # if the structural stop is >6% away, the setup isn't
+                             # tight enough — skip rather than tighten artificially
+MAX_CHASE_PCT        = 0.02  # don't enter more than 2% above scan close (gap guard)
+
+# Swing-specific ATR stop
+# 2.0× keeps the stop outside one normal day's range after a volume-surge
+# day; 1.5× sat inside routine retracement and was the main stop-out driver.
+SWING_ATR_MULT   = 2.0
 SWING_ATR_PERIOD = 14
 SWING_TRAIL_MULT = 1.0     # tighter trail for swing
 
@@ -227,7 +249,9 @@ def calc_bollinger(hist: pd.DataFrame) -> dict:
 
     # Crossed middle from below: prev < prev_mid AND curr > curr_mid
     crossed_mid = prev < prev_m and curr > mid
-    # Bounced from lower band: prev day touched lower band
+    # near_lower kept for info only — buying a lower-band touch is a
+    # mean-reversion entry, and pairing it with a momentum-style ATR stop
+    # produced knife-catches that drove the stop-out rate. Not a signal.
     near_lower  = float(closes.iloc[-2]) <= float(lower.iloc[-2]) * 1.01
 
     return {
@@ -237,24 +261,34 @@ def calc_bollinger(hist: pd.DataFrame) -> dict:
         "current":      round(curr, 2),
         "crossed_mid":  crossed_mid,
         "near_lower":   near_lower,
-        "signal":       crossed_mid or near_lower,
+        "signal":       crossed_mid,
         "pct_b":        round((curr - float(lower.iloc[-1])) /
                               (float(upper.iloc[-1]) - float(lower.iloc[-1]) + 1e-9) * 100, 1),
     }
 
 
 def calc_volume_surge(hist: pd.DataFrame) -> dict:
-    """Volume surge: today > 2× 20-day average."""
+    """Volume surge: today > 2× 20-day average — on an UP-day.
+
+    Volume alone is direction-blind: a stock dumping 8% on 3× volume is
+    distribution, not accumulation, yet it used to score this point and
+    then get bought as a 'bounce'. Surge now requires close > prev close
+    AND close > open (buyers finished in control of the day)."""
     vol       = hist["Volume"]
+    closes    = hist["Close"]
+    opens     = hist["Open"]
     avg_20    = float(vol.iloc[-21:-1].mean())
     today_vol = float(vol.iloc[-1])
     ratio     = round(today_vol / avg_20, 2) if avg_20 > 0 else 1.0
+    up_day    = (float(closes.iloc[-1]) > float(closes.iloc[-2])
+                 and float(closes.iloc[-1]) > float(opens.iloc[-1]))
 
     return {
         "today_vol":  int(today_vol),
         "avg_20d":    int(avg_20),
         "ratio":      ratio,
-        "surge":      ratio >= VOL_SURGE_MULT,
+        "up_day":     up_day,
+        "surge":      ratio >= VOL_SURGE_MULT and up_day,
     }
 
 
@@ -278,6 +312,49 @@ def calc_momentum_breakout(hist: pd.DataFrame) -> dict:
         "broke_20d_res":broke_20d,
         "signal":       pct_from <= BREAKOUT_PCT * 100 or broke_20d,
     }
+
+
+def check_hard_gates(hist: pd.DataFrame) -> Optional[str]:
+    """
+    Hard disqualifiers, checked before any scoring. Returns a reason
+    string if the stock fails, else None.
+
+    These are not scored signals — a breakout setup in a downtrending
+    stock, or one already 12% above its 20-DMA, fails at a far higher
+    rate regardless of how many momentum boxes it ticks.
+    """
+    closes = hist["Close"]
+    curr   = float(closes.iloc[-1])
+    prev   = float(closes.iloc[-2])
+
+    # Penny / illiquid price floor
+    if curr < MIN_PRICE:
+        return f"price ₹{curr:.0f} < ₹{MIN_PRICE:.0f} floor"
+
+    # Stock's own trend: must close above its 50-DMA, and the 20-DMA
+    # must be rising (vs 5 sessions ago). Bear-rally bounces fail here.
+    if len(closes) >= TREND_DMA:
+        dma50 = float(closes.rolling(TREND_DMA).mean().iloc[-1])
+        if curr < dma50:
+            return f"below own 50-DMA (₹{curr:,.1f} < ₹{dma50:,.1f}) — downtrend"
+    dma20_series = closes.rolling(20).mean()
+    if len(dma20_series.dropna()) >= 6:
+        if float(dma20_series.iloc[-1]) <= float(dma20_series.iloc[-6]):
+            return "20-DMA falling — no established short-term uptrend"
+
+    # Overextension: >10% above 20-DMA mean-reverts before it continues
+    dma20 = float(dma20_series.iloc[-1]) if not np.isnan(dma20_series.iloc[-1]) else None
+    if dma20 and curr > dma20 * (1 + EXT_MAX_ABOVE_20DMA):
+        return (f"{(curr/dma20-1)*100:.1f}% above 20-DMA "
+                f"(max {EXT_MAX_ABOVE_20DMA*100:.0f}%) — overextended")
+
+    # News-spike day: entering tomorrow means chasing today's +7%+ pop
+    day_gain = (curr - prev) / prev if prev > 0 else 0
+    if day_gain > MAX_DAY_GAIN:
+        return (f"scan-day spike +{day_gain*100:.1f}% "
+                f"(max +{MAX_DAY_GAIN*100:.0f}%) — would be chasing")
+
+    return None
 
 
 def calc_fii_signal(fii_data: list) -> dict:
@@ -397,22 +474,43 @@ def passes_liquidity(hist: pd.DataFrame, ticker: str) -> tuple[bool, str]:
 # ─────────────────────────────────────────────
 
 def compute_swing_levels(hist: pd.DataFrame, buy_price: float) -> dict:
-    """Compute stop-loss and profit targets for a swing trade."""
+    """Compute stop-loss and profit targets for a swing trade.
+
+    Stop placement (the old version was the main loss driver):
+      - OLD: buy − 1.5×ATR from the surge-day close. After a high-volume
+        breakout day, a routine 1-2 ATR retracement walked straight
+        through it. Plus the R/R≥1.5-to-T1 filter mathematically capped
+        the stop at 4.67%, so the scanner *selected for* stops inside
+        daily noise.
+      - NEW: the WIDER (lower) of 2.0×ATR and the 5-day swing low —
+        i.e. below actual structure, where the breakout is genuinely
+        invalidated. If that level is >MAX_STOP_PCT away the setup
+        isn't tight enough and the trade is skipped (in analyse_stock),
+        instead of artificially tightening the stop.
+
+    R/R uses the blended exit (50% at T1, 50% at T2 = +9.5% expected
+    reward), not T1 alone, so a structurally-correct stop isn't
+    filtered out for being honest about risk.
+    """
     atr = calc_atr(hist)
     if atr and atr > 0:
-        stop = round(buy_price - SWING_ATR_MULT * atr, 2)
+        atr_stop    = buy_price - SWING_ATR_MULT * atr
+        struct_stop = float(hist["Low"].iloc[-5:].min()) * 0.995  # under 5-day swing low
+        stop  = round(min(atr_stop, struct_stop), 2)
         trail = round(SWING_TRAIL_MULT * atr, 2)
-        src = "ATR"
+        src   = "ATR+STRUCT"
     else:
-        stop = round(buy_price * 0.96, 2)   # 4% fallback
+        stop  = round(buy_price * 0.95, 2)   # 5% fallback
         trail = round(buy_price * 0.02, 2)
-        atr = None
-        src = "FALLBACK"
+        atr   = None
+        src   = "FALLBACK"
 
     stop_pct   = round((buy_price - stop) / buy_price * 100, 2)
     target1    = round(buy_price * (1 + SWING_TARGET_1), 2)
     target2    = round(buy_price * (1 + SWING_TARGET_2), 2)
-    rr_ratio   = round((target1 - buy_price) / (buy_price - stop), 2) if stop < buy_price else 0
+    # Blended reward: half booked at T1, half at T2
+    blended_reward = buy_price * (0.5 * SWING_TARGET_1 + 0.5 * SWING_TARGET_2)
+    rr_ratio   = round(blended_reward / (buy_price - stop), 2) if stop < buy_price else 0
 
     return {
         "atr":          atr,
@@ -422,7 +520,7 @@ def compute_swing_levels(hist: pd.DataFrame, buy_price: float) -> dict:
         "trailing":     trail,
         "target1":      target1,
         "target2":      target2,
-        "rr_ratio":     rr_ratio,  # reward/risk ratio
+        "rr_ratio":     rr_ratio,  # blended reward / risk
         "max_days":     SWING_MAX_DAYS,
         "source":       src,
     }
@@ -448,6 +546,13 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
     if not liquid:
         return None
 
+    # Hard gates: own-trend, overextension, news-spike, price floor.
+    # Checked before scoring — a high technical score doesn't rescue
+    # a setup that fails any of these.
+    gate_fail = check_hard_gates(hist)
+    if gate_fail:
+        return None
+
     closes = hist["Close"]
     curr   = float(closes.iloc[-1])
 
@@ -464,7 +569,7 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
         "rsi": {
             "pass":  RSI_MIN <= rsi <= RSI_MAX,
             "value": rsi,
-            "note":  f"RSI {rsi:.1f} ({'✅ momentum zone' if RSI_MIN <= rsi <= RSI_MAX else '❌ outside 40-65'})",
+            "note":  f"RSI {rsi:.1f} ({'✅ momentum zone' if RSI_MIN <= rsi <= RSI_MAX else f'❌ outside {RSI_MIN}-{RSI_MAX}'})",
         },
         "macd": {
             "pass":  macd["bullish_cross"] or (macd["macd_above"] and macd["hist_growing"]),
@@ -563,7 +668,12 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
     # ── Swing levels ──────────────────────────────────────────
     levels = compute_swing_levels(hist, curr)
 
-    # Filter poor R/R — need 1.5× reward for every 1× risk
+    # Structural stop too far away → setup isn't tight, skip the trade
+    # (do NOT tighten the stop to force the trade — that was the old failure mode)
+    if levels["stop_pct"] > MAX_STOP_PCT:
+        return None
+
+    # Filter poor R/R — blended reward must be 1.5× the structural risk
     if levels["rr_ratio"] < 1.5:
         return None
 
@@ -592,6 +702,11 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
         "vol_ratio":     vol["ratio"],
         "pct_from_52w":  mom["pct_from_52w"],
         "fii_net_3d":    fii["net_3d_cr"],
+        # Entry discipline — the scan price is tonight's close; tomorrow's
+        # open can gap. Above limit_price the R/R is no longer what was
+        # scanned: skip the trade rather than chase.
+        "limit_price":   round(curr * (1 + MAX_CHASE_PCT), 2),
+        "entry_note":    f"Enter ≤ ₹{curr * (1 + MAX_CHASE_PCT):,.2f} (scan close +{MAX_CHASE_PCT*100:.0f}%). If it gaps above, skip.",
         # Swing levels
         "stop_loss":     levels["stop_loss"],
         "stop_pct":      levels["stop_pct"],
@@ -813,7 +928,7 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
 
     for i, c in enumerate(top, 1):
         print(f"\n  {'─'*54}")
-        print(f"  {i}. {c['ticker']:<18} [{c['conviction']}]  Score: {c['score']}/6")
+        print(f"  {i}. {c['ticker']:<18} [{c['conviction']}]  Score: {c['score']}/7")
         print(f"     {c['name']}")
         print(f"     Price: ₹{c['current_price']:,.2f}  |  "
               f"Vol: {c['vol_ratio']:.1f}× avg  |  "
@@ -903,10 +1018,12 @@ def send_telegram_alert(candidates: list):
             conv_emoji = "🔥" if c["conviction"] == "HIGH" else "⚡" if c["conviction"] == "MEDIUM" else "✳️"
             sigs_passed = [k for k, v in c["signals"].items() if v["pass"]]
 
+            limit = c.get("limit_price")
             lines.append(
                 f"{conv_emoji} *{i}. {c['ticker'].replace('.NS','')}* "
                 f"[{c['conviction']}] Score: {c['score']}/{len(c['signals'])}\n"
-                f"  Price: ₹{c['current_price']:,.2f}\n"
+                f"  Price: ₹{c['current_price']:,.2f}"
+                + (f" | Enter ≤ ₹{limit:,.2f} (skip if gaps above)" if limit else "") + "\n"
                 f"  Stop:  ₹{c['stop_loss']:,.2f} ({c['stop_pct']:.1f}% below)\n"
                 f"  T1: ₹{c['target1']:,.2f} (+{SWING_TARGET_1*100:.0f}%) | "
                 f"T2: ₹{c['target2']:,.2f} (+{SWING_TARGET_2*100:.0f}%)\n"
@@ -963,7 +1080,7 @@ def show_status():
     for c in data.get("candidates", []):
         conv = c["conviction"]
         emoji = "🔥" if conv == "HIGH" else "⚡" if conv == "MEDIUM" else "✳️"
-        print(f"\n  {emoji} {c['ticker']:<20} Score:{c['score']}/6  "
+        print(f"\n  {emoji} {c['ticker']:<20} Score:{c['score']}/7  "
               f"RSI:{c['rsi']:.0f}  R/R:{c['rr_ratio']:.2f}×")
         print(f"     ₹{c['current_price']:,.2f}  →  "
               f"Stop:₹{c['stop_loss']:,.2f}  "
