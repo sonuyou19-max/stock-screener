@@ -381,7 +381,7 @@ async function cp(){
   if(btn)btn.textContent='Verifying…';
   let ok=null,enforced=false;
   try{
-    const r=await fetch('https://web-production-2d832.up.railway.app/auth/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pe})});
+    const r=await fetch('https://web-production-50eee.up.railway.app/auth/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pe})});
     if(r.ok){
       const j=await r.json();
       enforced=!!j.enforced;
@@ -619,7 +619,7 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
 
 <script>
 /* ═══ CONFIG ═══ */
-const API='https://web-production-2d832.up.railway.app';
+const API='https://web-production-50eee.up.railway.app';
 let indPortfolio=null,indSignals=null,indFiidii=null,usPortfolio=null;
 let _iP={},_uP={},_iPD=[],_uPD=[],_iPF='1W',_uPF='1W',_iC=null,_uC=null;
 let _ss=null,_iL=false,_uL=false,_advData=null;
