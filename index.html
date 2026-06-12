@@ -574,8 +574,8 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
   </div></div>
   <div class="sec sec-toggle" onclick="toggleClosed('usClosed','usClosedCaret')"><span class="sec-lbl">Closed Positions</span><span class="sec-caret" id="usClosedCaret">▸</span><span class="sec-line"></span></div>
   <div class="closed-wrap" id="usClosed" style="display:none"><div class="spin-wrap"><div class="spinner"></div></div></div>
-  <div class="sec"><span class="sec-lbl">Screener Recommendations</span><span class="sec-line"></span></div>
-  <div class="swap-wrap" id="usSwaps"><div class="spin-wrap"><div class="spinner"></div></div></div>
+  <div class="sec"><span class="sec-lbl">Monthly Recommendations</span><span class="sec-line"></span></div>
+  <div id="usAdvisory"><div class="spin-wrap"><div class="spinner"></div></div></div>
 
   <div class="sec sec-toggle" onclick="toggleClosed('usNewsWrap','usNewsCaret')"><span class="sec-lbl">News Sentiment</span><span class="sec-caret" id="usNewsCaret">▸</span><span class="sec-line"></span></div>
   <div id="usNewsWrap" style="display:none"><div class="sig-grid" id="usNewsGrid"><div class="spin-wrap" style="grid-column:1/-1"><div class="spinner"></div></div></div></div>
@@ -829,7 +829,7 @@ async function loadUS(){
   const[port,picks,swaps]=await Promise.all([fd('/us/portfolio/live'),fd('/us/portfolio/picks'),fd('/us/portfolio/swap')]);
   if(port)usPortfolio=port;
   renderBuckets('us',usPortfolio,'usStocks','$');renderUsStats();
-  renderSwaps('usSwaps',swaps,'us');loadPerf('US');loadClosed('us');
+  renderUsAdvisory(picks,swaps);loadPerf('US');loadClosed('us');
   loadUsNewsSignals();loadUsVerdict();
   await fetchUsPrices();
 }
@@ -1225,6 +1225,103 @@ function renderAdvisory(adv){
     ${execBtn}
     ${picksHtml}
     <div class="adv-meta">Generated: ${adv.generated_at||''} · Holdings: ${adv.current_holdings||0}</div>
+  </div>`;
+}
+
+function renderUsAdvisory(picks,swapsData){
+  const el=document.getElementById('usAdvisory');if(!el)return;
+
+  // Flatten all picks sorted by score
+  const allPicks=[];
+  for(const[bk,bucket]of Object.entries(picks||{})){
+    for(const s of(bucket.stocks||[]))allPicks.push({...s,bk,bkt_label:bucket.label||bk});
+  }
+  allPicks.sort((a,b)=>(b.final_score||0)-(a.final_score||0));
+
+  if(!allPicks.length){
+    el.innerHTML=`<div class="adv-card" style="margin:0 20px"><div class="adv-reason">No US picks yet. Run screener_us.py first.</div></div>`;
+    return;
+  }
+
+  // Build swap lookup keyed by buy_ticker
+  const swaps=(swapsData?.swaps||[]).filter(s=>s.action!=='KEEP');
+  const swapByBuy={};
+  for(const sw of swaps){if(sw.buy_ticker)swapByBuy[sw.buy_ticker]=sw;}
+
+  // Live tickers
+  const liveTkrs=new Set();
+  for(const b of Object.values(usPortfolio||{}))for(const s of(b.stocks||[]))liveTkrs.add(s.ticker);
+
+  // Derive overall action
+  const nSwaps=swaps.filter(s=>s.action==='SWAP').length;
+  const nNew  =swaps.filter(s=>s.action==='NEW BUY').length;
+  const action=nSwaps?'SWAP':nNew?'ADD':'HOLD';
+  const actionIcon =action==='HOLD'?'✅':action==='SWAP'?'🔄':'➕';
+  const actionLabel=action==='HOLD'?'Hold — No Changes This Month':
+    action==='SWAP'?`${nSwaps} swap${nSwaps!==1?'s':''} recommended`:
+    `${nNew} new position${nNew!==1?'s':''} to add`;
+  const cls=action==='SWAP'?'adv-replace':action==='ADD'?'adv-add':'';
+
+  // Holdings health strip
+  const kept=[...liveTkrs].filter(t=>allPicks.some(p=>p.ticker===t));
+  const healthHtml=liveTkrs.size?`
+    <div style="font-size:10px;color:var(--text3);margin-bottom:8px;padding:6px 10px;background:var(--surface2);border-radius:8px;">
+      📊 Holdings: ${liveTkrs.size} live · ${kept.length} still in top picks
+      ${nSwaps?` · <span style="color:var(--gold);font-weight:700">${nSwaps} upgrade${nSwaps!==1?'s':''} available</span>`:''}
+    </div>`:''
+
+  // Reasoning line
+  const reason=action==='HOLD'?'All current positions remain in the screener\'s top picks. No changes needed this month.':
+    action==='SWAP'?`Screener found ${nSwaps} higher-scoring stock${nSwaps!==1?'s':''} that outrank current holdings. Review swap${nSwaps!==1?'s':''} below.`:
+    `${nNew} screener pick${nNew!==1?'s':''} not yet in your portfolio. Consider adding the highest-conviction positions.`;
+
+  // Picks list — show new (not held) picks; fall back to all
+  let _dep=0;for(const b of Object.values(usPortfolio||{}))for(const s of(b.stocks||[]))_dep+=s.allocation_usd||0;
+  const _avail=Math.max(0,1000-_dep);
+  const newPicks=allPicks.filter(p=>!liveTkrs.has(p.ticker));
+  const show=newPicks.length?newPicks:allPicks.slice(0,8);
+  const perAlloc=show.length&&newPicks.length?Math.floor(_avail/show.length):0;
+
+  // Live stock allocation lookup for swap sizing
+  const liveFlat={};for(const b of Object.values(usPortfolio||{}))for(const s of(b.stocks||[]))liveFlat[s.ticker]=s;
+
+  const picksHtml=`
+    <div class="adv-picks-lbl">${newPicks.length?(show.length+' new pick'+(show.length!==1?'s':'')+(perAlloc?' · $'+perAlloc.toLocaleString()+' each':'')):'Portfolio full — reference picks'} · sorted by score</div>
+    <div class="adv-picks-list">${show.map((p,i)=>{
+      const sw=swapByBuy[p.ticker];
+      const price=p.price||0;
+      const alloc=sw?(liveFlat[sw.sell_ticker]?.allocation_usd||p.allocation_usd||0):(perAlloc||p.allocation_usd||0);
+      const shares=price&&alloc?Math.floor(alloc/price):(p.approx_shares||null);
+      const priceHtml=price?` <span style="color:var(--text2);font-weight:400;font-size:10px">($${price.toFixed(2)})</span>`:'';
+      const qtyHtml=shares!=null?shares>0
+        ?`<div class="adv-pick-sub" style="color:var(--green);font-size:9px">~${shares}sh · $${alloc.toFixed(0)} alloc</div>`
+        :`<div class="adv-pick-sub" style="color:var(--red);font-size:9px">$${price.toFixed(0)}/sh — exceeds slot budget</div>`
+        :'';
+      const swapHtml=sw?`<div class="adv-pick-sub" style="color:var(--gold);font-size:9px">↔ Replace ${sw.sell_ticker} · +${sw.score_diff?.toFixed(1)||'?'} pts · ${sw.conviction||''}</div>`:'';
+      const yfUrl=`https://finance.yahoo.com/quote/${p.ticker}`;
+      return `<div class="adv-pick-row ${sw?'adv-pick-highlight':''}">
+        <span class="adv-pick-rank">${i+1}</span>
+        <div class="adv-pick-main">
+          <span class="adv-pick-ticker"><a href="${yfUrl}" target="_blank" rel="noopener" style="color:var(--text);text-decoration:none">${p.ticker}</a>${priceHtml}</span>
+          <div class="adv-pick-sub">${(p.name||'').slice(0,24)} · ${(p.bkt_label||'').slice(0,14)}</div>
+          ${qtyHtml}${swapHtml}
+        </div>
+        <span class="adv-pick-score">${(p.final_score||0).toFixed(0)}</span>
+        <button class="pick-add-btn" onclick="markUsBought('${p.ticker}','${sw?.sell_ticker||''}',${p.final_score||0})" title="${sw?'Execute swap':'Add to portfolio'}">${sw?'⇄':'+'}</button>
+      </div>`;
+    }).join('')}
+    </div>`;
+
+  const genDate=allPicks[0]?.buy_date||'';
+  el.innerHTML=`<div class="adv-card ${cls}" style="margin:0 20px">
+    <div class="adv-header">
+      <span class="adv-action-badge">${actionIcon} ${actionLabel}</span>
+      <span class="adv-src">📊 S&P 500 Screener</span>
+    </div>
+    ${healthHtml}
+    <div class="adv-reason">${reason}</div>
+    ${picksHtml}
+    <div class="adv-meta">Screened: ${allPicks.length} stocks · Universe: S&P 500${genDate?' · '+genDate:''}</div>
   </div>`;
 }
 
