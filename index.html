@@ -370,7 +370,6 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
 </div>
 <script>
 const SK='ea_v3',TK='ea_tok';
-const API='https://web-production-2d832.up.railway.app';
 function _unlock(pe){sessionStorage.setItem(SK,'ok');sessionStorage.setItem(TK,pe);document.getElementById('pinGate').classList.add('hidden');if(typeof initApp==='function')initApp();}
 (()=>{if(sessionStorage.getItem(SK)==='ok')document.getElementById('pinGate').classList.add('hidden');})();
 function _postHeaders(){const h={'Content-Type':'application/json'};const t=sessionStorage.getItem(TK);if(t)h['X-Upload-Token']=t;return h;}
@@ -382,7 +381,7 @@ async function cp(){
   if(btn)btn.textContent='Verifying…';
   let ok=null,enforced=false;
   try{
-    const r=await fetch(`${API}/auth/verify`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pe})});
+    const r=await fetch('https://web-production-2d832.up.railway.app/auth/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pe})});
     if(r.ok){
       const j=await r.json();
       enforced=!!j.enforced;
@@ -620,7 +619,7 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
 
 <script>
 /* ═══ CONFIG ═══ */
-// API URL defined in first script block (environment-aware)
+const API='https://web-production-2d832.up.railway.app';
 let indPortfolio=null,indSignals=null,indFiidii=null,usPortfolio=null;
 let _iP={},_uP={},_iPD=[],_uPD=[],_iPF='1W',_uPF='1W',_iC=null,_uC=null;
 let _ss=null,_iL=false,_uL=false,_advData=null;
