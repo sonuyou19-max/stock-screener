@@ -629,11 +629,15 @@ async function fd(ep,retries=1){
     try{
       const c=new AbortController();const t=setTimeout(()=>c.abort(),25000);
       const r=await fetch(`${API}${ep}`,{headers:{'Accept':'application/json'},signal:c.signal});
-      clearTimeout(t);if(!r.ok)return null;
+      clearTimeout(t);if(!r.ok){console.error('[EA] HTTP',r.status,'on',ep);return null;}
       const tx=await r.text();
       return JSON.parse(tx.replace(/:NaN/g,':null').replace(/:Infinity/g,':null').replace(/:-Infinity/g,':null'));
-    }catch(e){if(i<retries)await new Promise(r=>setTimeout(r,4000));}
+    }catch(e){
+      console.error('[EA] fetch error on',ep,'attempt',i+1,':',e.message||e);
+      if(i<retries)await new Promise(r=>setTimeout(r,4000));
+    }
   }
+  console.error('[EA] all retries failed for',ep);
   return null;
 }
 
@@ -711,7 +715,12 @@ function updateHero(){
 /* ═══ SNAPSHOTS ═══ */
 async function fetchIndSnap(){
   const[port,prices,hist]=await Promise.all([fd('/portfolio/live'),fd('/prices'),fd('/portfolio/history')]);
-  if(!port||!prices)return;
+  if(!port||!prices){
+    document.getElementById('snapIndPnl').textContent='Error';
+    document.getElementById('snapIndPct').textContent='Could not reach server';
+    document.getElementById('lastUpdated').textContent='Connection failed';
+    return;
+  }
   let inv=0,cur=0,day=0,cnt=0;
   for(const b of Object.values(port)){for(const s of(b.stocks||[])){const i=prices.prices?.[s.ticker];if(!i)continue;const sh=s.approx_shares||0,bp=s.price||s.buy_price||0,cp=i.price,pv=cp/(1+(i.change_pct||0)/100);inv+=bp*sh;cur+=cp*sh;day+=(cp-pv)*sh;cnt++;}}
   // Add realised PnL from closed trades
@@ -732,7 +741,11 @@ async function fetchIndSnap(){
 
 async function fetchUsSnap(){
   const[port,prices,hist]=await Promise.all([fd('/us/portfolio/live'),fd('/us/prices'),fd('/us/portfolio/history')]);
-  if(!port||!prices)return;
+  if(!port||!prices){
+    document.getElementById('snapUsPnl').textContent='Error';
+    document.getElementById('snapUsPct').textContent='Could not reach server';
+    return;
+  }
   let inv=0,cur=0,day=0,cnt=0;
   for(const b of Object.values(port)){for(const s of(b.stocks||[])){const i=prices.prices?.[s.ticker];if(!i)continue;const sh=s.approx_shares||0,bp=s.price||s.buy_price||0,cp=i.price,pv=cp/(1+(i.change_pct||0)/100);inv+=bp*sh;cur+=cp*sh;day+=(cp-pv)*sh;cnt++;}}
   const closedPnl=(hist?.trades||[]).reduce((sum,t)=>sum+(t.realised_pnl_inr||0),0);
