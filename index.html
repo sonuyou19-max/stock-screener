@@ -371,7 +371,7 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
 <script>
 const SK='ea_v3',TK='ea_tok';
 function _unlock(pe){sessionStorage.setItem(SK,'ok');sessionStorage.setItem(TK,pe);document.getElementById('pinGate').classList.add('hidden');if(typeof initApp==='function')initApp();}
-(()=>{if(sessionStorage.getItem(SK)==='ok'){document.getElementById('pinGate').classList.add('hidden');window.addEventListener('DOMContentLoaded',()=>{if(typeof initApp==='function')initApp();});}})();
+(()=>{if(sessionStorage.getItem(SK)==='ok')document.getElementById('pinGate').classList.add('hidden');})();
 function _postHeaders(){const h={'Content-Type':'application/json'};const t=sessionStorage.getItem(TK);if(t)h['X-Upload-Token']=t;return h;}
 async function cp(){
   const inp=document.getElementById('pinInput');
@@ -624,14 +624,17 @@ let indPortfolio=null,indSignals=null,indFiidii=null,usPortfolio=null;
 let _iP={},_uP={},_iPD=[],_uPD=[],_iPF='1W',_uPF='1W',_iC=null,_uC=null;
 let _ss=null,_iL=false,_uL=false,_advData=null;
 
-async function fd(ep){
-  try{
-    const c=new AbortController();const t=setTimeout(()=>c.abort(),12000);
-    const r=await fetch(`${API}${ep}`,{headers:{'Accept':'application/json'},signal:c.signal});
-    clearTimeout(t);if(!r.ok)return null;
-    const tx=await r.text();
-    return JSON.parse(tx.replace(/:NaN/g,':null').replace(/:Infinity/g,':null').replace(/:-Infinity/g,':null'));
-  }catch{return null;}
+async function fd(ep,retries=1){
+  for(let i=0;i<=retries;i++){
+    try{
+      const c=new AbortController();const t=setTimeout(()=>c.abort(),25000);
+      const r=await fetch(`${API}${ep}`,{headers:{'Accept':'application/json'},signal:c.signal});
+      clearTimeout(t);if(!r.ok)return null;
+      const tx=await r.text();
+      return JSON.parse(tx.replace(/:NaN/g,':null').replace(/:Infinity/g,':null').replace(/:-Infinity/g,':null'));
+    }catch(e){if(i<retries)await new Promise(r=>setTimeout(r,4000));}
+  }
+  return null;
 }
 
 /* ═══ ROUTING ═══ */
@@ -653,7 +656,17 @@ function refreshAll(){
 }
 
 /* ═══ INIT ═══ */
-function initApp(){showView('homeView');fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();setInterval(fetchMarket,5*60*1000);}
+function initApp(){
+  showView('homeView');
+  document.getElementById('lastUpdated').textContent='Connecting…';
+  fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();
+  setInterval(fetchMarket,5*60*1000);
+  // Auto-retry home snaps once after 8s in case Railway was cold-starting
+  setTimeout(()=>{
+    const el=document.getElementById('snapIndPnl');
+    if(el&&el.textContent==='—'){fetchIndSnap();fetchUsSnap();loadSwingSnap();fetchMarket();}
+  },8000);
+}
 
 /* ═══ MARKET DATA ═══ */
 async function fetchMarket(){
