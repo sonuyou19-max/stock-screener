@@ -810,7 +810,7 @@ async function fetchIndPrices(){
   _iP=data.prices;let inv=0,cur=0,day=0,cnt=0;
   for(const b of Object.values(indPortfolio)){for(const s of(b.stocks||[])){
     const i=_iP[s.ticker];if(!i)continue;
-    const key=s.ticker.replace('.','_'),{price,change_pct}=i,sh=s.approx_shares||0,bp=s.price||s.buy_price||0;
+    const key=s.ticker.replace('.','_').replace('-','_'),{price,change_pct}=i,sh=s.approx_shares||0,bp=s.price||s.buy_price||0;
     const pv=price/(1+(change_pct||0)/100),di=(price-pv)*sh,pp=bp?((price-bp)/bp*100):0;
     inv+=bp*sh;cur+=price*sh;day+=di;cnt++;
     const lp=document.getElementById(`lp-${key}`);if(lp)lp.textContent='₹'+price.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
