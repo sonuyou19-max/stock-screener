@@ -24,6 +24,12 @@ Usage:
 """
 
 import smtplib
+
+# Sent with every API POST; uploads are rejected when the server has
+# UPLOAD_TOKEN set and this env var is missing or wrong.
+import os as _os_tok
+_UPLOAD_AUTH = {"X-Upload-Token": _os_tok.environ["UPLOAD_TOKEN"]} if _os_tok.getenv("UPLOAD_TOKEN") else {}
+
 import json
 import os
 import argparse
@@ -887,7 +893,7 @@ def capture_eod_snapshot(portfolio: dict) -> None:
         req = _ur.Request(
             f"{api_url}/performance/upload",
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", **_UPLOAD_AUTH},
             method="POST",
         )
         with _ur.urlopen(req, timeout=15) as r:

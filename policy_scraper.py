@@ -15,6 +15,12 @@ Usage:
 """
 
 import json
+
+# Sent with every API POST; uploads are rejected when the server has
+# UPLOAD_TOKEN set and this env var is missing or wrong.
+import os as _os_tok
+_UPLOAD_AUTH = {"X-Upload-Token": _os_tok.environ["UPLOAD_TOKEN"]} if _os_tok.getenv("UPLOAD_TOKEN") else {}
+
 import os
 import re
 import time
@@ -930,7 +936,7 @@ def _post_signal_to_api(signal_type: str, payload: dict):
         import json as _json
         body = _json.dumps({"type": signal_type, "payload": payload}).encode("utf-8")
         req = _urllib.Request(url, data=body,
-                              headers={"Content-Type": "application/json"},
+                              headers={"Content-Type": "application/json", **_UPLOAD_AUTH},
                               method="POST")
         with _urllib.urlopen(req, timeout=10) as resp:
             print(f"  ✅ {signal_type} POSTed to API: {resp.read().decode()}")
