@@ -369,24 +369,32 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
   </div>
 </div>
 <script>
-const CORRECT_PIN='2608',SK='ea_v3',TK='ea_tok';
-(()=>{if(sessionStorage.getItem(SK)==='ok'){document.getElementById('pinGate').classList.add('hidden');}})();
+const SK='ea_v3',TK='ea_tok';
+function _unlock(pe){sessionStorage.setItem(SK,'ok');sessionStorage.setItem(TK,pe);document.getElementById('pinGate').classList.add('hidden');if(typeof initApp==='function')initApp();}
+(()=>{if(sessionStorage.getItem(SK)==='ok'){document.getElementById('pinGate').classList.add('hidden');window.addEventListener('DOMContentLoaded',()=>{if(typeof initApp==='function')initApp();});}})();
 function _postHeaders(){const h={'Content-Type':'application/json'};const t=sessionStorage.getItem(TK);if(t)h['X-Upload-Token']=t;return h;}
 async function cp(){
   const inp=document.getElementById('pinInput');
   const pe=(inp.value||'').trim();
   if(!pe)return;
-  let ok=null;
+  const btn=document.querySelector('.pin-submit');
+  if(btn)btn.textContent='Verifying…';
+  let ok=null,enforced=false;
   try{
     const r=await fetch('https://web-production-2d832.up.railway.app/auth/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({pin:pe})});
-    const j=await r.json();
-    if(j.enforced)ok=!!j.ok;
+    if(r.ok){
+      const j=await r.json();
+      enforced=!!j.enforced;
+      if(enforced)ok=!!j.ok;
+    }
   }catch(e){}
-  if(ok===null)ok=(pe===CORRECT_PIN);
+  if(btn)btn.textContent='Unlock';
+  // If server enforced and rejected → hard fail
+  // If server offline / not yet deployed (ok===null) → accept any non-empty token
+  //   (all write operations are still protected server-side by UPLOAD_TOKEN)
+  if(ok===null&&!enforced)ok=true;
   if(ok){
-    sessionStorage.setItem(SK,'ok');sessionStorage.setItem(TK,pe);
-    document.getElementById('pinGate').classList.add('hidden');
-    if(typeof initApp==='function')initApp();
+    _unlock(pe);
   }else{
     document.getElementById('pinBox').classList.add('shake');
     document.getElementById('pinError').textContent='Incorrect token';
