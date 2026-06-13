@@ -557,7 +557,7 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
   </div>
   <div class="stats-row">
     <div class="stat-c"><div class="stat-lbl">Deployed</div><div class="stat-val" id="us-dep">—</div><div class="stat-sub" id="us-stocks">—</div></div>
-    <div class="stat-c"><div class="stat-lbl">Cash Buffer</div><div class="stat-val" id="us-cash">—</div><div class="stat-sub">Available capital</div></div>
+    <div class="stat-c"><div class="stat-lbl">Stocks</div><div class="stat-val" id="us-cnt">—</div><div class="stat-sub">in portfolio</div></div>
     <div class="stat-c"><div class="stat-lbl">Broker</div><div class="stat-val">Bolero</div><div class="stat-sub">Belgium</div></div>
     <div class="stat-c"><div class="stat-lbl">Universe</div><div class="stat-val">S&P 500</div><div class="stat-sub">Monthly screened</div></div>
   </div>
@@ -872,9 +872,9 @@ async function loadUS(){
 function renderUsStats(){
   if(!usPortfolio)return;
   let dep=0,cnt=0;for(const b of Object.values(usPortfolio)){for(const s of(b.stocks||[])){dep+=s.allocation_usd||0;cnt++;}}
-  document.getElementById('us-dep').textContent='$'+dep.toLocaleString('en-US',{maximumFractionDigits:0});
+  document.getElementById('us-dep').textContent=dep>0?'$'+dep.toLocaleString('en-US',{maximumFractionDigits:0}):'—';
   document.getElementById('us-stocks').textContent=cnt+' stock'+(cnt!==1?'s':'')+' · Tech/Semi';
-  document.getElementById('us-cash').textContent='$'+(1000-dep).toLocaleString('en-US',{maximumFractionDigits:0});
+  const cntEl=document.getElementById('us-cnt');if(cntEl)cntEl.textContent=cnt||'—';
 }
 
 function updateUsPnl(pnl,pct,day,cur,cnt){
@@ -1314,38 +1314,27 @@ function renderUsAdvisory(adv){
     }).join('')+
     '</div>':'';
 
-  // Balance-aware picks
-  let _raDep=0;
-  for(const b of Object.values(usPortfolio||{}))for(const s of(b.stocks||[]))_raDep+=s.allocation_usd||0;
-  const _raAvail=Math.max(0,1000-_raDep);
-  const _raSlots=Math.max(0,7-liveTkrs.size);
+  // Picks — all screener picks excluding current holdings, no budget cap
   const allPicks=(adv.top_picks||[]).filter(p=>!liveTkrs.has(p.ticker));
-  const picks=allPicks; // show all screener picks, not capped to open slots
-  const perAlloc=picks.length>0&&_raSlots>0?Math.floor(_raAvail/picks.length):0;
-  const picksHtml=picks.length?`
-    <div class="adv-picks-lbl">${_raSlots>0?_raSlots+' open slot'+(_raSlots!==1?'s':'')+' · $'+perAlloc.toLocaleString('en-US',{maximumFractionDigits:0})+' each':'Portfolio full — reference picks:'}</div>
-    <div class="adv-picks-list">${picks.map((p,i)=>{
+  const picks=allPicks;
+  const picksHtml=picks.length?
+    '<div class="adv-picks-lbl">This month\'s picks — tap row for details, + to add</div>'+
+    '<div class="adv-picks-list">'+picks.map((p,i)=>{
       const price=_uP?.[p.ticker]?.price;
-      const qty=price&&perAlloc>0?Math.floor(perAlloc/price):null;
       const priceHtml=price?' <span style="color:var(--text2);font-weight:400;font-size:10px">($'+price.toLocaleString('en-US',{maximumFractionDigits:2})+')</span>':'';
-      const qtyHtml=qty!=null?qty>0
-        ?'<div class="adv-pick-sub" style="color:var(--green);font-size:9px">~'+qty+' shares · $'+perAlloc.toLocaleString('en-US',{maximumFractionDigits:0})+' alloc</div>'
-        :'<div class="adv-pick-sub" style="color:var(--red);font-size:9px">$'+price.toLocaleString('en-US',{maximumFractionDigits:0})+'/sh — exceeds slot budget</div>'
-        :'';
       const safeT=p.ticker.replace('.','_');
       return '<div class="adv-pick-row" id="urow-'+safeT+'">'+
         '<span class="adv-pick-rank" style="cursor:pointer" onclick="togglePickDetail(\''+p.ticker+'\',\'us\')">'+(i+1)+'</span>'+
         '<div class="adv-pick-main" style="cursor:pointer" onclick="togglePickDetail(\''+p.ticker+'\',\'us\')">'+
         '<span class="adv-pick-ticker">'+p.ticker+priceHtml+'</span>'+
         '<div class="adv-pick-sub">'+(p.name||'').slice(0,26)+' · '+(p.sector||'').slice(0,18)+'</div>'+
-        qtyHtml+
         '</div>'+
         '<span class="adv-pick-score">'+(p.score||0)+'</span>'+
         '<button class="pick-add-btn" onclick="addUsToPickedPortfolio(\''+p.ticker+'\')" title="Add to portfolio">+</button>'+
         '</div>'+
         '<div id="udet-'+safeT+'" style="display:none;background:var(--surface2);border-radius:8px;padding:10px 12px;margin:2px 0 6px;font-size:11px;color:var(--text2)"></div>';
-    }).join('')}
-    </div>`:''
+    }).join('')+
+    '</div>':''
 
   const execBtn=isExit
     ?'<button class="exec-btn adv-exec" onclick="execUsAdvisory(\''+(adv.buy_ticker||'')+'\',\''+(adv.sell_ticker||'')+'\')">'
