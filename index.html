@@ -628,7 +628,7 @@ async function fd(ep,retries=1){
   for(let i=0;i<=retries;i++){
     try{
       const c=new AbortController();const t=setTimeout(()=>c.abort(),25000);
-      const r=await fetch(`${API}${ep}`,{headers:{'Accept':'application/json'},signal:c.signal});
+      const r=await fetch(`${API}${ep}`,{headers:{'Accept':'application/json'},cache:'no-store',signal:c.signal});
       clearTimeout(t);if(!r.ok){console.error('[EA] HTTP',r.status,'on',ep);return null;}
       const tx=await r.text();
       return JSON.parse(tx.replace(/:NaN/g,':null').replace(/:Infinity/g,':null').replace(/:-Infinity/g,':null'));
@@ -1367,56 +1367,43 @@ function renderUsAdvisory(adv){
 }
 
 async function addToPickedPortfolio(ticker){
-  // Check not already in portfolio
-  const [liveRaw, picksRaw] = await Promise.all([fd('/portfolio/live'), fd('/portfolio/picks')]);
-  const live = liveRaw || {};
-  for(const bk of Object.keys(live)){
-    if((live[bk].stocks||[]).find(s=>s.ticker===ticker)){
-      alert(`${ticker.replace('.NS','')} is already in your portfolio.`);return;
-    }
-  }
-  // Get full screener data (audit_trail, fundamentals, stop-loss etc.)
+  // Full screener data (fundamentals, stop-loss, etc.) for the entry
+  if(!_indPicksData)_indPicksData=await fd('/portfolio/picks');
   let fullStock=null;
-  for(const b of Object.values(picksRaw||{})){fullStock=(b.stocks||[]).find(s=>s.ticker===ticker);if(fullStock)break;}
-  // Fallback: advisory top_picks has minimal fields
+  for(const b of Object.values(_indPicksData||{})){fullStock=(b.stocks||[]).find(s=>s.ticker===ticker);if(fullStock)break;}
   const advPick=(_advData?.top_picks||[]).find(p=>p.ticker===ticker);
   if(!fullStock&&!advPick){alert(`Pick data for ${ticker.replace('.NS','')} not found. Reload the page.`);return;}
   const inputPrice=prompt(`Add ${ticker.replace('.NS','')} to portfolio\nEnter your buy price (₹):`);
   if(inputPrice===null)return;
   const buyPrice=parseFloat(inputPrice);
   if(!buyPrice||isNaN(buyPrice)||buyPrice<=0){alert('Please enter a valid buy price.');return;}
-  if(!live.top_picks)live.top_picks={label:'Monthly Top Picks',stocks:[]};
-  // Spread all screener fields so Why Picked, fundamentals, stop-loss all work
   const entry=fullStock
     ? {...fullStock, price:buyPrice, buy_price:buyPrice, buy_date:new Date().toISOString().split('T')[0]}
     : {ticker, name:advPick.name, nse_sector:advPick.sector, final_score:advPick.score,
        price:buyPrice, buy_price:buyPrice, buy_date:new Date().toISOString().split('T')[0],
        allocation_inr:0, approx_shares:0};
-  live.top_picks.stocks.push(entry);
-  await fetch(`${API}/portfolio/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
+  // Atomic server-side append — server is the single source of truth
+  const r=await fetch(`${API}/portfolio/live/add`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});
+  if(!r.ok){alert(`⚠️ Could not add (${r.status}). Check your session and try again.`);return;}
   alert(`✅ ${ticker.replace('.NS','')} added at ₹${buyPrice.toLocaleString('en-IN')}`);
   _iL=false;loadIndia();
 }
 
 async function addUsToPickedPortfolio(ticker){
-  const[liveRaw,picksRaw]=await Promise.all([fd('/us/portfolio/live'),fd('/us/portfolio/picks')]);
-  const live=liveRaw||{};
-  for(const bk of Object.keys(live)){
-    if((live[bk].stocks||[]).find(s=>s.ticker===ticker)){alert(ticker+' is already in your US portfolio.');return;}
-  }
+  if(!_usPicksData)_usPicksData=await fd('/us/portfolio/picks');
   let fullStock=null;
-  for(const b of Object.values(picksRaw||{})){fullStock=(b.stocks||[]).find(s=>s.ticker===ticker);if(fullStock)break;}
+  for(const b of Object.values(_usPicksData||{})){fullStock=(b.stocks||[]).find(s=>s.ticker===ticker);if(fullStock)break;}
+  const advPick=(_usAdvData?.top_picks||[]).find(p=>p.ticker===ticker);
   const inputPrice=prompt('Add '+ticker+' to US portfolio\nEnter your buy price ($):');
   if(inputPrice===null)return;
   const buyPrice=parseFloat(inputPrice);
   if(!buyPrice||isNaN(buyPrice)||buyPrice<=0){alert('Please enter a valid buy price.');return;}
-  if(!live.top_picks)live.top_picks={label:'Monthly Top Picks',stocks:[]};
   const entry=fullStock
     ?{...fullStock,price:buyPrice,buy_price:buyPrice,buy_date:new Date().toISOString().split('T')[0]}
-    :{ticker,name:ticker,sector:'Technology',final_score:0,price:buyPrice,buy_price:buyPrice,
-      buy_date:new Date().toISOString().split('T')[0],allocation_usd:0,approx_shares:0};
-  live.top_picks.stocks.push(entry);
-  await fetch(`${API}/us/portfolio/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
+    :{ticker,name:(advPick?.name)||ticker,sector:(advPick?.sector)||'Technology',final_score:(advPick?.score)||0,
+      price:buyPrice,buy_price:buyPrice,buy_date:new Date().toISOString().split('T')[0],allocation_usd:0,approx_shares:0};
+  const r=await fetch(`${API}/us/portfolio/live/add`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});
+  if(!r.ok){alert(`⚠️ Could not add (${r.status}). Check your session and try again.`);return;}
   alert('✅ '+ticker+' added at $'+buyPrice.toLocaleString('en-US'));
   _uL=false;loadUS();
 }
@@ -1466,12 +1453,8 @@ async function exitIndiaStock(ticker){
       exit_reason:'MANUAL_EXIT',market:'IND',
     })
   });
-  // Remove from live portfolio — update locally first for instant UI, then persist to server
-  for(const bk of Object.keys(indPortfolio||{}))
-    if(indPortfolio[bk].stocks)indPortfolio[bk].stocks=indPortfolio[bk].stocks.filter(s=>s.ticker!==ticker);
-  renderLiveFlat(indPortfolio,'indStocks','₹');
-  const live=JSON.parse(JSON.stringify(indPortfolio)); // deep copy
-  const r=await fetch(`${API}/portfolio/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
+  // Atomic server-side removal — server owns the list
+  const r=await fetch(`${API}/portfolio/live/remove`,{method:'POST',headers:_postHeaders(),body:JSON.stringify({ticker})});
   if(!r.ok){alert(`⚠️ Server update failed (${r.status}) — refresh may restore the stock. Check your session.`);return;}
   alert(`✅ ${ticker.replace('.NS','')} exited.\nP&L: ${pnl_pct>=0?'+':''}${pnl_pct.toFixed(1)}%\nSaved to trade history.`);
   _iL=false;loadIndia();
@@ -1518,12 +1501,8 @@ async function exitUsStock(ticker){
       exit_reason:'MANUAL_EXIT',market:'US',
     })
   });
-  // Update locally first for instant UI, then persist
-  for(const bk of Object.keys(usPortfolio||{}))
-    if(usPortfolio[bk].stocks)usPortfolio[bk].stocks=usPortfolio[bk].stocks.filter(s=>s.ticker!==ticker);
-  renderBuckets('us',usPortfolio,'usStocks','$');
-  const live=JSON.parse(JSON.stringify(usPortfolio));
-  const r=await fetch(`${API}/us/portfolio/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
+  // Atomic server-side removal — server owns the list
+  const r=await fetch(`${API}/us/portfolio/live/remove`,{method:'POST',headers:_postHeaders(),body:JSON.stringify({ticker})});
   if(!r.ok){alert(`⚠️ Server update failed (${r.status}) — refresh may restore the stock. Check your session.`);return;}
   alert(`✅ ${ticker} exited.\nP&L: ${pnl_pct>=0?'+':''}${pnl_pct.toFixed(1)}%\nSaved to trade history.`);
   _uL=false;loadUS();
