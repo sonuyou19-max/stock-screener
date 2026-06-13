@@ -306,18 +306,12 @@ def signals():
 @app.route("/portfolio/live", methods=["GET", "OPTIONS"])
 def live_portfolio():
     """Return what the investor actually holds on Kite right now."""
-    global _live_cache
     if request.method == "OPTIONS":
         return jsonify({}), 200
-    # Try cache
-    if _live_cache:
-        return jsonify(_sanitise(_live_cache))
-    # Try disk
-    path = os.path.join(DATA_DIR, "portfolio_live.json")
-    data = _load_json(path)
-    if data:
-        _live_cache = data
-        return jsonify(_sanitise(data))
+    # Always read from disk — multi-instance safe
+    live = _read_live_ind()
+    if live:
+        return jsonify(_sanitise(live))
     # Fall back to latest screener picks (first run migration)
     path = _find_latest_portfolio()
     if path:
@@ -350,19 +344,22 @@ def upload_live_portfolio():
 
 
 def _read_live_ind():
-    """Single source of truth for the India live portfolio (cache → disk)."""
+    """Always read from disk — single source of truth, multi-instance safe."""
+    path = os.path.join(DATA_DIR, "portfolio_live.json")
+    data = _load_json(path)
+    result = data if isinstance(data, dict) else {}
     global _live_cache
-    if _live_cache:
-        return _live_cache
-    data = _load_json(os.path.join(DATA_DIR, "portfolio_live.json"))
-    _live_cache = data if isinstance(data, dict) else {}
-    return _live_cache
+    _live_cache = result
+    return result
 
 
 def _write_live_ind(data):
     global _live_cache
-    _live_cache = _sanitise(data)
-    _save_json(os.path.join(DATA_DIR, "portfolio_live.json"), _live_cache)
+    sanitised = _sanitise(data)
+    path = os.path.join(DATA_DIR, "portfolio_live.json")
+    if not _save_json(path, sanitised):
+        raise RuntimeError(f"Failed to write India live portfolio to {path}")
+    _live_cache = sanitised
 
 
 @app.route("/portfolio/live/add", methods=["POST", "OPTIONS"])
@@ -901,13 +898,9 @@ def performance_upload():
 
 @app.route("/us/portfolio/live", methods=["GET", "OPTIONS"])
 def us_portfolio_live_get():
-    global _us_live_cache
     if request.method == "OPTIONS":
         return jsonify({}), 200
-    if not _us_live_cache:
-        loaded = _load_json(US_LIVE_FILE)
-        _us_live_cache = loaded if isinstance(loaded, dict) else {}
-    return jsonify(_sanitise(_us_live_cache))
+    return jsonify(_sanitise(_read_live_us()))
 
 
 @app.route("/us/portfolio/live/upload", methods=["POST", "OPTIONS"])
@@ -925,19 +918,20 @@ def us_portfolio_live_upload():
 
 
 def _read_live_us():
-    """Single source of truth for the US live portfolio (cache → disk)."""
-    global _us_live_cache
-    if _us_live_cache:
-        return _us_live_cache
+    """Always read from disk — single source of truth, multi-instance safe."""
     data = _load_json(US_LIVE_FILE)
-    _us_live_cache = data if isinstance(data, dict) else {}
-    return _us_live_cache
+    result = data if isinstance(data, dict) else {}
+    global _us_live_cache
+    _us_live_cache = result
+    return result
 
 
 def _write_live_us(data):
     global _us_live_cache
-    _us_live_cache = _sanitise(data)
-    _save_json(US_LIVE_FILE, _us_live_cache)
+    sanitised = _sanitise(data)
+    if not _save_json(US_LIVE_FILE, sanitised):
+        raise RuntimeError(f"Failed to write US live portfolio to {US_LIVE_FILE}")
+    _us_live_cache = sanitised
 
 
 @app.route("/us/portfolio/live/add", methods=["POST", "OPTIONS"])
