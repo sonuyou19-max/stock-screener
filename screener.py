@@ -29,6 +29,7 @@ _UPLOAD_AUTH = {"X-Upload-Token": _os_tok.environ["UPLOAD_TOKEN"]} if _os_tok.ge
 import json
 import time
 import warnings
+import requests
 import urllib.request as _urllib
 import urllib.error as _urlerr
 from datetime import datetime, timedelta
@@ -1785,21 +1786,21 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
         )
         with _urllib.urlopen(req, timeout=10) as resp:
             rb_data = json.loads(resp.read())
-        if "error" not in rb_data and rb_data.get("actions"):
-            rb_report = rb_data
-            print(f"  ✅ Using rebalancer report from API (date: {rb_data.get('date','?')})")
-            # Merge rebalancer decisions into live_holdings for the health check
-            rb_by_ticker = {d["ticker"]: d for d in rb_data.get("actions", [])}
-            for h in live_holdings:
-                rb = rb_by_ticker.get(h["ticker"], {})
-                h["rebalancer_verdict"] = rb.get("action", "HOLD")
-                h["rebalancer_reason"]  = rb.get("reason", "")
-                h["pnl_pct"]            = rb.get("gain_pct", h.get("pnl_pct"))
-                h["current_price"]      = rb.get("current_price")
-                h["exit_score"]         = {"EXIT": 80, "TRIM": 50, "WATCH": 30, "HOLD": 10}.get(
-                    rb.get("action", "HOLD"), 10)
-        else:
-            raise ValueError("empty report")
+        if "error" in rb_data:
+            raise ValueError(rb_data["error"])
+        rb_report = rb_data
+        actions = rb_data.get("actions") or []
+        rb_by_ticker = {d["ticker"]: d for d in actions}
+        for h in live_holdings:
+            rb = rb_by_ticker.get(h["ticker"], {})
+            h["rebalancer_verdict"] = rb.get("action", "HOLD")
+            h["rebalancer_reason"]  = rb.get("reason", "")
+            h["pnl_pct"]            = rb.get("gain_pct", h.get("pnl_pct"))
+            h["current_price"]      = rb.get("current_price")
+            h["exit_score"]         = {"EXIT": 80, "TRIM": 50, "WATCH": 30, "HOLD": 10}.get(
+                rb.get("action", "HOLD"), 10)
+        flag_count = sum(1 for a in actions if a.get("action") in ("EXIT","TRIM"))
+        print(f"  ✅ Using rebalancer report from API (date: {rb_data.get('date','?')}, {len(actions)} holdings, {flag_count} EXIT/TRIM)")
     except Exception as e:
         print(f"  ⚠️  Rebalancer API report not available ({e}) — running lightweight check")
         live_holdings = rebalance_holdings(live_holdings, all_df)
@@ -1899,7 +1900,7 @@ Respond with ONLY valid JSON (action must be: HOLD / EXIT / EXIT_AND_ADD / ADD):
                     "anthropic-version": "2023-06-01",
                 },
                 json={
-                    "model":    "claude-sonnet-4-20250514",
+                    "model":    "claude-sonnet-4-6",
                     "max_tokens": 500,
                     "messages": [{"role": "user", "content": prompt}],
                 },
