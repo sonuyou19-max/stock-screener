@@ -1421,42 +1421,60 @@ async function addToPickedPortfolio(ticker){
 }
 
 /* ── Add-US-stock modal state ─────────────────────────── */
-let _auTicker=null,_auMktPrice=null;
+let _auTicker=null,_auMktPrice=null,_auFullStock=null;
 
 function addUsToPickedPortfolio(ticker){_auOpen(ticker);}
 
-function _auOpen(ticker){
-  _auTicker=ticker;
-  _auMktPrice=null;
+async function _auOpen(ticker){
+  _auTicker=ticker;_auMktPrice=null;_auFullStock=null;
   document.getElementById('addUsTitle').textContent='Add '+ticker+' to US Portfolio';
-  document.getElementById('addUsSub').textContent='Enter trade details';
+  document.getElementById('addUsSub').textContent='Loading price…';
   document.getElementById('addUsPrice').value='';
   document.getElementById('addUsQty').value='';
   document.getElementById('auMktBtn').classList.remove('active');
   document.getElementById('auCustomBtn').classList.add('active');
   document.getElementById('addUsModal').classList.remove('hidden');
+  // Load picks to get screener's current_price (no extra API call needed)
+  if(!_usPicksData)_usPicksData=await fd('/us/portfolio/picks');
+  for(const b of Object.values(_usPicksData||{})){
+    const s=(b.stocks||[]).find(s=>s.ticker===ticker);
+    if(s){_auFullStock=s;break;}
+  }
+  _auMktPrice=_auFullStock?.current_price||_uP?.[ticker]?.price||null;
+  document.getElementById('addUsSub').textContent=_auMktPrice
+    ?'Screener price: $'+_auMktPrice.toFixed(2)+' — tap to use it'
+    :'Enter trade details';
   setTimeout(()=>document.getElementById('addUsPrice').focus(),80);
 }
 
 function _auClose(){document.getElementById('addUsModal').classList.add('hidden');_auTicker=null;}
 
 async function _auFillMkt(){
+  if(_auMktPrice){
+    document.getElementById('addUsPrice').value=_auMktPrice.toFixed(2);
+    document.getElementById('auMktBtn').classList.add('active');
+    document.getElementById('auCustomBtn').classList.remove('active');
+    document.getElementById('addUsSub').textContent='Using screener price: $'+_auMktPrice.toFixed(2);
+    document.getElementById('addUsQty').focus();
+    return;
+  }
+  // Fallback: live fetch from API (works once PR merged)
   const btn=document.getElementById('auMktBtn');
   btn.textContent='⏳ Fetching…';btn.disabled=true;
   try{
     const data=await fd('/price?ticker='+encodeURIComponent(_auTicker));
     if(data?.price){
       _auMktPrice=data.price;
-      document.getElementById('addUsSub').textContent='Market price: $'+data.price.toFixed(2)+(data.change_pct!=null?' ('+( data.change_pct>=0?'+':'')+data.change_pct.toFixed(2)+'% today)':'');
       document.getElementById('addUsPrice').value=data.price.toFixed(2);
+      document.getElementById('addUsSub').textContent='Live price: $'+data.price.toFixed(2)+(data.change_pct!=null?' ('+(data.change_pct>=0?'+':'')+data.change_pct.toFixed(2)+'% today)':'');
       document.getElementById('auMktBtn').classList.add('active');
       document.getElementById('auCustomBtn').classList.remove('active');
       document.getElementById('addUsQty').focus();
     }else{
-      document.getElementById('addUsSub').textContent='⚠️ Could not fetch price — enter manually';
+      document.getElementById('addUsSub').textContent='⚠️ Price unavailable — enter manually';
     }
   }catch(e){
-    document.getElementById('addUsSub').textContent='⚠️ Could not fetch price — enter manually';
+    document.getElementById('addUsSub').textContent='⚠️ Price unavailable — enter manually';
   }finally{
     btn.textContent='📡 Use Market Price';btn.disabled=false;
   }
@@ -1467,7 +1485,6 @@ function _auClearPrice(){
   document.getElementById('auCustomBtn').classList.add('active');
   document.getElementById('auMktBtn').classList.remove('active');
   document.getElementById('addUsSub').textContent='Enter trade details';
-  _auMktPrice=null;
   document.getElementById('addUsPrice').focus();
 }
 
@@ -1486,18 +1503,15 @@ async function _auSubmit(){
   _auClose();
   _showSpinner('Adding '+ticker+' to portfolio…');
   try{
-    if(!_usPicksData)_usPicksData=await fd('/us/portfolio/picks');
-    let fullStock=null;
-    for(const b of Object.values(_usPicksData||{})){fullStock=(b.stocks||[]).find(s=>s.ticker===ticker);if(fullStock)break;}
     const advPick=(_usAdvData?.top_picks||[]).find(p=>p.ticker===ticker);
     const alloc=parseFloat((price*qty).toFixed(2));
-    const entry=fullStock
-      ?{...fullStock,price,buy_price:price,approx_shares:qty,allocation_usd:alloc,buy_date:new Date().toISOString().split('T')[0]}
+    const entry=_auFullStock
+      ?{..._auFullStock,price,buy_price:price,approx_shares:qty,allocation_usd:alloc,buy_date:new Date().toISOString().split('T')[0]}
       :{ticker,name:(advPick?.name)||ticker,sector:(advPick?.sector)||'Technology',final_score:(advPick?.score)||0,
         price,buy_price:price,approx_shares:qty,allocation_usd:alloc,buy_date:new Date().toISOString().split('T')[0]};
     const r=await fetch(`${API}/us/portfolio/live/add`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});
     if(!r.ok){_hideSpinner();alert('⚠️ Could not add ('+r.status+'). Check your session and try again.');return;}
-    _uL=false;
+    _uL=false;_usPicksData=null;
     await loadUS();
     _hideSpinner();
   }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
