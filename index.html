@@ -622,7 +622,7 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
 const API='https://web-production-50eee.up.railway.app';
 let indPortfolio=null,indSignals=null,indFiidii=null,usPortfolio=null;
 let _iP={},_uP={},_iPD=[],_uPD=[],_iPF='1W',_uPF='1W',_iC=null,_uC=null;
-let _ss=null,_iL=false,_uL=false,_advData=null;
+let _ss=null,_iL=false,_uL=false,_advData=null,_usAdvData=null,_indPicksData=null,_usPicksData=null;
 
 async function fd(ep,retries=1){
   for(let i=0;i<=retries;i++){
@@ -776,7 +776,7 @@ async function loadIndia(){
     mergeFund(port,picks);  // picks wins over latest (more current)
   }
   if(sig)indSignals=sig;if(fii)indFiidii=fii;
-  _advData=adv;
+  _advData=adv;_indPicksData=picks;
   renderIndStats();renderLiveFlat(indPortfolio,'indStocks','₹');
   renderIndMacro();renderIndVerdict();renderFiiDii();
   renderAdvisory(adv);
@@ -860,8 +860,9 @@ async function fetchIndPrices(){
 
 /* ═══ US DETAIL ═══ */
 async function loadUS(){
-  const[port,adv]=await Promise.all([fd('/us/portfolio/live'),fd('/us/advisory')]);
+  const[port,adv,usPicks]=await Promise.all([fd('/us/portfolio/live'),fd('/us/advisory'),fd('/us/portfolio/picks')]);
   if(port)usPortfolio=port;
+  _usAdvData=adv;_usPicksData=usPicks;
   renderBuckets('us',usPortfolio,'usStocks','$');renderUsStats();
   renderUsAdvisory(adv);loadPerf('US');loadClosed('us');
   loadUsNewsSignals();loadUsVerdict();
@@ -1196,9 +1197,8 @@ function renderAdvisory(adv){
   const actionLabel=
     action==='HOLD'       ?'Hold — No Changes This Month':
     action==='EXIT'       ?`Exit ${(adv.sell_ticker||'').replace('.NS','')} — Bank Profits`:
-    action==='EXIT_AND_ADD'?`Exit ${(adv.sell_ticker||'').replace('.NS','')} → Add ${(adv.buy_ticker||'').replace('.NS','')}`:
-    adv.buy_ticker        ?`Add ${(adv.buy_ticker||'').replace('.NS','')}`:
-                           'Portfolio Empty — Add a New Position';
+    action==='EXIT_AND_ADD'?`Exit ${(adv.sell_ticker||'').replace('.NS','')} → Add a Pick`:
+                           'Review This Month\'s Top Picks';
   const rbDate=adv.rebalance_report_date?`report: ${adv.rebalance_report_date}`:'';
   const exitCount=health.filter(h=>h.rebalancer_verdict==='EXIT'||h.rebalancer_verdict==='TRIM').length;
   const healthHtml=health.length?`
@@ -1226,24 +1226,23 @@ function renderAdvisory(adv){
         ?`<div class="adv-pick-sub" style="color:var(--green);font-size:9px">~${qty} shares · ₹${perAlloc.toLocaleString('en-IN',{maximumFractionDigits:0})} alloc</div>`
         :`<div class="adv-pick-sub" style="color:var(--red);font-size:9px">₹${price.toLocaleString('en-IN',{maximumFractionDigits:0})}/sh — exceeds slot budget</div>`
         :'';
-      const yfUrl=`https://finance.yahoo.com/quote/${p.ticker}`;
-      return `<div class="adv-pick-row ${adv.buy_ticker===p.ticker?'adv-pick-highlight':''}">
-        <span class="adv-pick-rank">${i+1}</span>
-        <div class="adv-pick-main">
+      return `<div class="adv-pick-row" id="irow-${p.ticker.replace('.','_')}">
+        <span class="adv-pick-rank" style="cursor:pointer" onclick="togglePickDetail('${p.ticker}','ind')">${i+1}</span>
+        <div class="adv-pick-main" style="cursor:pointer" onclick="togglePickDetail('${p.ticker}','ind')">
           <span class="adv-pick-ticker">${p.ticker.replace('.NS','')}${priceHtml}</span>
-          <div class="adv-pick-sub"><a href="${yfUrl}" target="_blank" rel="noopener" style="color:var(--text2);text-decoration:none">${(p.name||'').slice(0,26)}</a> · ${(p.sector||'').slice(0,18)}</div>
+          <div class="adv-pick-sub">${(p.name||'').slice(0,26)} · ${(p.sector||'').slice(0,18)}</div>
           ${qtyHtml}
         </div>
         <span class="adv-pick-score">${p.score}</span>
         <button class="pick-add-btn" onclick="addToPickedPortfolio('${p.ticker}')" title="Add to portfolio">+</button>
-      </div>`;}).join('')}
+      </div>
+      <div id="idet-${p.ticker.replace('.','_')}" style="display:none;background:var(--surface2);border-radius:8px;padding:10px 12px;margin:2px 0 6px;font-size:11px;color:var(--text2)"></div>`;}).join('')}
     </div>`:''
 
-  // Execute button
-  const canExec=action!=='HOLD';
-  const execBtn=canExec
+  // Execute button only shown for EXIT actions (sell decision stays with system; buy is user's choice)
+  const execBtn=isExit
     ?`<button class="exec-btn adv-exec" onclick="execAdvisory('${adv.buy_ticker||''}','${adv.sell_ticker||''}')">
-        ${isExit&&isAdd?'✅ Sell + Buy on Kite':isExit?'📤 Sell on Kite':'➕ Buy on Kite'}
+        ${isAdd?'✅ Sell + Buy on Kite':'📤 Sell on Kite'}
       </button>`
     :'';
 
@@ -1281,9 +1280,8 @@ function renderUsAdvisory(adv){
   const actionLabel=
     action==='HOLD'       ?'Hold — No Changes This Month':
     action==='EXIT'       ?'Exit '+(adv.sell_ticker||'')+' — Bank Profits':
-    action==='EXIT_AND_ADD'?'Exit '+(adv.sell_ticker||'')+' → Add '+(adv.buy_ticker||''):
-    adv.buy_ticker        ?'Add '+(adv.buy_ticker||''):
-                           'Portfolio Empty — Add a New Position';
+    action==='EXIT_AND_ADD'?'Exit '+(adv.sell_ticker||'')+' → Add a Pick':
+                           'Review This Month\'s Top Picks';
 
   const rbDate=adv.rebalance_report_date?'report: '+adv.rebalance_report_date:'';
   const exitCount=health.filter(h=>h.rebalancer_verdict==='EXIT'||h.rebalancer_verdict==='TRIM').length;
@@ -1311,24 +1309,24 @@ function renderUsAdvisory(adv){
         ?'<div class="adv-pick-sub" style="color:var(--green);font-size:9px">~'+qty+' shares · $'+perAlloc.toLocaleString('en-US',{maximumFractionDigits:0})+' alloc</div>'
         :'<div class="adv-pick-sub" style="color:var(--red);font-size:9px">$'+price.toLocaleString('en-US',{maximumFractionDigits:0})+'/sh — exceeds slot budget</div>'
         :'';
-      const yfUrl='https://finance.yahoo.com/quote/'+p.ticker;
-      return '<div class="adv-pick-row '+(adv.buy_ticker===p.ticker?'adv-pick-highlight':'')+'">'+
-        '<span class="adv-pick-rank">'+(i+1)+'</span>'+
-        '<div class="adv-pick-main">'+
+      const safeT=p.ticker.replace('.','_');
+      return '<div class="adv-pick-row" id="urow-'+safeT+'">'+
+        '<span class="adv-pick-rank" style="cursor:pointer" onclick="togglePickDetail(\''+p.ticker+'\',\'us\')">'+(i+1)+'</span>'+
+        '<div class="adv-pick-main" style="cursor:pointer" onclick="togglePickDetail(\''+p.ticker+'\',\'us\')">'+
         '<span class="adv-pick-ticker">'+p.ticker+priceHtml+'</span>'+
-        '<div class="adv-pick-sub"><a href="'+yfUrl+'" target="_blank" rel="noopener" style="color:var(--text2);text-decoration:none">'+(p.name||'').slice(0,26)+'</a> · '+(p.sector||'').slice(0,18)+'</div>'+
+        '<div class="adv-pick-sub">'+(p.name||'').slice(0,26)+' · '+(p.sector||'').slice(0,18)+'</div>'+
         qtyHtml+
         '</div>'+
         '<span class="adv-pick-score">'+(p.score||0)+'</span>'+
         '<button class="pick-add-btn" onclick="addUsToPickedPortfolio(\''+p.ticker+'\')" title="Add to portfolio">+</button>'+
-        '</div>';
+        '</div>'+
+        '<div id="udet-'+safeT+'" style="display:none;background:var(--surface2);border-radius:8px;padding:10px 12px;margin:2px 0 6px;font-size:11px;color:var(--text2)"></div>';
     }).join('')}
     </div>`:''
 
-  const canExec=action!=='HOLD';
-  const execBtn=canExec
+  const execBtn=isExit
     ?'<button class="exec-btn adv-exec" onclick="execUsAdvisory(\''+(adv.buy_ticker||'')+'\',\''+(adv.sell_ticker||'')+'\')">'
-      +(isExit&&isAdd?'✅ Sell + Buy on Bolero':isExit?'📤 Sell on Bolero':'➕ Buy on Bolero')
+      +(isAdd?'✅ Sell + Buy on Bolero':'📤 Sell on Bolero')
       +'</button>'
     :'';
 
@@ -1451,6 +1449,98 @@ async function exitIndiaStock(ticker){
   await fetch(`${API}/portfolio/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
   alert(`✅ ${ticker.replace('.NS','')} exited.\nP&L: ${pnl_pct>=0?'+':''}${pnl_pct.toFixed(1)}%\nSaved to trade history.`);
   _iL=false;loadIndia();
+}
+
+async function exitUsStock(ticker){
+  let stockData=null;
+  for(const b of Object.values(usPortfolio||{})){
+    stockData=(b.stocks||[]).find(s=>s.ticker===ticker);
+    if(stockData)break;
+  }
+  if(!stockData){alert('Stock not found in US portfolio.');return;}
+  const bp=parseFloat(stockData.price||stockData.buy_price||0);
+  const livePrice=_uP?.[ticker]?.price;
+  const inputPrice=prompt(
+    `Exit ${ticker}?\n`+
+    `Bought: $${bp.toLocaleString('en-US',{minimumFractionDigits:2})}\n`+
+    (livePrice?`Current: $${livePrice.toLocaleString('en-US',{minimumFractionDigits:2})}\n`:'')+
+    `\nEnter sell price, or leave blank to use current price:`
+  );
+  if(inputPrice===null)return;
+  let sellPrice;
+  if(inputPrice.trim()===''){
+    if(!livePrice){alert('Current price not loaded. Hit Refresh and try again.');return;}
+    sellPrice=livePrice;
+  }else{
+    sellPrice=parseFloat(inputPrice);
+    if(!sellPrice||isNaN(sellPrice)||sellPrice<=0){alert('Please enter a valid sell price.');return;}
+  }
+  const pnl_usd=bp?(sellPrice-bp):0;
+  const pnl_pct=bp?((sellPrice-bp)/bp*100):0;
+  if(!confirm(
+    `Confirm exit — ${ticker}?\n`+
+    `Sell at $${sellPrice.toLocaleString('en-US',{minimumFractionDigits:2})}\n`+
+    `P&L: ${pnl_pct>=0?'+':''}${pnl_pct.toFixed(1)}% (${pnl_usd>=0?'+':''}$${Math.abs(pnl_usd).toLocaleString('en-US',{maximumFractionDigits:2})})`
+  ))return;
+  await fetch(`${API}/us/portfolio/history/upload`,{method:'POST',headers:_postHeaders(),
+    body:JSON.stringify({
+      ticker,name:stockData.name||ticker,
+      buy_price:bp,sell_price:sellPrice,
+      entry_date:stockData.buy_date||'',exit_date:new Date().toISOString().split('T')[0],
+      realised_pnl_usd:parseFloat(pnl_usd.toFixed(2)),
+      realised_pnl_pct:parseFloat(pnl_pct.toFixed(2)),
+      exit_reason:'MANUAL_EXIT',market:'US',
+    })
+  });
+  const live=await fd('/us/portfolio/live')||{};
+  for(const bk of Object.keys(live))live[bk].stocks=(live[bk].stocks||[]).filter(s=>s.ticker!==ticker);
+  await fetch(`${API}/us/portfolio/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
+  alert(`✅ ${ticker} exited.\nP&L: ${pnl_pct>=0?'+':''}${pnl_pct.toFixed(1)}%\nSaved to trade history.`);
+  _uL=false;loadUS();
+}
+
+function togglePickDetail(ticker,mkt){
+  const safeT=ticker.replace('.','_');
+  const detId=mkt==='us'?'udet-'+safeT:'idet-'+safeT;
+  const det=document.getElementById(detId);
+  if(!det)return;
+  if(det.style.display!=='none'){det.style.display='none';return;}
+
+  // Look up full stock data from picks
+  const picksData=mkt==='us'?_usPicksData:_indPicksData;
+  let full=null;
+  for(const b of Object.values(picksData||{})){
+    full=(b.stocks||[]).find(s=>s.ticker===ticker);
+    if(full)break;
+  }
+  // Fallback to advisory top_picks
+  const advPick=mkt==='us'
+    ?(_usAdvData?.top_picks||[]).find(p=>p.ticker===ticker)
+    :(_advData?.top_picks||[]).find(p=>p.ticker===ticker);
+  const score=full?.final_score??advPick?.score??'—';
+  const cur=mkt==='us'?_uP?.[ticker]:_iP?.[ticker];
+  const curr=mkt==='us'&&cur?'$'+cur.price?.toLocaleString('en-US',{maximumFractionDigits:2})
+             :cur?'₹'+cur.price?.toLocaleString('en-IN',{maximumFractionDigits:2}):'—';
+  const sym=mkt==='us'?'':'';
+
+  // Score breakdown rows
+  const rows=[
+    ['Composite Score',score],
+    ['Revenue Growth',full?.revenue_growth!=null?full.revenue_growth.toFixed(1)+'%':'—'],
+    ['ROE',full?.roe!=null?full.roe.toFixed(1)+'%':'—'],
+    ['PE Ratio',full?.pe_ratio!=null?full.pe_ratio.toFixed(1):'—'],
+    ['Debt/Equity',full?.debt_equity!=null?full.debt_equity.toFixed(2):'—'],
+    ['3M Momentum',full?.momentum_3m!=null?full.momentum_3m.toFixed(1)+'%':(full?.momentum!=null?full.momentum.toFixed(1)+'%':'—')],
+    ['Market Cap',full?.market_cap_usd_m!=null?'$'+Math.round(full.market_cap_usd_m/1000)+'B':(full?.market_cap_cr!=null?'₹'+Math.round(full.market_cap_cr)+'Cr':'—')],
+    ['Live Price',curr],
+  ].filter(r=>r[1]&&r[1]!=='—');
+
+  const why=full?.rationale||full?.why_picked||advPick?.sector||'';
+  det.innerHTML=
+    (why?`<div style="margin-bottom:8px;font-style:italic;color:var(--text3)">${why}</div>`:'')
+    +rows.map(r=>`<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid var(--border)"><span>${r[0]}</span><span style="color:var(--text1);font-weight:600">${r[1]}</span></div>`).join('')
+    +(rows.length===0?'<div style="color:var(--text3)">No detailed data — re-run screener to populate.</div>':'');
+  det.style.display='block';
 }
 
 async function execAdvisory(buyTicker,sellTicker){
