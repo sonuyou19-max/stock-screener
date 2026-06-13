@@ -81,6 +81,18 @@ body{
 
 /* ═══ MODAL ═══ */
 .modal-overlay{position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,.7);display:flex;align-items:flex-end;justify-content:center;}
+/* ═══ SPINNER OVERLAY ═══ */
+.spinner-overlay{position:fixed;inset:0;z-index:9999;backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);background:rgba(0,0,0,.55);display:flex;align-items:center;justify-content:center;}
+.spinner-overlay.hidden{display:none;}
+.spinner-box{display:flex;flex-direction:column;align-items:center;gap:18px;background:var(--surface2);border:1px solid var(--line2);border-radius:20px;padding:36px 44px;}
+.spinner-ring{width:52px;height:52px;border:4px solid rgba(255,255,255,.12);border-top-color:var(--blue);border-radius:50%;animation:_spin .75s linear infinite;}
+@keyframes _spin{to{transform:rotate(360deg);}}
+.spinner-msg{font-size:14px;color:var(--text2);font-weight:500;letter-spacing:.01em;}
+/* ═══ ADD STOCK MODAL EXTRAS ═══ */
+.au-row{margin-top:14px;}
+.au-price-btns{display:flex;gap:8px;margin-top:8px;}
+.au-price-opt{flex:1;padding:10px 8px;border-radius:10px;font-size:12px;font-weight:600;cursor:pointer;border:1px solid var(--line2);background:var(--surface);color:var(--text2);transition:all .15s;}
+.au-price-opt.active{background:var(--blue);border-color:var(--blue);color:#fff;}
 .modal-overlay.hidden{display:none;}
 .modal-sheet{background:var(--surface2);border:1px solid var(--line2);border-bottom:none;border-radius:20px 20px 0 0;padding:28px 24px calc(28px + env(safe-area-inset-bottom));width:100%;max-width:480px;}
 .modal-title{font-size:17px;font-weight:600;}
@@ -403,6 +415,40 @@ async function cp(){
 }
 document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='Enter')cp();});
 </script>
+
+<!-- SPINNER OVERLAY -->
+<div class="spinner-overlay hidden" id="spinnerOverlay">
+  <div class="spinner-box">
+    <div class="spinner-ring"></div>
+    <div class="spinner-msg" id="spinnerMsg">Adding to portfolio...</div>
+  </div>
+</div>
+
+<!-- ADD US STOCK MODAL -->
+<div class="modal-overlay hidden" id="addUsModal">
+  <div class="modal-sheet">
+    <div class="modal-title" id="addUsTitle">Add to US Portfolio</div>
+    <div class="modal-sub" id="addUsSub">Enter trade details</div>
+    <div class="modal-lbl">Buy Price ($)</div>
+    <input class="modal-input" type="number" id="addUsPrice" placeholder="0.00" step="0.01" inputmode="decimal" oninput="_auCalc('price')"/>
+    <div class="au-price-btns">
+      <button class="au-price-opt active" id="auMktBtn" onclick="_auFillMkt()">📡 Use Market Price</button>
+      <button class="au-price-opt" id="auCustomBtn" onclick="_auClearPrice()">✏️ Enter Custom</button>
+    </div>
+    <div class="au-row">
+      <div class="modal-lbl">Amount Invested ($)</div>
+      <input class="modal-input" type="number" id="addUsAmount" placeholder="e.g. 500" step="1" inputmode="decimal" oninput="_auCalc('amount')"/>
+    </div>
+    <div class="au-row">
+      <div class="modal-lbl">Quantity (shares)</div>
+      <input class="modal-input" type="number" id="addUsQty" placeholder="e.g. 2" step="any" inputmode="decimal" oninput="_auCalc('qty')"/>
+    </div>
+    <div class="modal-acts" style="margin-top:22px">
+      <button class="modal-cancel" onclick="_auClose()">Cancel</button>
+      <button class="modal-confirm" onclick="_auSubmit()">Add to Portfolio</button>
+    </div>
+  </div>
+</div>
 
 <!-- SELL MODAL -->
 <div class="modal-overlay hidden" id="sellModal">
@@ -1378,23 +1424,90 @@ async function addToPickedPortfolio(ticker){
   _iL=false;loadIndia();
 }
 
-async function addUsToPickedPortfolio(ticker){
-  if(!_usPicksData)_usPicksData=await fd('/us/portfolio/picks');
-  let fullStock=null;
-  for(const b of Object.values(_usPicksData||{})){fullStock=(b.stocks||[]).find(s=>s.ticker===ticker);if(fullStock)break;}
-  const advPick=(_usAdvData?.top_picks||[]).find(p=>p.ticker===ticker);
-  const inputPrice=prompt('Add '+ticker+' to US portfolio\nEnter your buy price ($):');
-  if(inputPrice===null)return;
-  const buyPrice=parseFloat(inputPrice);
-  if(!buyPrice||isNaN(buyPrice)||buyPrice<=0){alert('Please enter a valid buy price.');return;}
-  const entry=fullStock
-    ?{...fullStock,price:buyPrice,buy_price:buyPrice,buy_date:new Date().toISOString().split('T')[0]}
-    :{ticker,name:(advPick?.name)||ticker,sector:(advPick?.sector)||'Technology',final_score:(advPick?.score)||0,
-      price:buyPrice,buy_price:buyPrice,buy_date:new Date().toISOString().split('T')[0],allocation_usd:0,approx_shares:0};
-  const r=await fetch(`${API}/us/portfolio/live/add`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});
-  if(!r.ok){alert(`⚠️ Could not add (${r.status}). Check your session and try again.`);return;}
-  alert('✅ '+ticker+' added at $'+buyPrice.toLocaleString('en-US'));
-  _uL=false;loadUS();
+/* ── Add-US-stock modal state ─────────────────────────── */
+let _auTicker=null,_auMktPrice=null;
+
+function addUsToPickedPortfolio(ticker){_auOpen(ticker);}
+
+function _auOpen(ticker){
+  _auTicker=ticker;
+  _auMktPrice=_uP?.[ticker]?.price||null;
+  document.getElementById('addUsTitle').textContent='Add '+ticker+' to US Portfolio';
+  document.getElementById('addUsSub').textContent=_auMktPrice?'Current market: $'+_auMktPrice.toFixed(2):'Enter trade details';
+  document.getElementById('addUsPrice').value=_auMktPrice?_auMktPrice.toFixed(2):'';
+  document.getElementById('addUsAmount').value='';
+  document.getElementById('addUsQty').value='';
+  document.getElementById('auMktBtn').classList.toggle('active',!!_auMktPrice);
+  document.getElementById('auCustomBtn').classList.toggle('active',!_auMktPrice);
+  document.getElementById('addUsModal').classList.remove('hidden');
+  setTimeout(()=>document.getElementById(_auMktPrice?'addUsAmount':'addUsPrice').focus(),80);
+}
+
+function _auClose(){document.getElementById('addUsModal').classList.add('hidden');_auTicker=null;}
+
+function _auFillMkt(){
+  if(!_auMktPrice)return;
+  document.getElementById('addUsPrice').value=_auMktPrice.toFixed(2);
+  document.getElementById('auMktBtn').classList.add('active');
+  document.getElementById('auCustomBtn').classList.remove('active');
+  _auCalc('price');
+  document.getElementById('addUsAmount').focus();
+}
+
+function _auClearPrice(){
+  document.getElementById('addUsPrice').value='';
+  document.getElementById('auCustomBtn').classList.add('active');
+  document.getElementById('auMktBtn').classList.remove('active');
+  document.getElementById('addUsPrice').focus();
+}
+
+function _auCalc(changed){
+  const p=parseFloat(document.getElementById('addUsPrice').value);
+  const a=parseFloat(document.getElementById('addUsAmount').value);
+  const q=parseFloat(document.getElementById('addUsQty').value);
+  if(changed==='qty'&&!isNaN(p)&&p>0&&!isNaN(q)&&q>0){
+    document.getElementById('addUsAmount').value=(p*q).toFixed(2);
+  }else if(changed==='amount'&&!isNaN(p)&&p>0&&!isNaN(a)&&a>0){
+    document.getElementById('addUsQty').value=(a/p).toFixed(4).replace(/\.?0+$/,'');
+  }else if(changed==='price'&&!isNaN(p)&&p>0){
+    const q2=parseFloat(document.getElementById('addUsQty').value);
+    const a2=parseFloat(document.getElementById('addUsAmount').value);
+    if(!isNaN(q2)&&q2>0)document.getElementById('addUsAmount').value=(p*q2).toFixed(2);
+    else if(!isNaN(a2)&&a2>0)document.getElementById('addUsQty').value=(a2/p).toFixed(4).replace(/\.?0+$/,'');
+  }
+}
+
+function _showSpinner(msg){
+  document.getElementById('spinnerMsg').textContent=msg||'Processing...';
+  document.getElementById('spinnerOverlay').classList.remove('hidden');
+}
+function _hideSpinner(){document.getElementById('spinnerOverlay').classList.add('hidden');}
+
+async function _auSubmit(){
+  const price=parseFloat(document.getElementById('addUsPrice').value);
+  const qty=parseFloat(document.getElementById('addUsQty').value);
+  const amount=parseFloat(document.getElementById('addUsAmount').value);
+  if(!price||isNaN(price)||price<=0){alert('Enter a valid buy price.');return;}
+  if(!qty||isNaN(qty)||qty<=0){alert('Enter a valid quantity.');return;}
+  if(!amount||isNaN(amount)||amount<=0){alert('Enter a valid amount invested.');return;}
+  const ticker=_auTicker;
+  _auClose();
+  _showSpinner('Adding '+ticker+' to portfolio…');
+  try{
+    if(!_usPicksData)_usPicksData=await fd('/us/portfolio/picks');
+    let fullStock=null;
+    for(const b of Object.values(_usPicksData||{})){fullStock=(b.stocks||[]).find(s=>s.ticker===ticker);if(fullStock)break;}
+    const advPick=(_usAdvData?.top_picks||[]).find(p=>p.ticker===ticker);
+    const entry=fullStock
+      ?{...fullStock,price,buy_price:price,approx_shares:qty,allocation_usd:parseFloat(amount.toFixed(2)),buy_date:new Date().toISOString().split('T')[0]}
+      :{ticker,name:(advPick?.name)||ticker,sector:(advPick?.sector)||'Technology',final_score:(advPick?.score)||0,
+        price,buy_price:price,approx_shares:qty,allocation_usd:parseFloat(amount.toFixed(2)),buy_date:new Date().toISOString().split('T')[0]};
+    const r=await fetch(`${API}/us/portfolio/live/add`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});
+    if(!r.ok){_hideSpinner();alert('⚠️ Could not add ('+r.status+'). Check your session and try again.');return;}
+    _uL=false;
+    await loadUS();
+    _hideSpinner();
+  }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
 }
 
 function execUsAdvisory(buy,sell){markUsBought(buy,sell,0);}
