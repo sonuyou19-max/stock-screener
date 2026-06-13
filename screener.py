@@ -1793,7 +1793,7 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
         rb_by_ticker = {d["ticker"]: d for d in actions}
         for h in live_holdings:
             rb = rb_by_ticker.get(h["ticker"], {})
-            h["rebalancer_verdict"] = rb.get("action", "HOLD")
+            h["rebalancer_verdict"] = rb.get("action") if rb else None
             h["rebalancer_reason"]  = rb.get("reason", "")
             h["pnl_pct"]            = rb.get("gain_pct", h.get("pnl_pct"))
             h["current_price"]      = rb.get("current_price")

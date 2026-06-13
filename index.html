@@ -1263,15 +1263,18 @@ function renderAdvisory(adv){
     <div style="margin-bottom:10px">
       <div style="font-size:10px;color:var(--text3);font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">📊 Holdings Health${rbDate}</div>
       ${health.map(h=>{
-        const v=h.rebalancer_verdict||'HOLD';
+        const v=h.rebalancer_verdict||null;
+        const vLabel=v||'N/A';
         const pct=h.pnl_pct!=null?`${h.pnl_pct>=0?'+':''}${parseFloat(h.pnl_pct).toFixed(1)}%`:'';
         const flagged=v==='EXIT'||v==='TRIM';
+        const vColor=v==='EXIT'?'var(--red)':v==='TRIM'?'#f59e0b':v==='WATCH'?'var(--text2)':v==='HOLD'?'var(--green)':'var(--text3)';
+        const vIco=v==='EXIT'?'🔴':v==='TRIM'?'🟠':v==='WATCH'?'🟡':v==='HOLD'?'✅':'—';
         const btnHtml=flagged?`<button style="background:rgba(255,98,89,.15);border:1px solid rgba(255,98,89,.3);color:var(--red);border-radius:50%;width:22px;height:22px;font-size:14px;line-height:1;cursor:pointer;flex-shrink:0" onclick="exitIndiaStock('${h.ticker}')" title="Exit ${h.ticker.replace('.NS','')}">−</button>`:'';
         return`<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:var(--surface2);border-radius:7px;margin-bottom:4px">
           <span style="font-weight:700;font-size:12px;min-width:52px">${h.ticker.replace('.NS','')}</span>
           <span style="flex:1;font-size:10px;color:var(--text3)">${(h.name||'').slice(0,22)}</span>
           ${pct?`<span style="font-size:10px;font-weight:600;color:${h.pnl_pct>=0?'var(--green)':'var(--red)'}">${pct}</span>`:''}
-          <span style="font-size:10px;font-weight:700;color:${v==='EXIT'?'var(--red)':v==='TRIM'?'#f59e0b':v==='WATCH'?'var(--text2)':'var(--green)'}">${vIcon(v)} ${v}</span>
+          <span style="font-size:10px;font-weight:700;color:${vColor}">${vIco} ${vLabel}</span>
           ${btnHtml}
         </div>`;
       }).join('')}
@@ -1358,15 +1361,18 @@ function renderUsAdvisory(adv){
     '<div style="margin-bottom:10px">'+
     '<div style="font-size:10px;color:var(--text3);font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">📊 Holdings Health'+rbDate+'</div>'+
     health.map(h=>{
-      const v=h.rebalancer_verdict||'HOLD';
+      const v=h.rebalancer_verdict||null;
+      const vLabel=v||'N/A';
       const pct=h.pnl_pct!=null?`${h.pnl_pct>=0?'+':''}${parseFloat(h.pnl_pct).toFixed(1)}%`:'';
       const flagged=v==='EXIT'||v==='TRIM';
+      const vColor=v==='EXIT'?'var(--red)':v==='TRIM'?'#f59e0b':v==='WATCH'?'var(--text2)':v==='HOLD'?'var(--green)':'var(--text3)';
+      const vIco=v==='EXIT'?'🔴':v==='TRIM'?'🟠':v==='WATCH'?'🟡':v==='HOLD'?'✅':'—';
       const btnHtml=flagged?`<button style="background:rgba(255,98,89,.15);border:1px solid rgba(255,98,89,.3);color:var(--red);border-radius:50%;width:22px;height:22px;font-size:14px;line-height:1;cursor:pointer;flex-shrink:0" onclick="exitUsStock('${h.ticker}')" title="Exit ${h.ticker}">−</button>`:'';
       return'<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:var(--surface2);border-radius:7px;margin-bottom:4px">'+
         '<span style="font-weight:700;font-size:12px;min-width:52px">'+h.ticker+'</span>'+
         '<span style="flex:1;font-size:10px;color:var(--text3)">'+(h.name||'').slice(0,20)+'</span>'+
         (pct?'<span style="font-size:10px;font-weight:600;color:'+(h.pnl_pct>=0?'var(--green)':'var(--red)')+'">'+pct+'</span>':'')+
-        '<span style="font-size:10px;font-weight:700;color:'+(v==='EXIT'?'var(--red)':v==='TRIM'?'#f59e0b':v==='WATCH'?'var(--text2)':'var(--green)')+'">'+vIcon(v)+' '+v+'</span>'+
+        '<span style="font-size:10px;font-weight:700;color:'+vColor+'">'+vIco+' '+vLabel+'</span>'+
         btnHtml+
         '</div>';
     }).join('')+
