@@ -1904,7 +1904,7 @@ Respond with ONLY valid JSON (action must be: HOLD / EXIT / EXIT_AND_ADD / ADD):
                     "max_tokens": 500,
                     "messages": [{"role": "user", "content": prompt}],
                 },
-                timeout=30,
+                timeout=60,
             )
             resp.raise_for_status()
             raw = resp.json()["content"][0]["text"].strip()
