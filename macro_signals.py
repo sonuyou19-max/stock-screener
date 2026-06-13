@@ -643,7 +643,7 @@ def fetch_fiidii_signal() -> dict:
                 history = json.load(f)
         # Fallback: fetch from API
         if not history:
-            api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+            api_url = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
             try:
                 import urllib.request as _ur
                 with _ur.urlopen(f"{api_url}/fiidii", timeout=8) as r:
@@ -762,7 +762,7 @@ def fetch_policy_signal() -> dict:
                 data = json.load(f)
         if not data:
             # Try fetching from API
-            api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+            api_url = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
             try:
                 import urllib.request as _ur
                 with _ur.urlopen(f"{api_url}/signals", timeout=8) as r:
@@ -863,7 +863,7 @@ def fetch_news_signal() -> dict:
             with open(NEWS_SIGNALS_FILE) as f:
                 data = json.load(f)
         if not data:
-            api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+            api_url = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
             try:
                 import urllib.request as _ur
                 with _ur.urlopen(f"{api_url}/signals", timeout=8) as r:

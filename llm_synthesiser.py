@@ -275,7 +275,7 @@ def _post_signal_to_api(signal_type: str, payload: dict):
     """POST signal data to the web API so the dashboard can read it."""
     import urllib.request as _urllib
     import os as _os
-    api_url = _os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+    api_url = _os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
     url = f"{api_url}/signals/upload"
     try:
         import json as _json

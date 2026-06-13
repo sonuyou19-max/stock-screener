@@ -324,7 +324,7 @@ def detect_macro_alerts() -> list:
     # the API — causing the 10d sum to differ from the LLM Synth / dashboard.
     try:
         import urllib.request as _ur
-        api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+        api_url = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
         req = _ur.Request(f"{api_url}/fiidii",
                           headers={"Accept": "application/json"})
         with _ur.urlopen(req, timeout=8) as resp:
@@ -770,7 +770,7 @@ def find_latest_portfolio(search_dirs: list = None) -> Optional[str]:
         return sorted(files)[-1]
 
     # Fallback: fetch from API and save to temp file
-    api_url = _os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+    api_url = _os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
     try:
         import urllib.request as _ur
         import json as _json
@@ -818,7 +818,7 @@ def capture_eod_snapshot(portfolio: dict) -> None:
     import math
 
     today_str = date.today().isoformat()
-    api_url   = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+    api_url   = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
 
     # ── Check if already captured today ──────────────────────
     dedup_file = os.path.join(os.getenv("DATA_DIR", "/data"), "perf_snapshot_dedup.txt")
@@ -939,7 +939,7 @@ def check_and_alert(
         # Load portfolio from API for EOD snapshot
         try:
             import urllib.request as _ur
-            api_url = os.getenv("API_URL", "https://web-production-2d832.up.railway.app")
+            api_url = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
             with _ur.urlopen(f"{api_url}/portfolio/live", timeout=15) as r:
                 eod_portfolio = json.loads(r.read())
             capture_eod_snapshot(eod_portfolio)
