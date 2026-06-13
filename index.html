@@ -367,55 +367,6 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
   .hero-h1{font-size:32px;}
   .stats-row{grid-template-columns:repeat(2,1fr);}
 }
-
-/* ═══ SCREENER SEARCH ═══ */
-.srch-wrap{position:relative;margin:0 20px 4px;}
-.srch-input{width:100%;box-sizing:border-box;background:var(--surface2);border:1px solid var(--line2);border-radius:12px;padding:10px 14px 10px 38px;font-size:14px;color:var(--text);outline:none;-webkit-appearance:none;}
-.srch-input::placeholder{color:var(--text3);}
-.srch-input:focus{border-color:var(--blue);}
-.srch-icon{position:absolute;left:28px;top:50%;transform:translateY(-50%);font-size:15px;pointer-events:none;color:var(--text3);}
-.srch-count{position:absolute;right:14px;top:50%;transform:translateY(-50%);font-size:11px;color:var(--text3);}
-.srch-drop{position:absolute;top:calc(100% + 6px);left:0;right:0;background:var(--surface2);border:1px solid var(--line2);border-radius:14px;z-index:8000;overflow:hidden;box-shadow:0 8px 32px rgba(0,0,0,.5);}
-.srch-item{display:flex;align-items:center;gap:10px;padding:11px 16px;cursor:pointer;border-bottom:1px solid var(--line2);}
-.srch-item:last-child{border-bottom:none;}
-.srch-item:active,.srch-item:hover{background:var(--surface);}
-.srch-tkr{font-size:13px;font-weight:600;color:var(--text);min-width:60px;}
-.srch-name{font-size:12px;color:var(--text2);flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
-.srch-score{font-size:11px;font-weight:600;color:var(--gold2);flex-shrink:0;}
-.srch-empty{padding:16px;text-align:center;font-size:13px;color:var(--text3);}
-
-/* ═══ STOCK DETAIL POPUP ═══ */
-.sd-overlay{position:fixed;inset:0;z-index:9100;background:rgba(0,0,0,.75);backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);display:flex;align-items:center;justify-content:center;padding:20px;}
-.sd-overlay.hidden{display:none;}
-.sd-card{background:var(--surface2);border:1px solid var(--line2);border-radius:20px;width:100%;max-width:460px;max-height:85vh;overflow-y:auto;padding:22px 20px calc(22px + env(safe-area-inset-bottom));}
-.sd-header{display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:14px;}
-.sd-close{background:none;border:none;color:var(--text3);font-size:22px;cursor:pointer;padding:0 0 0 10px;line-height:1;}
-.sd-tkr{font-size:20px;font-weight:700;}
-.sd-name{font-size:13px;color:var(--text2);margin-top:2px;}
-.sd-sector{font-size:11px;color:var(--text3);margin-top:2px;}
-.sd-date{font-size:10px;color:var(--text3);margin-top:6px;}
-.sd-score-row{display:flex;align-items:center;gap:10px;margin-bottom:16px;}
-.sd-score-big{font-size:28px;font-weight:700;color:var(--gold2);}
-.sd-score-lbl{font-size:11px;color:var(--text3);}
-.sd-score-bar-wrap{flex:1;height:6px;background:var(--surface);border-radius:3px;overflow:hidden;}
-.sd-score-bar{height:100%;border-radius:3px;background:var(--gold2);}
-.sd-section{font-size:11px;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:.05em;margin:14px 0 8px;}
-.sd-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;}
-.sd-metric{background:var(--surface);border-radius:10px;padding:10px 12px;}
-.sd-m-lbl{font-size:10px;color:var(--text3);margin-bottom:3px;}
-.sd-m-val{font-size:14px;font-weight:600;color:var(--text);}
-.sd-flag{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:10px;background:var(--surface);margin-bottom:6px;font-size:12px;}
-.sd-flag-ico{font-size:13px;flex-shrink:0;}
-.sd-flag-lbl{color:var(--text2);}
-.sd-flag-val{margin-left:auto;font-size:11px;font-weight:600;}
-.sd-sig{display:flex;align-items:flex-start;gap:8px;padding:8px 12px;background:var(--surface);border-radius:10px;margin-bottom:6px;font-size:12px;}
-.sd-sig-pass{color:var(--green);}
-.sd-sig-fail{color:var(--red);}
-.sd-sig-body{flex:1;}
-.sd-sig-lbl{font-weight:600;color:var(--text);}
-.sd-sig-note{color:var(--text3);font-size:11px;margin-top:1px;}
-.sd-why{background:rgba(48,209,88,.08);border:1px solid rgba(48,209,88,.15);border-radius:10px;padding:10px 12px;margin-bottom:6px;font-size:12px;color:var(--text2);}
-.sd-risk{background:rgba(255,98,89,.08);border:1px solid rgba(255,98,89,.15);border-radius:10px;padding:10px 12px;margin-bottom:6px;font-size:12px;color:var(--text2);}
 </style>
 <body>
 
@@ -464,31 +415,6 @@ async function cp(){
 }
 document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='Enter')cp();});
 </script>
-
-<!-- STOCK DETAIL POPUP -->
-<div class="sd-overlay hidden" id="sdOverlay" onclick="_sdClose(event)">
-  <div class="sd-card" id="sdCard">
-    <div class="sd-header">
-      <div>
-        <div class="sd-tkr" id="sdTkr"></div>
-        <div class="sd-name" id="sdName"></div>
-        <div class="sd-sector" id="sdSector"></div>
-        <div class="sd-date" id="sdDate"></div>
-      </div>
-      <button class="sd-close" onclick="_sdClose()">×</button>
-    </div>
-    <div class="sd-score-row">
-      <div>
-        <div class="sd-score-big" id="sdScore"></div>
-        <div class="sd-score-lbl" id="sdScoreLbl">Score</div>
-      </div>
-      <div style="flex:1">
-        <div class="sd-score-bar-wrap"><div class="sd-score-bar" id="sdScoreBar" style="width:0%"></div></div>
-      </div>
-    </div>
-    <div id="sdBody"></div>
-  </div>
-</div>
 
 <!-- SPINNER OVERLAY -->
 <div class="spinner-overlay hidden" id="spinnerOverlay">
@@ -663,13 +589,6 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
     <div class="stat-c"><div class="stat-lbl">Universe</div><div class="stat-val">500</div><div class="stat-sub">Nifty 500 screened</div></div>
   </div>
   <div class="sec"><span class="sec-lbl">Stock Picks</span><span class="sec-line"></span></div>
-  <div class="srch-wrap" id="indSrchWrap">
-    <span class="srch-icon">🔍</span>
-    <input class="srch-input" id="indSrchInput" placeholder="Search 500 screened stocks…" autocomplete="off"
-      oninput="_srchInput('ind')" onfocus="_srchFocus('ind')" onblur="_srchBlur('ind')">
-    <span class="srch-count" id="indSrchCount"></span>
-    <div class="srch-drop hidden" id="indSrchDrop"></div>
-  </div>
   <div class="bkt-wrap" id="indStocks"><div class="spin-wrap"><div class="spinner"></div></div></div>
   <div class="sec sec-toggle" onclick="toggleClosed('indPerfWrap','indPerfCaret')"><span class="sec-lbl">Performance vs Benchmark</span><span class="sec-caret" id="indPerfCaret">▸</span><span class="sec-line"></span></div>
   <div id="indPerfWrap" style="display:none"><div class="perf-card">
@@ -719,13 +638,6 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
     <div class="stat-c"><div class="stat-lbl">Universe</div><div class="stat-val">S&P 500</div><div class="stat-sub">Monthly screened</div></div>
   </div>
   <div class="sec"><span class="sec-lbl">Stock Picks</span><span class="sec-line"></span></div>
-  <div class="srch-wrap" id="usSrchWrap">
-    <span class="srch-icon">🔍</span>
-    <input class="srch-input" id="usSrchInput" placeholder="Search this month's US picks…" autocomplete="off"
-      oninput="_srchInput('us')" onfocus="_srchFocus('us')" onblur="_srchBlur('us')">
-    <span class="srch-count" id="usSrchCount"></span>
-    <div class="srch-drop hidden" id="usSrchDrop"></div>
-  </div>
   <div class="bkt-wrap" id="usStocks"><div class="spin-wrap"><div class="spinner"></div></div></div>
   <div class="sec sec-toggle" onclick="toggleClosed('usPerfWrap','usPerfCaret')"><span class="sec-lbl">Performance vs Benchmark</span><span class="sec-caret" id="usPerfCaret">▸</span><span class="sec-line"></span></div>
   <div id="usPerfWrap" style="display:none"><div class="perf-card">
@@ -773,13 +685,6 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
   <div class="sec"><span class="sec-lbl">Open Positions</span><span class="sec-line"></span></div>
   <div style="padding:0 20px;" id="swOpenPositions"><div class="spin-wrap"><div class="spinner"></div></div></div>
   <div class="sec"><span class="sec-lbl">Today's Candidates</span><span class="sec-line"></span></div>
-  <div class="srch-wrap" id="swSrchWrap">
-    <span class="srch-icon">🔍</span>
-    <input class="srch-input" id="swSrchInput" placeholder="Search today's swing candidates…" autocomplete="off"
-      oninput="_srchInput('sw')" onfocus="_srchFocus('sw')" onblur="_srchBlur('sw')">
-    <span class="srch-count" id="swSrchCount"></span>
-    <div class="srch-drop hidden" id="swSrchDrop"></div>
-  </div>
   <div style="padding:0 20px;" id="swCandidates"><div class="spin-wrap"><div class="spinner"></div></div></div>
   <div class="sec sec-toggle" onclick="toggleClosed('swClosed','swClosedCaret')"><span class="sec-lbl">Closed Swing Trades</span><span class="sec-caret" id="swClosedCaret">▸</span><span class="sec-line"></span></div>
   <div class="closed-wrap" id="swClosed" style="display:none"><div class="spin-wrap"><div class="spinner"></div></div></div>
@@ -1617,206 +1522,6 @@ function _showSpinner(msg){
   document.getElementById('spinnerOverlay').classList.remove('hidden');
 }
 function _hideSpinner(){document.getElementById('spinnerOverlay').classList.add('hidden');}
-
-/* ═══════════════════════════════════════════════════════
-   SCREENER SEARCH  (India · US · Swing)
-   ════════════════════════════════════════════════════ */
-const _univCache={ind:null,us:null,sw:null};
-const _univRunDate={ind:'',us:'',sw:''};
-let _srchBlurTm={};
-
-async function _srchFocus(mkt){
-  // Lazy-load universe on first focus
-  if(!_univCache[mkt]){
-    const inp=document.getElementById(mkt+'SrchInput');
-    const countEl=document.getElementById(mkt+'SrchCount');
-    if(countEl)countEl.textContent='Loading…';
-    try{
-      const d=await fd('/screener/universe?mkt='+mkt);
-      if(d?.stocks){
-        _univCache[mkt]=d.stocks;
-        _univRunDate[mkt]=d.run_date||'';
-        const n=d.stocks.length;
-        if(countEl)countEl.textContent=n+' stocks';
-        const ph={ind:'Search '+n+' screened stocks…',us:'Search '+n+' US picks…',sw:'Search '+n+' swing candidates…'};
-        if(inp)inp.placeholder=ph[mkt]||inp.placeholder;
-      }
-    }catch(e){if(countEl)countEl.textContent='';}
-  }
-}
-
-function _srchInput(mkt){
-  const q=(document.getElementById(mkt+'SrchInput')?.value||'').trim().toLowerCase();
-  const drop=document.getElementById(mkt+'SrchDrop');
-  if(!drop)return;
-  if(!q||!_univCache[mkt]){drop.classList.add('hidden');return;}
-  const tokens=q.split(/\s+/);
-  const results=_univCache[mkt].filter(s=>{
-    const tkr=(s.ticker||'').toLowerCase().replace('.ns','');
-    const nm=(s.name||'').toLowerCase();
-    return tokens.every(t=>tkr.includes(t)||nm.includes(t));
-  }).slice(0,8);
-  if(!results.length){
-    drop.innerHTML='<div class="srch-empty">No stocks match "'+q.replace(/</g,'&lt;')+'"</div>';
-    drop.classList.remove('hidden');return;
-  }
-  const runDate=_univRunDate[mkt];
-  drop.innerHTML=results.map(s=>{
-    const tkrClean=(s.ticker||'').replace('.NS','');
-    const score=parseFloat(s.final_score||s.score||0);
-    const scoreStr=isNaN(score)?'—':score.toFixed(1);
-    return`<div class="srch-item" onmousedown="_openStockDetail(${JSON.stringify(s).replace(/"/g,'&quot;')},'${mkt}','${runDate}')">`+
-      `<span class="srch-tkr">${tkrClean}</span>`+
-      `<span class="srch-name">${s.name||''}</span>`+
-      `<span class="srch-score">${scoreStr}</span>`+
-      `</div>`;
-  }).join('');
-  drop.classList.remove('hidden');
-}
-
-function _srchBlur(mkt){
-  // Delay so mousedown on item fires first
-  _srchBlurTm[mkt]=setTimeout(()=>{
-    const drop=document.getElementById(mkt+'SrchDrop');
-    if(drop)drop.classList.add('hidden');
-  },200);
-}
-
-/* ── Stock detail popup ───────────────────────────────── */
-function _sdClose(e){
-  if(e&&e.target!==document.getElementById('sdOverlay'))return;
-  document.getElementById('sdOverlay').classList.add('hidden');
-  document.getElementById('sdBody').innerHTML='';
-}
-
-function _fmt(v,decimals=2,suffix='',prefix=''){
-  const n=parseFloat(v);
-  if(v===''||v===null||v===undefined||isNaN(n))return'—';
-  return prefix+n.toFixed(decimals)+suffix;
-}
-
-function _openStockDetail(stock,mkt,runDate){
-  // Close dropdown
-  const drop=document.getElementById(mkt+'SrchDrop');
-  if(drop)drop.classList.add('hidden');
-  const inp=document.getElementById(mkt+'SrchInput');
-  if(inp)inp.blur();
-
-  const tkr=(stock.ticker||'').replace('.NS','');
-  const name=stock.name||tkr;
-  const sector=stock.nse_sector||stock.sector||'';
-  const score=parseFloat(stock.final_score||stock.score||0);
-  const maxScore=mkt==='sw'?(stock.max_score||7):100;
-
-  document.getElementById('sdTkr').textContent=tkr;
-  document.getElementById('sdName').textContent=name;
-  document.getElementById('sdSector').textContent=sector;
-  document.getElementById('sdDate').textContent=runDate?'Screener run: '+runDate:'';
-  document.getElementById('sdScore').textContent=isNaN(score)?'—':score.toFixed(1);
-  document.getElementById('sdScoreLbl').textContent=mkt==='sw'?'Score / '+maxScore:'Score / 100';
-  document.getElementById('sdScoreBar').style.width=(isNaN(score)?0:Math.min(score/maxScore*100,100))+'%';
-
-  let html='';
-
-  if(mkt==='ind'){
-    const curr='₹';
-    html+=`<div class="sd-section">Fundamentals</div><div class="sd-grid">
-      <div class="sd-metric"><div class="sd-m-lbl">Price</div><div class="sd-m-val">${curr}${_fmt(stock.current_price)}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">Market Cap</div><div class="sd-m-val">${_fmt(stock.market_cap_cr,0)} Cr</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">P/E</div><div class="sd-m-val">${_fmt(stock.pe_ratio)}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">PEG</div><div class="sd-m-val">${_fmt(stock.peg_raw)}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">ROE</div><div class="sd-m-val">${_fmt(stock.roe_pct,1,'%')}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">Revenue Growth</div><div class="sd-m-val">${_fmt(stock.revenue_growth_pct,1,'%')}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">Debt / Equity</div><div class="sd-m-val">${_fmt(stock.debt_to_equity)}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">ADTV</div><div class="sd-m-val">${_fmt(stock.adtv_cr,1)} Cr</div></div>
-    </div>
-    <div class="sd-section">Momentum</div><div class="sd-grid">
-      <div class="sd-metric"><div class="sd-m-lbl">1-Month</div><div class="sd-m-val">${_fmt(stock.momentum_1m,1,'%')}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">3-Month</div><div class="sd-m-val">${_fmt(stock.momentum_3m,1,'%')}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">6-Month</div><div class="sd-m-val">${_fmt(stock.momentum_6m,1,'%')}</div></div>
-    </div>`;
-    const flags=[
-      {lbl:'Earnings Trend',val:stock.earnings_trend,note:stock.earnings_notes},
-      {lbl:'Margin Trend',val:stock.margin_trend,note:stock.margin_notes},
-      {lbl:'Promoter Signal',val:stock.promoter_signal,note:stock.promoter_notes},
-      {lbl:'Circuit Risk',val:stock.circuit_risk,note:stock.circuit_notes},
-      {lbl:'Pledge Risk',val:stock.pledge_risk,note:stock.pledge_notes},
-    ];
-    const flagColors={IMPROVING:'var(--green)',POSITIVE:'var(--green)',STABLE:'var(--text2)',
-      NONE:'var(--green)',LOW:'var(--green)',DECLINING:'var(--red)',NEGATIVE:'var(--red)',
-      HIGH:'var(--red)',CAUTION:'#f59e0b',NEUTRAL:'var(--text2)'};
-    if(flags.some(f=>f.val)){
-      html+=`<div class="sd-section">Quality Flags</div>`;
-      flags.forEach(f=>{
-        if(!f.val)return;
-        const col=flagColors[f.val?.toUpperCase()]||'var(--text2)';
-        html+=`<div class="sd-flag"><span class="sd-flag-ico">▸</span><span class="sd-flag-lbl">${f.lbl}${f.note&&f.note!==f.val?' — <span style="color:var(--text3)">'+(f.note.length>60?f.note.slice(0,60)+'…':f.note)+'</span>':''}</span><span class="sd-flag-val" style="color:${col}">${f.val}</span></div>`;
-      });
-    }
-    // Audit trail (top picks only)
-    const at=stock.audit_trail;
-    if(at?.why_picked?.length){
-      html+=`<div class="sd-section">Why Picked</div>`;
-      at.why_picked.forEach(r=>{html+=`<div class="sd-why">✓ ${r}</div>`;});
-    }
-    if(at?.risks?.length){
-      html+=`<div class="sd-section">Risks</div>`;
-      at.risks.forEach(r=>{html+=`<div class="sd-risk">⚠ ${r}</div>`;});
-    }
-
-  }else if(mkt==='us'){
-    const curr='$';
-    html+=`<div class="sd-section">Fundamentals</div><div class="sd-grid">
-      <div class="sd-metric"><div class="sd-m-lbl">Price</div><div class="sd-m-val">${curr}${_fmt(stock.current_price)}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">Market Cap</div><div class="sd-m-val">${_fmt(stock.market_cap_usd_m,0)}M</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">P/E</div><div class="sd-m-val">${_fmt(stock.pe_ratio)}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">PEG</div><div class="sd-m-val">${_fmt(stock.peg_ratio)}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">ROE</div><div class="sd-m-val">${_fmt(stock.roe_pct,1,'%')}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">Revenue Growth</div><div class="sd-m-val">${_fmt(stock.revenue_growth_pct,1,'%')}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">Debt / Equity</div><div class="sd-m-val">${_fmt(stock.debt_to_equity)}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">Beta</div><div class="sd-m-val">${_fmt(stock.beta)}</div></div>
-    </div>`;
-    const at=stock.audit_trail;
-    if(at?.why_picked?.length){
-      html+=`<div class="sd-section">Why Picked</div>`;
-      at.why_picked.forEach(r=>{html+=`<div class="sd-why">✓ ${r}</div>`;});
-    }
-    if(at?.risks?.length){
-      html+=`<div class="sd-section">Risks</div>`;
-      at.risks.forEach(r=>{html+=`<div class="sd-risk">⚠ ${r}</div>`;});
-    }
-    if(at?.score_breakdown){
-      html+=`<div class="sd-section">Score Breakdown</div><div class="sd-grid">`;
-      Object.entries(at.score_breakdown).forEach(([k,v])=>{
-        html+=`<div class="sd-metric"><div class="sd-m-lbl">${k.replace(/_/g,' ')}</div><div class="sd-m-val">${typeof v==='number'?v.toFixed(1):v}</div></div>`;
-      });
-      html+=`</div>`;
-    }
-
-  }else if(mkt==='sw'){
-    html+=`<div class="sd-section">Entry & Levels</div><div class="sd-grid">
-      <div class="sd-metric"><div class="sd-m-lbl">Current Price</div><div class="sd-m-val">₹${_fmt(stock.current_price)}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">Conviction</div><div class="sd-m-val">${stock.conviction||'—'}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">Stop-Loss</div><div class="sd-m-val">₹${_fmt(stock.stop_loss)} (−${_fmt(stock.stop_pct,1)}%)</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">Target 1</div><div class="sd-m-val">₹${_fmt(stock.target1)}</div></div>
-      ${stock.target2?`<div class="sd-metric"><div class="sd-m-lbl">Target 2</div><div class="sd-m-val">₹${_fmt(stock.target2)}</div></div>`:''}
-      <div class="sd-metric"><div class="sd-m-lbl">R/R Ratio</div><div class="sd-m-val">${_fmt(stock.rr_ratio)}×</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">RSI (14)</div><div class="sd-m-val">${_fmt(stock.rsi,0)}</div></div>
-      <div class="sd-metric"><div class="sd-m-lbl">Vol Surge</div><div class="sd-m-val">${_fmt(stock.vol_ratio,1)}×</div></div>
-    </div>`;
-    const sigs=stock.signals||{};
-    if(Object.keys(sigs).length){
-      html+=`<div class="sd-section">Signals</div>`;
-      Object.entries(sigs).forEach(([k,v])=>{
-        const pass=v.pass;
-        html+=`<div class="sd-sig"><span class="${pass?'sd-sig-pass':'sd-sig-fail'}">${pass?'✓':'✗'}</span><div class="sd-sig-body"><div class="sd-sig-lbl">${k.charAt(0).toUpperCase()+k.slice(1)}</div>${v.note?'<div class="sd-sig-note">'+v.note+'</div>':''}</div></div>`;
-      });
-    }
-  }
-
-  document.getElementById('sdBody').innerHTML=html;
-  document.getElementById('sdOverlay').classList.remove('hidden');
-}
 
 async function _asSubmit(){
   const price=parseFloat(document.getElementById('asPrice').value);
