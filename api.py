@@ -23,9 +23,11 @@ app = Flask(__name__)
 # matching X-Upload-Token header. Unset = open (backwards compatible).
 UPLOAD_TOKEN = os.getenv("UPLOAD_TOKEN", "")
 
+_WRITE_PATH_MARKERS = ("/upload", "/add", "/remove")
+
 @app.before_request
 def _enforce_upload_token():
-    if request.method != "POST" or "/upload" not in request.path:
+    if request.method != "POST" or not any(m in request.path for m in _WRITE_PATH_MARKERS):
         return None
     if not UPLOAD_TOKEN:
         return None
@@ -343,6 +345,68 @@ def upload_live_portfolio():
         _save_json(path, data)
         print(f"✅ Live portfolio updated — {sum(len(b.get('stocks',[])) for b in data.values())} positions")
         return jsonify({"status": "ok", "saved_to": path}), 200
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def _read_live_ind():
+    """Single source of truth for the India live portfolio (cache → disk)."""
+    global _live_cache
+    if _live_cache:
+        return _live_cache
+    data = _load_json(os.path.join(DATA_DIR, "portfolio_live.json"))
+    _live_cache = data if isinstance(data, dict) else {}
+    return _live_cache
+
+
+def _write_live_ind(data):
+    global _live_cache
+    _live_cache = _sanitise(data)
+    _save_json(os.path.join(DATA_DIR, "portfolio_live.json"), _live_cache)
+
+
+@app.route("/portfolio/live/add", methods=["POST", "OPTIONS"])
+def add_live_ind():
+    """Append a single stock to the India live portfolio. Atomic — server is
+    the single source of truth, so the client never overwrites the whole list."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        stock = request.get_json(force=True)
+        ticker = (stock or {}).get("ticker")
+        if not ticker:
+            return jsonify({"error": "stock must include a 'ticker'"}), 400
+        live = _read_live_ind()
+        for b in live.values():
+            if any(s.get("ticker") == ticker for s in b.get("stocks", [])):
+                return jsonify({"status": "exists", "ticker": ticker}), 200
+        live.setdefault("top_picks", {"label": "Monthly Top Picks", "stocks": []})
+        live["top_picks"].setdefault("stocks", []).append(stock)
+        _write_live_ind(live)
+        total = sum(len(b.get("stocks", [])) for b in live.values())
+        print(f"✅ India live: added {ticker} ({total} holdings)")
+        return jsonify({"status": "ok", "ticker": ticker, "holdings": total})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/portfolio/live/remove", methods=["POST", "OPTIONS"])
+def remove_live_ind():
+    """Remove a single ticker from the India live portfolio. Atomic."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        ticker = (request.get_json(force=True) or {}).get("ticker")
+        if not ticker:
+            return jsonify({"error": "must include a 'ticker'"}), 400
+        live = _read_live_ind()
+        for b in live.values():
+            if b.get("stocks"):
+                b["stocks"] = [s for s in b["stocks"] if s.get("ticker") != ticker]
+        _write_live_ind(live)
+        total = sum(len(b.get("stocks", [])) for b in live.values())
+        print(f"✅ India live: removed {ticker} ({total} holdings)")
+        return jsonify({"status": "ok", "ticker": ticker, "holdings": total})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -856,6 +920,68 @@ def us_portfolio_live_upload():
         _us_live_cache = data
         _save_json(US_LIVE_FILE, data)
         return jsonify({"status": "ok", "buckets": len(data)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def _read_live_us():
+    """Single source of truth for the US live portfolio (cache → disk)."""
+    global _us_live_cache
+    if _us_live_cache:
+        return _us_live_cache
+    data = _load_json(US_LIVE_FILE)
+    _us_live_cache = data if isinstance(data, dict) else {}
+    return _us_live_cache
+
+
+def _write_live_us(data):
+    global _us_live_cache
+    _us_live_cache = _sanitise(data)
+    _save_json(US_LIVE_FILE, _us_live_cache)
+
+
+@app.route("/us/portfolio/live/add", methods=["POST", "OPTIONS"])
+def add_live_us():
+    """Append a single stock to the US live portfolio. Atomic — server owns
+    the list so concurrent/stale clients can't wipe earlier additions."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        stock = request.get_json(force=True)
+        ticker = (stock or {}).get("ticker")
+        if not ticker:
+            return jsonify({"error": "stock must include a 'ticker'"}), 400
+        live = _read_live_us()
+        for b in live.values():
+            if any(s.get("ticker") == ticker for s in b.get("stocks", [])):
+                return jsonify({"status": "exists", "ticker": ticker}), 200
+        live.setdefault("top_picks", {"label": "Monthly Top Picks", "stocks": []})
+        live["top_picks"].setdefault("stocks", []).append(stock)
+        _write_live_us(live)
+        total = sum(len(b.get("stocks", [])) for b in live.values())
+        print(f"✅ US live: added {ticker} ({total} holdings)")
+        return jsonify({"status": "ok", "ticker": ticker, "holdings": total})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/us/portfolio/live/remove", methods=["POST", "OPTIONS"])
+def remove_live_us():
+    """Remove a single ticker from the US live portfolio. Atomic."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        ticker = (request.get_json(force=True) or {}).get("ticker")
+        if not ticker:
+            return jsonify({"error": "must include a 'ticker'"}), 400
+        live = _read_live_us()
+        for b in live.values():
+            if b.get("stocks"):
+                b["stocks"] = [s for s in b["stocks"] if s.get("ticker") != ticker]
+        _write_live_us(live)
+        total = sum(len(b.get("stocks", [])) for b in live.values())
+        print(f"✅ US live: removed {ticker} ({total} holdings)")
+        return jsonify({"status": "ok", "ticker": ticker, "holdings": total})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
