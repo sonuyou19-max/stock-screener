@@ -1529,15 +1529,20 @@ async function exitUsStock(ticker){
   _uL=false;loadUS();
 }
 
-function togglePickDetail(ticker,mkt){
+async function togglePickDetail(ticker,mkt){
   const safeT=ticker.replace('.','_');
   const detId=mkt==='us'?'udet-'+safeT:'idet-'+safeT;
   const det=document.getElementById(detId);
   if(!det)return;
   if(det.style.display!=='none'){det.style.display='none';return;}
 
-  // Look up full stock data from picks
-  const picksData=mkt==='us'?_usPicksData:_indPicksData;
+  // Look up full stock data from picks — lazy-fetch if not loaded yet
+  let picksData=mkt==='us'?_usPicksData:_indPicksData;
+  if(!picksData){
+    const ep=mkt==='us'?'/us/portfolio/picks':'/portfolio/picks';
+    picksData=await fd(ep);
+    if(mkt==='us')_usPicksData=picksData;else _indPicksData=picksData;
+  }
   let full=null;
   for(const b of Object.values(picksData||{})){
     full=(b.stocks||[]).find(s=>s.ticker===ticker);
@@ -1553,23 +1558,39 @@ function togglePickDetail(ticker,mkt){
              :cur?'₹'+cur.price?.toLocaleString('en-IN',{maximumFractionDigits:2}):'—';
   const sym=mkt==='us'?'':'';
 
-  // Score breakdown rows
-  const rows=[
-    ['Composite Score',score],
-    ['Revenue Growth',full?.revenue_growth!=null?full.revenue_growth.toFixed(1)+'%':'—'],
-    ['ROE',full?.roe!=null?full.roe.toFixed(1)+'%':'—'],
-    ['PE Ratio',full?.pe_ratio!=null?full.pe_ratio.toFixed(1):'—'],
-    ['Debt/Equity',full?.debt_equity!=null?full.debt_equity.toFixed(2):'—'],
-    ['3M Momentum',full?.momentum_3m!=null?full.momentum_3m.toFixed(1)+'%':(full?.momentum!=null?full.momentum.toFixed(1)+'%':'—')],
-    ['Market Cap',full?.market_cap_usd_m!=null?'$'+Math.round(full.market_cap_usd_m/1000)+'B':(full?.market_cap_cr!=null?'₹'+Math.round(full.market_cap_cr)+'Cr':'—')],
-    ['Live Price',curr],
-  ].filter(r=>r[1]&&r[1]!=='—');
+  // Score breakdown — field names differ between India (roe_pct, rev_growth_pct, debt_equity, market_cap_cr)
+  // and US (roe×100, revenue_growth×100, debt_to_equity, market_cap_usd_m)
+  const isUs=mkt==='us';
+  const roeVal=isUs
+    ?(full?.roe!=null?full.roe*100:null)
+    :(full?.roe_pct??full?.roe??null);
+  const rgVal=isUs
+    ?(full?.revenue_growth!=null?full.revenue_growth*100:null)
+    :(full?.rev_growth_pct??full?.revenue_growth??null);
+  const deVal=isUs
+    ?(full?.debt_to_equity??full?.debt_equity??null)
+    :(full?.debt_equity??null);
+  const mcapHtml=isUs
+    ?(full?.market_cap_usd_m!=null?'$'+Math.round(full.market_cap_usd_m/1000)+'B':null)
+    :(full?.market_cap_cr!=null?'₹'+Math.round(full.market_cap_cr)+'Cr':null);
+  const momVal=full?.momentum_3m??full?.momentum??null;
 
-  const why=full?.rationale||full?.why_picked||advPick?.sector||'';
+  const rows=[
+    ['Score', score!=null&&score!='—'?String(Math.round(score)):null],
+    ['Revenue Growth', rgVal!=null?rgVal.toFixed(1)+'%':null],
+    ['ROE', roeVal!=null?roeVal.toFixed(1)+'%':null],
+    ['PE Ratio', full?.pe_ratio!=null?full.pe_ratio.toFixed(1):null],
+    ['Debt/Equity', deVal!=null?deVal.toFixed(2):null],
+    ['3M Momentum', momVal!=null?momVal.toFixed(1)+'%':null],
+    ['Market Cap', mcapHtml],
+    ['Live Price', curr!='—'?curr:null],
+  ].filter(r=>r[1]!=null);
+
+  const why=full?.rationale||full?.why_picked||(advPick?.sector?'Sector: '+advPick.sector:'');
   det.innerHTML=
     (why?`<div style="margin-bottom:8px;font-style:italic;color:var(--text3)">${why}</div>`:'')
-    +rows.map(r=>`<div style="display:flex;justify-content:space-between;padding:2px 0;border-bottom:1px solid var(--border)"><span>${r[0]}</span><span style="color:var(--text1);font-weight:600">${r[1]}</span></div>`).join('')
-    +(rows.length===0?'<div style="color:var(--text3)">No detailed data — re-run screener to populate.</div>':'');
+    +(rows.length?rows.map(r=>`<div style="display:flex;justify-content:space-between;padding:3px 0;border-bottom:1px solid var(--border)"><span style="color:var(--text3)">${r[0]}</span><span style="color:var(--text1);font-weight:600">${r[1]}</span></div>`).join('')
+      :'<div style="color:var(--text3);font-size:10px">No detailed data — re-run screener to populate.</div>');
   det.style.display='block';
 }
 
