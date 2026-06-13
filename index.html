@@ -430,18 +430,14 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
     <div class="modal-title" id="addUsTitle">Add to US Portfolio</div>
     <div class="modal-sub" id="addUsSub">Enter trade details</div>
     <div class="modal-lbl">Buy Price ($)</div>
-    <input class="modal-input" type="number" id="addUsPrice" placeholder="0.00" step="0.01" inputmode="decimal" oninput="_auCalc('price')"/>
-    <div class="au-price-btns">
-      <button class="au-price-opt active" id="auMktBtn" onclick="_auFillMkt()">📡 Use Market Price</button>
-      <button class="au-price-opt" id="auCustomBtn" onclick="_auClearPrice()">✏️ Enter Custom</button>
+    <div class="au-price-btns" style="margin-bottom:10px">
+      <button class="au-price-opt" id="auMktBtn" onclick="_auFillMkt()">📡 Use Market Price</button>
+      <button class="au-price-opt active" id="auCustomBtn" onclick="_auClearPrice()">✏️ Enter Custom</button>
     </div>
-    <div class="au-row">
-      <div class="modal-lbl">Amount Invested ($)</div>
-      <input class="modal-input" type="number" id="addUsAmount" placeholder="e.g. 500" step="1" inputmode="decimal" oninput="_auCalc('amount')"/>
-    </div>
+    <input class="modal-input" type="number" id="addUsPrice" placeholder="0.00" step="0.01" inputmode="decimal"/>
     <div class="au-row">
       <div class="modal-lbl">Quantity (shares)</div>
-      <input class="modal-input" type="number" id="addUsQty" placeholder="e.g. 2" step="any" inputmode="decimal" oninput="_auCalc('qty')"/>
+      <input class="modal-input" type="number" id="addUsQty" placeholder="e.g. 2" step="any" inputmode="decimal"/>
     </div>
     <div class="modal-acts" style="margin-top:22px">
       <button class="modal-cancel" onclick="_auClose()">Cancel</button>
@@ -1431,50 +1427,48 @@ function addUsToPickedPortfolio(ticker){_auOpen(ticker);}
 
 function _auOpen(ticker){
   _auTicker=ticker;
-  _auMktPrice=_uP?.[ticker]?.price||null;
+  _auMktPrice=null;
   document.getElementById('addUsTitle').textContent='Add '+ticker+' to US Portfolio';
-  document.getElementById('addUsSub').textContent=_auMktPrice?'Current market: $'+_auMktPrice.toFixed(2):'Enter trade details';
-  document.getElementById('addUsPrice').value=_auMktPrice?_auMktPrice.toFixed(2):'';
-  document.getElementById('addUsAmount').value='';
+  document.getElementById('addUsSub').textContent='Enter trade details';
+  document.getElementById('addUsPrice').value='';
   document.getElementById('addUsQty').value='';
-  document.getElementById('auMktBtn').classList.toggle('active',!!_auMktPrice);
-  document.getElementById('auCustomBtn').classList.toggle('active',!_auMktPrice);
+  document.getElementById('auMktBtn').classList.remove('active');
+  document.getElementById('auCustomBtn').classList.add('active');
   document.getElementById('addUsModal').classList.remove('hidden');
-  setTimeout(()=>document.getElementById(_auMktPrice?'addUsAmount':'addUsPrice').focus(),80);
+  setTimeout(()=>document.getElementById('addUsPrice').focus(),80);
 }
 
 function _auClose(){document.getElementById('addUsModal').classList.add('hidden');_auTicker=null;}
 
-function _auFillMkt(){
-  if(!_auMktPrice)return;
-  document.getElementById('addUsPrice').value=_auMktPrice.toFixed(2);
-  document.getElementById('auMktBtn').classList.add('active');
-  document.getElementById('auCustomBtn').classList.remove('active');
-  _auCalc('price');
-  document.getElementById('addUsAmount').focus();
+async function _auFillMkt(){
+  const btn=document.getElementById('auMktBtn');
+  btn.textContent='⏳ Fetching…';btn.disabled=true;
+  try{
+    const data=await fd('/price?ticker='+encodeURIComponent(_auTicker));
+    if(data?.price){
+      _auMktPrice=data.price;
+      document.getElementById('addUsSub').textContent='Market price: $'+data.price.toFixed(2)+(data.change_pct!=null?' ('+( data.change_pct>=0?'+':'')+data.change_pct.toFixed(2)+'% today)':'');
+      document.getElementById('addUsPrice').value=data.price.toFixed(2);
+      document.getElementById('auMktBtn').classList.add('active');
+      document.getElementById('auCustomBtn').classList.remove('active');
+      document.getElementById('addUsQty').focus();
+    }else{
+      document.getElementById('addUsSub').textContent='⚠️ Could not fetch price — enter manually';
+    }
+  }catch(e){
+    document.getElementById('addUsSub').textContent='⚠️ Could not fetch price — enter manually';
+  }finally{
+    btn.textContent='📡 Use Market Price';btn.disabled=false;
+  }
 }
 
 function _auClearPrice(){
   document.getElementById('addUsPrice').value='';
   document.getElementById('auCustomBtn').classList.add('active');
   document.getElementById('auMktBtn').classList.remove('active');
+  document.getElementById('addUsSub').textContent='Enter trade details';
+  _auMktPrice=null;
   document.getElementById('addUsPrice').focus();
-}
-
-function _auCalc(changed){
-  const p=parseFloat(document.getElementById('addUsPrice').value);
-  const a=parseFloat(document.getElementById('addUsAmount').value);
-  const q=parseFloat(document.getElementById('addUsQty').value);
-  if(changed==='qty'&&!isNaN(p)&&p>0&&!isNaN(q)&&q>0){
-    document.getElementById('addUsAmount').value=(p*q).toFixed(2);
-  }else if(changed==='amount'&&!isNaN(p)&&p>0&&!isNaN(a)&&a>0){
-    document.getElementById('addUsQty').value=(a/p).toFixed(4).replace(/\.?0+$/,'');
-  }else if(changed==='price'&&!isNaN(p)&&p>0){
-    const q2=parseFloat(document.getElementById('addUsQty').value);
-    const a2=parseFloat(document.getElementById('addUsAmount').value);
-    if(!isNaN(q2)&&q2>0)document.getElementById('addUsAmount').value=(p*q2).toFixed(2);
-    else if(!isNaN(a2)&&a2>0)document.getElementById('addUsQty').value=(a2/p).toFixed(4).replace(/\.?0+$/,'');
-  }
 }
 
 function _showSpinner(msg){
@@ -1486,10 +1480,8 @@ function _hideSpinner(){document.getElementById('spinnerOverlay').classList.add(
 async function _auSubmit(){
   const price=parseFloat(document.getElementById('addUsPrice').value);
   const qty=parseFloat(document.getElementById('addUsQty').value);
-  const amount=parseFloat(document.getElementById('addUsAmount').value);
   if(!price||isNaN(price)||price<=0){alert('Enter a valid buy price.');return;}
   if(!qty||isNaN(qty)||qty<=0){alert('Enter a valid quantity.');return;}
-  if(!amount||isNaN(amount)||amount<=0){alert('Enter a valid amount invested.');return;}
   const ticker=_auTicker;
   _auClose();
   _showSpinner('Adding '+ticker+' to portfolio…');
@@ -1498,10 +1490,11 @@ async function _auSubmit(){
     let fullStock=null;
     for(const b of Object.values(_usPicksData||{})){fullStock=(b.stocks||[]).find(s=>s.ticker===ticker);if(fullStock)break;}
     const advPick=(_usAdvData?.top_picks||[]).find(p=>p.ticker===ticker);
+    const alloc=parseFloat((price*qty).toFixed(2));
     const entry=fullStock
-      ?{...fullStock,price,buy_price:price,approx_shares:qty,allocation_usd:parseFloat(amount.toFixed(2)),buy_date:new Date().toISOString().split('T')[0]}
+      ?{...fullStock,price,buy_price:price,approx_shares:qty,allocation_usd:alloc,buy_date:new Date().toISOString().split('T')[0]}
       :{ticker,name:(advPick?.name)||ticker,sector:(advPick?.sector)||'Technology',final_score:(advPick?.score)||0,
-        price,buy_price:price,approx_shares:qty,allocation_usd:parseFloat(amount.toFixed(2)),buy_date:new Date().toISOString().split('T')[0]};
+        price,buy_price:price,approx_shares:qty,allocation_usd:alloc,buy_date:new Date().toISOString().split('T')[0]};
     const r=await fetch(`${API}/us/portfolio/live/add`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});
     if(!r.ok){_hideSpinner();alert('⚠️ Could not add ('+r.status+'). Check your session and try again.');return;}
     _uL=false;

@@ -1096,6 +1096,31 @@ def us_advisory_upload():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/price", methods=["GET"])
+def single_price():
+    """Fetch live price for any single ticker. GET /price?ticker=STX"""
+    try:
+        import yfinance as yf, math
+        ticker = request.args.get("ticker", "").strip().upper()
+        if not ticker:
+            return jsonify({"error": "ticker param required"}), 400
+        info = yf.Ticker(ticker).fast_info
+        p = getattr(info, "last_price", None) or getattr(info, "regular_market_price", None)
+        chg = getattr(info, "regular_market_change_percent", None)
+        prev = getattr(info, "previous_close", None)
+        if p is None or math.isnan(float(p)):
+            return jsonify({"error": f"No price data for {ticker}"}), 404
+        if (not chg or math.isnan(float(chg))) and prev:
+            chg = (float(p) - float(prev)) / float(prev) * 100
+        return jsonify({
+            "ticker": ticker,
+            "price": round(float(p), 2),
+            "change_pct": round(float(chg) if chg and not math.isnan(float(chg)) else 0, 2),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/us/prices", methods=["GET"])
 def us_prices():
     """Fetch live USD prices for all US portfolio stocks."""
