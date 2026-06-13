@@ -1471,6 +1471,57 @@ def trigger_llm_synth():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/screener/universe", methods=["GET", "OPTIONS"])
+def screener_universe():
+    """Return screened stock universe for search feature.
+    mkt=ind → latest ranking_all_YYYYMM.csv (all ~500 Nifty 500 stocks)
+    mkt=us  → us_portfolio_picks.json top picks
+    mkt=sw  → swing_candidates.json candidates"""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    mkt = request.args.get("mkt", "ind")
+    try:
+        if mkt == "ind":
+            import csv as _csv
+            csvs = sorted(glob.glob(os.path.join(DATA_DIR, "ranking_all_*.csv")), reverse=True)
+            if not csvs:
+                return jsonify({"stocks": [], "run_date": "", "count": 0})
+            path = csvs[0]
+            fname = os.path.basename(path)          # ranking_all_202506.csv
+            yyyymm = fname.replace("ranking_all_", "").replace(".csv", "")
+            run_date = f"{yyyymm[:4]}-{yyyymm[4:]}" if len(yyyymm) == 6 else yyyymm
+            keep = {"ticker","name","sector","nse_sector","current_price","final_score",
+                    "pe_ratio","roe_pct","revenue_growth_pct","debt_to_equity",
+                    "momentum_1m","momentum_3m","momentum_6m","market_cap_cr",
+                    "peg_raw","earnings_trend","margin_trend","promoter_signal",
+                    "circuit_risk","pledge_risk","margin_notes","earnings_notes",
+                    "promoter_notes","circuit_notes","pledge_notes","adtv_cr",
+                    "peg_score","roe_score","revenue_growth_score","debt_score","momentum_score"}
+            stocks = []
+            with open(path, newline="", encoding="utf-8") as f:
+                for row in _csv.DictReader(f):
+                    stocks.append({k: v for k, v in row.items() if k in keep})
+            return jsonify({"stocks": stocks, "run_date": run_date, "count": len(stocks)})
+
+        elif mkt == "us":
+            data = _load_json(US_PICKS_FILE) or {}
+            tp = data.get("top_picks") or {}
+            stocks = tp.get("stocks", [])
+            run_date = data.get("generated_at", "")[:7]
+            return jsonify({"stocks": stocks, "run_date": run_date, "count": len(stocks)})
+
+        elif mkt == "sw":
+            data = _load_json(SWING_CANDIDATES_FILE) or {}
+            stocks = data.get("candidates", [])
+            run_date = (data.get("scan_date") or data.get("generated_at", ""))[:10]
+            return jsonify({"stocks": stocks, "run_date": run_date, "count": len(stocks)})
+
+        else:
+            return jsonify({"error": "unknown mkt — use ind/us/sw"}), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     app.run(host="0.0.0.0", port=port, debug=False)
