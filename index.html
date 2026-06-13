@@ -1199,22 +1199,33 @@ function renderAdvisory(adv){
     action==='EXIT'       ?`Exit ${(adv.sell_ticker||'').replace('.NS','')} — Bank Profits`:
     action==='EXIT_AND_ADD'?`Exit ${(adv.sell_ticker||'').replace('.NS','')} → Add a Pick`:
                            'Review This Month\'s Top Picks';
-  const rbDate=adv.rebalance_report_date?`report: ${adv.rebalance_report_date}`:'';
-  const exitCount=health.filter(h=>h.rebalancer_verdict==='EXIT'||h.rebalancer_verdict==='TRIM').length;
+  const rbDate=adv.rebalance_report_date?` · ${adv.rebalance_report_date}`:'';
+  const vIcon=v=>v==='EXIT'?'🔴':v==='TRIM'?'🟠':v==='WATCH'?'🟡':'✅';
   const healthHtml=health.length?`
-    <div style="font-size:10px;color:var(--text3);margin-bottom:8px;padding:6px 10px;background:var(--surface2);border-radius:8px;">
-      📊 Rebalancer: ${health.length} holding${health.length!==1?'s':''} analysed${rbDate?' · '+rbDate:''}${exitCount?` · <span style="color:var(--red);font-weight:700">${exitCount} EXIT/TRIM flagged</span>`:''}
-      <span style="color:var(--text3)"> — verdicts shown on each stock card above</span>
+    <div style="margin-bottom:10px">
+      <div style="font-size:10px;color:var(--text3);font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">📊 Holdings Health${rbDate}</div>
+      ${health.map(h=>{
+        const v=h.rebalancer_verdict||'HOLD';
+        const pct=h.pnl_pct!=null?`${h.pnl_pct>=0?'+':''}${parseFloat(h.pnl_pct).toFixed(1)}%`:'';
+        const flagged=v==='EXIT'||v==='TRIM';
+        const btnHtml=flagged?`<button style="background:rgba(255,98,89,.15);border:1px solid rgba(255,98,89,.3);color:var(--red);border-radius:50%;width:22px;height:22px;font-size:14px;line-height:1;cursor:pointer;flex-shrink:0" onclick="exitIndiaStock('${h.ticker}')" title="Exit ${h.ticker.replace('.NS','')}">−</button>`:'';
+        return`<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:var(--surface2);border-radius:7px;margin-bottom:4px">
+          <span style="font-weight:700;font-size:12px;min-width:52px">${h.ticker.replace('.NS','')}</span>
+          <span style="flex:1;font-size:10px;color:var(--text3)">${(h.name||'').slice(0,22)}</span>
+          ${pct?`<span style="font-size:10px;font-weight:600;color:${h.pnl_pct>=0?'var(--green)':'var(--red)'}">${pct}</span>`:''}
+          <span style="font-size:10px;font-weight:700;color:${v==='EXIT'?'var(--red)':v==='TRIM'?'#f59e0b':v==='WATCH'?'var(--text2)':'var(--green)'}">${vIcon(v)} ${v}</span>
+          ${btnHtml}
+        </div>`;
+      }).join('')}
     </div>`:'';
 
-  // ── Balance-aware picks ─────────────────────────────────────────────────
+  // ── Picks — show all 7 from screener, exclude current holdings ─────────
   let _raDep=0;
   for(const b of Object.values(indPortfolio||{}))for(const s of(b.stocks||[]))_raDep+=s.allocation_inr||0;
   const _raAvail=Math.max(0,100000-_raDep);
   const _raSlots=Math.max(0,7-liveTkrs.size);
   const allPicks=(adv.top_picks||[]).filter(p=>!liveTkrs.has(p.ticker));
-  // Show as many picks as open slots (all 7 if portfolio is full, for reference)
-  const picks=allPicks.slice(0,_raSlots>0?_raSlots:7);
+  const picks=allPicks; // show all screener picks (not capped to open slots)
   const perAlloc=picks.length>0&&_raSlots>0?Math.floor(_raAvail/picks.length):0;
   const picksHtml=picks.length?`
     <div class="adv-picks-lbl">${_raSlots>0?`${_raSlots} open slot${_raSlots!==1?'s':''} · ₹${perAlloc.toLocaleString('en-IN',{maximumFractionDigits:0})} each`:'Portfolio full — reference picks:'}</div>
@@ -1283,13 +1294,25 @@ function renderUsAdvisory(adv){
     action==='EXIT_AND_ADD'?'Exit '+(adv.sell_ticker||'')+' → Add a Pick':
                            'Review This Month\'s Top Picks';
 
-  const rbDate=adv.rebalance_report_date?'report: '+adv.rebalance_report_date:'';
-  const exitCount=health.filter(h=>h.rebalancer_verdict==='EXIT'||h.rebalancer_verdict==='TRIM').length;
-  const healthHtml=health.length?`
-    <div style="font-size:10px;color:var(--text3);margin-bottom:8px;padding:6px 10px;background:var(--surface2);border-radius:8px;">
-      📊 Rebalancer: ${health.length} holding${health.length!==1?'s':''} analysed${rbDate?' · '+rbDate:''}${exitCount?' · <span style="color:var(--red);font-weight:700">'+exitCount+' EXIT/TRIM flagged</span>':''}
-      <span style="color:var(--text3)"> — verdicts shown on each stock card above</span>
-    </div>`:'';
+  const rbDate=adv.rebalance_report_date?' · '+adv.rebalance_report_date:'';
+  const vIcon=v=>v==='EXIT'?'🔴':v==='TRIM'?'🟠':v==='WATCH'?'🟡':'✅';
+  const healthHtml=health.length?
+    '<div style="margin-bottom:10px">'+
+    '<div style="font-size:10px;color:var(--text3);font-weight:600;margin-bottom:6px;text-transform:uppercase;letter-spacing:.5px">📊 Holdings Health'+rbDate+'</div>'+
+    health.map(h=>{
+      const v=h.rebalancer_verdict||'HOLD';
+      const pct=h.pnl_pct!=null?`${h.pnl_pct>=0?'+':''}${parseFloat(h.pnl_pct).toFixed(1)}%`:'';
+      const flagged=v==='EXIT'||v==='TRIM';
+      const btnHtml=flagged?`<button style="background:rgba(255,98,89,.15);border:1px solid rgba(255,98,89,.3);color:var(--red);border-radius:50%;width:22px;height:22px;font-size:14px;line-height:1;cursor:pointer;flex-shrink:0" onclick="exitUsStock('${h.ticker}')" title="Exit ${h.ticker}">−</button>`:'';
+      return'<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:var(--surface2);border-radius:7px;margin-bottom:4px">'+
+        '<span style="font-weight:700;font-size:12px;min-width:52px">'+h.ticker+'</span>'+
+        '<span style="flex:1;font-size:10px;color:var(--text3)">'+(h.name||'').slice(0,20)+'</span>'+
+        (pct?'<span style="font-size:10px;font-weight:600;color:'+(h.pnl_pct>=0?'var(--green)':'var(--red)')+'">'+pct+'</span>':'')+
+        '<span style="font-size:10px;font-weight:700;color:'+(v==='EXIT'?'var(--red)':v==='TRIM'?'#f59e0b':v==='WATCH'?'var(--text2)':'var(--green)')+'">'+vIcon(v)+' '+v+'</span>'+
+        btnHtml+
+        '</div>';
+    }).join('')+
+    '</div>':'';
 
   // Balance-aware picks
   let _raDep=0;
@@ -1297,7 +1320,7 @@ function renderUsAdvisory(adv){
   const _raAvail=Math.max(0,1000-_raDep);
   const _raSlots=Math.max(0,7-liveTkrs.size);
   const allPicks=(adv.top_picks||[]).filter(p=>!liveTkrs.has(p.ticker));
-  const picks=allPicks.slice(0,_raSlots>0?_raSlots:7);
+  const picks=allPicks; // show all screener picks, not capped to open slots
   const perAlloc=picks.length>0&&_raSlots>0?Math.floor(_raAvail/picks.length):0;
   const picksHtml=picks.length?`
     <div class="adv-picks-lbl">${_raSlots>0?_raSlots+' open slot'+(_raSlots!==1?'s':'')+' · $'+perAlloc.toLocaleString('en-US',{maximumFractionDigits:0})+' each':'Portfolio full — reference picks:'}</div>
@@ -1432,7 +1455,7 @@ async function exitIndiaStock(ticker){
     `Sell at ₹${sellPrice.toLocaleString('en-IN',{minimumFractionDigits:2})}\n`+
     `P&L: ${pnl_pct>=0?'+':''}${pnl_pct.toFixed(1)}% (${pnl_inr>=0?'+':''}₹${Math.abs(pnl_inr).toLocaleString('en-IN',{maximumFractionDigits:0})})`
   ))return;
-  // Save to trade history (keeps PnL in memory)
+  // Save to trade history
   await fetch(`${API}/portfolio/history/upload`,{method:'POST',headers:_postHeaders(),
     body:JSON.stringify({
       ticker,name:stockData.name||ticker.replace('.NS',''),
@@ -1443,10 +1466,13 @@ async function exitIndiaStock(ticker){
       exit_reason:'MANUAL_EXIT',market:'IND',
     })
   });
-  // Remove from live portfolio
-  const live=await fd('/portfolio/live')||{};
-  for(const bk of Object.keys(live))live[bk].stocks=(live[bk].stocks||[]).filter(s=>s.ticker!==ticker);
-  await fetch(`${API}/portfolio/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
+  // Remove from live portfolio — update locally first for instant UI, then persist to server
+  for(const bk of Object.keys(indPortfolio||{}))
+    if(indPortfolio[bk].stocks)indPortfolio[bk].stocks=indPortfolio[bk].stocks.filter(s=>s.ticker!==ticker);
+  renderLiveFlat(indPortfolio,'indStocks','₹');
+  const live=JSON.parse(JSON.stringify(indPortfolio)); // deep copy
+  const r=await fetch(`${API}/portfolio/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
+  if(!r.ok){alert(`⚠️ Server update failed (${r.status}) — refresh may restore the stock. Check your session.`);return;}
   alert(`✅ ${ticker.replace('.NS','')} exited.\nP&L: ${pnl_pct>=0?'+':''}${pnl_pct.toFixed(1)}%\nSaved to trade history.`);
   _iL=false;loadIndia();
 }
@@ -1492,9 +1518,13 @@ async function exitUsStock(ticker){
       exit_reason:'MANUAL_EXIT',market:'US',
     })
   });
-  const live=await fd('/us/portfolio/live')||{};
-  for(const bk of Object.keys(live))live[bk].stocks=(live[bk].stocks||[]).filter(s=>s.ticker!==ticker);
-  await fetch(`${API}/us/portfolio/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
+  // Update locally first for instant UI, then persist
+  for(const bk of Object.keys(usPortfolio||{}))
+    if(usPortfolio[bk].stocks)usPortfolio[bk].stocks=usPortfolio[bk].stocks.filter(s=>s.ticker!==ticker);
+  renderBuckets('us',usPortfolio,'usStocks','$');
+  const live=JSON.parse(JSON.stringify(usPortfolio));
+  const r=await fetch(`${API}/us/portfolio/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(live)});
+  if(!r.ok){alert(`⚠️ Server update failed (${r.status}) — refresh may restore the stock. Check your session.`);return;}
   alert(`✅ ${ticker} exited.\nP&L: ${pnl_pct>=0?'+':''}${pnl_pct.toFixed(1)}%\nSaved to trade history.`);
   _uL=false;loadUS();
 }
