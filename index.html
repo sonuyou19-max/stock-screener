@@ -446,6 +446,22 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
   </div>
 </div>
 
+<!-- EXIT US STOCK MODAL -->
+<div class="modal-overlay hidden" id="exitUsModal">
+  <div class="modal-sheet">
+    <div class="modal-title" id="euTitle">Exit Position</div>
+    <div class="modal-sub" id="euSub"></div>
+    <button class="modal-mkt" id="euMktBtn" onclick="_euFillMkt()" style="margin-bottom:10px">📡 Use Market Price</button>
+    <div class="modal-lbl">Sell Price ($)</div>
+    <input class="modal-input" type="number" id="euPrice" placeholder="Enter sell price" step="0.01" inputmode="decimal" oninput="_euPreview()"/>
+    <div id="euPnl" style="margin-top:14px;font-size:15px;font-weight:700;text-align:center;min-height:22px;letter-spacing:.01em"></div>
+    <div class="modal-acts" style="margin-top:18px">
+      <button class="modal-cancel" onclick="_euClose()">Cancel</button>
+      <button class="modal-confirm" style="background:var(--red);color:#fff" onclick="_euSubmit()">Confirm Exit</button>
+    </div>
+  </div>
+</div>
+
 <!-- SELL MODAL -->
 <div class="modal-overlay hidden" id="sellModal">
   <div class="modal-sheet">
@@ -1569,52 +1585,79 @@ async function exitIndiaStock(ticker){
   _iL=false;loadIndia();
 }
 
-async function exitUsStock(ticker){
+/* ── Exit-US-stock modal state ────────────────────────── */
+let _euTicker=null,_euStockData=null,_euLivePrice=null;
+
+function exitUsStock(ticker){
   let stockData=null;
   for(const b of Object.values(usPortfolio||{})){
     stockData=(b.stocks||[]).find(s=>s.ticker===ticker);
     if(stockData)break;
   }
   if(!stockData){alert('Stock not found in US portfolio.');return;}
+  _euTicker=ticker;_euStockData=stockData;
+  _euLivePrice=_uP?.[ticker]?.price||null;
   const bp=parseFloat(stockData.price||stockData.buy_price||0);
-  const livePrice=_uP?.[ticker]?.price;
-  const inputPrice=prompt(
-    `Exit ${ticker}?\n`+
-    `Bought: $${bp.toLocaleString('en-US',{minimumFractionDigits:2})}\n`+
-    (livePrice?`Current: $${livePrice.toLocaleString('en-US',{minimumFractionDigits:2})}\n`:'')+
-    `\nEnter sell price, or leave blank to use current price:`
-  );
-  if(inputPrice===null)return;
-  let sellPrice;
-  if(inputPrice.trim()===''){
-    if(!livePrice){alert('Current price not loaded. Hit Refresh and try again.');return;}
-    sellPrice=livePrice;
+  const shares=stockData.approx_shares||0;
+  document.getElementById('euTitle').textContent='Exit '+ticker;
+  document.getElementById('euSub').textContent='Bought $'+bp.toFixed(2)+(shares?' · '+shares+' share'+(shares===1?'':'s'):'');
+  document.getElementById('euPrice').value='';
+  document.getElementById('euPnl').textContent='';
+  const mktBtn=document.getElementById('euMktBtn');
+  if(_euLivePrice){
+    mktBtn.textContent='📡 Market Price — $'+_euLivePrice.toFixed(2);
+    mktBtn.style.display='';
   }else{
-    sellPrice=parseFloat(inputPrice);
-    if(!sellPrice||isNaN(sellPrice)||sellPrice<=0){alert('Please enter a valid sell price.');return;}
+    mktBtn.style.display='none';
   }
-  const pnl_usd=bp?(sellPrice-bp):0;
-  const pnl_pct=bp?((sellPrice-bp)/bp*100):0;
-  if(!confirm(
-    `Confirm exit — ${ticker}?\n`+
-    `Sell at $${sellPrice.toLocaleString('en-US',{minimumFractionDigits:2})}\n`+
-    `P&L: ${pnl_pct>=0?'+':''}${pnl_pct.toFixed(1)}% (${pnl_usd>=0?'+':''}$${Math.abs(pnl_usd).toLocaleString('en-US',{maximumFractionDigits:2})})`
-  ))return;
-  await fetch(`${API}/us/portfolio/history/upload`,{method:'POST',headers:_postHeaders(),
-    body:JSON.stringify({
-      ticker,name:stockData.name||ticker,
-      buy_price:bp,sell_price:sellPrice,
-      entry_date:stockData.buy_date||'',exit_date:new Date().toISOString().split('T')[0],
-      realised_pnl_usd:parseFloat(pnl_usd.toFixed(2)),
-      realised_pnl_pct:parseFloat(pnl_pct.toFixed(2)),
-      exit_reason:'MANUAL_EXIT',market:'US',
-    })
-  });
-  // Atomic server-side removal — server owns the list
-  const r=await fetch(`${API}/us/portfolio/live/remove`,{method:'POST',headers:_postHeaders(),body:JSON.stringify({ticker})});
-  if(!r.ok){alert(`⚠️ Server update failed (${r.status}) — refresh may restore the stock. Check your session.`);return;}
-  alert(`✅ ${ticker} exited.\nP&L: ${pnl_pct>=0?'+':''}${pnl_pct.toFixed(1)}%\nSaved to trade history.`);
-  _uL=false;loadUS();
+  document.getElementById('exitUsModal').classList.remove('hidden');
+  setTimeout(()=>document.getElementById('euPrice').focus(),80);
+}
+
+function _euClose(){document.getElementById('exitUsModal').classList.add('hidden');_euTicker=null;}
+
+function _euFillMkt(){
+  if(!_euLivePrice)return;
+  document.getElementById('euPrice').value=_euLivePrice.toFixed(2);
+  _euPreview();
+  document.getElementById('euPrice').focus();
+}
+
+function _euPreview(){
+  const sp=parseFloat(document.getElementById('euPrice').value);
+  const bp=parseFloat(_euStockData?.price||_euStockData?.buy_price||0);
+  const shares=_euStockData?.approx_shares||0;
+  const pnlEl=document.getElementById('euPnl');
+  if(!sp||isNaN(sp)||!bp){pnlEl.textContent='';return;}
+  const pnl_usd=(sp-bp)*shares;
+  const pnl_pct=bp?((sp-bp)/bp*100):0;
+  const gain=pnl_pct>=0;
+  pnlEl.textContent=(gain?'+':'')+pnl_pct.toFixed(2)+'%  '+(gain?'+':'-')+'$'+Math.abs(pnl_usd).toFixed(2);
+  pnlEl.style.color=gain?'var(--green)':'var(--red)';
+}
+
+async function _euSubmit(){
+  const sp=parseFloat(document.getElementById('euPrice').value);
+  if(!sp||isNaN(sp)||sp<=0){alert('Enter a valid sell price.');return;}
+  const ticker=_euTicker,stockData=_euStockData;
+  const bp=parseFloat(stockData.price||stockData.buy_price||0);
+  const shares=stockData.approx_shares||0;
+  const pnl_usd=parseFloat(((sp-bp)*shares).toFixed(2));
+  const pnl_pct=bp?parseFloat(((sp-bp)/bp*100).toFixed(2)):0;
+  _euClose();
+  _showSpinner('Exiting '+ticker+'…');
+  try{
+    await fetch(`${API}/us/portfolio/history/upload`,{method:'POST',headers:_postHeaders(),
+      body:JSON.stringify({ticker,name:stockData.name||ticker,buy_price:bp,sell_price:sp,
+        entry_date:stockData.buy_date||'',exit_date:new Date().toISOString().split('T')[0],
+        realised_pnl_usd:pnl_usd,realised_pnl_pct:pnl_pct,exit_reason:'MANUAL_EXIT',market:'US'})
+    });
+    const r=await fetch(`${API}/us/portfolio/live/remove`,{method:'POST',headers:_postHeaders(),body:JSON.stringify({ticker})});
+    if(!r.ok){_hideSpinner();alert('⚠️ Server update failed ('+r.status+'). Check your session.');return;}
+    _uL=false;
+    await loadUS();
+    _hideSpinner();
+  }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
 }
 
 async function togglePickDetail(ticker,mkt){
