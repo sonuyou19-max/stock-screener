@@ -37,7 +37,7 @@ import requests
 IST              = ZoneInfo("Asia/Kolkata")
 SYNTHESIS_FILE   = os.path.join(os.path.dirname(__file__), "llm_synthesis.json")
 ANTHROPIC_API    = "https://api.anthropic.com/v1/messages"
-MODEL            = "claude-sonnet-4-20250514"
+MODEL            = "claude-sonnet-4-6"
 MAX_TOKENS       = 2800
 
 BUCKET_LABELS = {

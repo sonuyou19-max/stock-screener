@@ -1634,7 +1634,18 @@ function renderVerdict(containerId,verdict,buckets,labels){
 
 function renderIndVerdict(){
   const v=indSignals?.llm_synthesis?.verdict;
-  renderVerdict('indVerdict',v,['BFSI_IT','DEFENCE_INFRA','GREEN_ENERGY_EV','FMCG_PHARMA'],{BFSI_IT:'BFSI + IT',DEFENCE_INFRA:'Defence + Infra',GREEN_ENERGY_EV:'Green Energy + EV',FMCG_PHARMA:'FMCG + Pharma'});
+  const el=document.getElementById('indVerdict');
+  if(!v){el.innerHTML='<div class="empty">No AI verdict yet.</div>';return;}
+  const em={Positive:'🟢',Cautious:'🟠',Neutral:'⚪',Negative:'🔴'};
+  const overall=v.overall_market;
+  const buckets=Object.keys(v).filter(k=>k!=='overall_market');
+  el.innerHTML=(overall?`<div class="v-overall">${overall}</div>`:'')+
+  buckets.map(bk=>{const bv=v[bk];if(!bv||typeof bv!=='object')return'';const vrd=bv.verdict||'Neutral';return`<div class="v-card">
+    <div class="v-hdr"><div class="v-bkt">${bk}</div><div class="v-badge ${vrd}">${em[vrd]||'⚪'} ${vrd}</div></div>
+    <div class="v-driver">${bv.key_driver||''}</div>
+    <div class="v-action">${bv.action||''}</div>
+    ${bv.watch_for?`<div class="v-watch">👀 ${bv.watch_for}</div>`:''}
+  </div>`;}).join('');
 }
 
 /* ═══ US MACRO SIGNALS ═══ */
