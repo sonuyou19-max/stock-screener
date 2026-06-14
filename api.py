@@ -90,6 +90,7 @@ SWING_CANDIDATES_FILE = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_cand
 SWING_LIVE_FILE       = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_live.json")
 SWING_HISTORY_FILE    = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_history.json")
 SWING_QUEUE_FILE      = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_queue.json")
+INDIA_QUEUE_FILE      = os.path.join(os.getenv("DATA_DIR", "/data"), "india_queue.json")
 
 
 def _load_json(path: str):
@@ -1786,6 +1787,100 @@ def kite_postback():
         print(f"⚠️  Kite postback error: {e}")
 
     return jsonify({"status": "ok"}), 200
+
+
+# ════════════════════════════════════════════════════════════════
+#  INDIA MONTHLY QUEUE — automated buy/sell orders
+# ════════════════════════════════════════════════════════════════
+
+_india_queue: dict = {}  # keyed by ticker e.g. "RELIANCE.NS"
+
+
+def _read_india_queue() -> dict:
+    global _india_queue
+    data = _load_json(INDIA_QUEUE_FILE)
+    _india_queue = data if isinstance(data, dict) else {}
+    return _india_queue
+
+
+def _write_india_queue(q: dict):
+    global _india_queue
+    _india_queue = q
+    _save_json(INDIA_QUEUE_FILE, q)
+
+
+@app.route("/india/queue", methods=["GET", "OPTIONS"])
+def india_queue_get():
+    """Return India monthly order queue. Optional ?status= or ?action= filter."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    q = _read_india_queue()
+    status_filter = request.args.get("status", "")
+    action_filter = request.args.get("action", "")
+    if status_filter:
+        q = {k: v for k, v in q.items() if v.get("status") == status_filter}
+    if action_filter:
+        q = {k: v for k, v in q.items() if v.get("action") == action_filter}
+    return jsonify({"queue": list(q.values()), "count": len(q)})
+
+
+@app.route("/india/queue", methods=["POST"])
+def india_queue_add():
+    """Add or replace a ticker in the India queue."""
+    try:
+        entry = request.get_json(force=True) or {}
+        ticker = entry.get("ticker")
+        if not ticker:
+            return jsonify({"error": "ticker required"}), 400
+        from datetime import datetime as _dt
+        q = _read_india_queue()
+        entry.setdefault("queued_at", _dt.now().isoformat())
+        entry.setdefault("status", "queued")
+        q[ticker] = entry
+        _write_india_queue(q)
+        print(f"✅ India queue: {entry.get('action','?')} {ticker} qty={entry.get('quantity')}")
+        return jsonify({"status": "ok", "ticker": ticker, "count": len(q)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/india/queue/remove", methods=["POST", "OPTIONS"])
+def india_queue_remove():
+    """Remove a ticker from the India queue."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        ticker = (request.get_json(force=True) or {}).get("ticker")
+        if not ticker:
+            return jsonify({"error": "ticker required"}), 400
+        q = _read_india_queue()
+        removed = ticker in q
+        q.pop(ticker, None)
+        _write_india_queue(q)
+        print(f"✅ India queue: removed {ticker}")
+        return jsonify({"status": "ok", "removed": removed, "count": len(q)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/india/queue/update", methods=["POST", "OPTIONS"])
+def india_queue_update():
+    """Patch one or more India queue entries. Body: [{ticker, ...fields}] or {ticker, ...fields}."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        payload = request.get_json(force=True)
+        updates = payload if isinstance(payload, list) else [payload]
+        q = _read_india_queue()
+        for upd in updates:
+            ticker = upd.get("ticker")
+            if ticker and ticker in q:
+                q[ticker].update({k: v for k, v in upd.items() if k != "ticker"})
+                print(f"✅ India queue: updated {ticker} → {upd.get('status', '?')}")
+        _write_india_queue(q)
+        return jsonify({"status": "ok", "updated": len(updates)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":
