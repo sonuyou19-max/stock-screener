@@ -1873,7 +1873,7 @@ def kite_postback():
                         })
                         _write_india_queue(iq)
 
-        # ── Swing SELL fills: detect T1/T2/stop and alert via Telegram ──
+        # ── Swing SELL fills: auto-adjust GTTs + Telegram ──────────────
         if status == "COMPLETE" and side == "SELL" and avg_price:
             try:
                 fill_price = float(avg_price)
@@ -1885,6 +1885,7 @@ def kite_postback():
                 q = _read_queue()
                 ticker_ns = f"{symbol}.NS"
                 entry = q.get(ticker_ns) or q.get(symbol)
+                t_key = ticker_ns if ticker_ns in q else (symbol if symbol in q else None)
 
                 if entry and entry.get("status") == "filled":
                     bought_qty = int(entry.get("fill_qty") or entry.get("quantity") or 0)
@@ -1892,46 +1893,87 @@ def kite_postback():
                     target1    = entry.get("target1")
                     target2    = entry.get("target2")
                     gtt_id     = entry.get("gtt_id")
+                    gtt_t1_id  = entry.get("gtt_t1_id")
+                    gtt_t2_id  = entry.get("gtt_t2_id")
                     qty_t1     = bought_qty // 2
                     qty_t2     = bought_qty - qty_t1
-                    remaining  = bought_qty - fill_qty
                     name       = entry.get("name", symbol)
+                    buy_price  = entry.get("fill_price", "?")
+
+                    def _cancel_gtt(gid):
+                        if gid:
+                            try:
+                                _vps_post("/cancel-gtt", {"gtt_id": gid})
+                                print(f"🗑 Cancelled GTT {gid}")
+                            except Exception as ce:
+                                print(f"⚠️  GTT cancel failed ({gid}): {ce}")
 
                     if fill_qty == qty_t1 and target1:
-                        # T1 fired — 50% sold, stop GTT still set for full qty
+                        # T1 fired: cancel old stop (full qty), place new stop (remaining qty)
+                        _cancel_gtt(gtt_id)
+                        new_gtt_id = None
+                        if stop_loss and qty_t2 > 0:
+                            try:
+                                res, _ = _vps_post("/place-gtt", {
+                                    "symbol":        symbol,
+                                    "trigger_price": float(stop_loss),
+                                    "quantity":      qty_t2,
+                                    "side":          "SELL",
+                                    "order_type":    "MARKET",
+                                    "product":       "CNC",
+                                })
+                                new_gtt_id = res.get("gtt_id") or res.get("trigger_id")
+                                print(f"✅ New stop GTT: {symbol} ₹{stop_loss} qty={qty_t2} → id={new_gtt_id}")
+                            except Exception as ge:
+                                print(f"⚠️  New stop GTT failed: {ge}")
+
+                        if t_key:
+                            q[t_key]["gtt_id"] = new_gtt_id
+                            _write_queue(q)
+
+                        sl_note = (f"New stop GTT placed for {qty_t2} shares at ₹{stop_loss} ✅"
+                                   if new_gtt_id else
+                                   f"⚠️ Could not auto-place new stop — manually set stop for {qty_t2} shares at ₹{stop_loss}")
                         _tg(
                             f"🎯 <b>T1 hit: {name} ({symbol})</b>\n"
                             f"Sold {fill_qty} of {bought_qty} shares @ ₹{fill_price:.2f}\n"
                             f"T1 = ₹{target1} ✅\n\n"
-                            f"⚠️ <b>Action required:</b>\n"
-                            f"Your stop-loss GTT (id: <code>{gtt_id}</code>) is still set for "
-                            f"<b>{bought_qty} shares</b> but you now hold only <b>{remaining}</b>.\n"
-                            f"• Go to Zerodha → GTT → cancel that GTT\n"
-                            f"• Place a new stop GTT for <b>{remaining} shares</b> at ₹{stop_loss}\n"
-                            f"• Or move stop to breakeven (₹{entry.get('fill_price', '?')})\n\n"
-                            f"T2 ({remaining} shares) still live at ₹{target2}"
+                            f"🤖 <b>Auto-adjusted:</b>\n"
+                            f"Old stop GTT (qty {bought_qty}) cancelled.\n"
+                            f"{sl_note}\n\n"
+                            f"T2 ({qty_t2} shares) still live at ₹{target2}"
                         )
-                        print(f"📨 Telegram: T1 alert sent for {symbol}")
+                        print(f"📨 Telegram: T1 auto-adjust sent for {symbol}")
 
                     elif fill_qty == qty_t2 and target2:
-                        # T2 fired — position fully closed
+                        # T2 fired: cancel remaining stop GTT, position fully closed
+                        _cancel_gtt(gtt_id)
+                        if t_key:
+                            q[t_key]["gtt_id"] = None
+                            _write_queue(q)
                         _tg(
                             f"🎯 <b>T2 hit: {name} ({symbol})</b>\n"
                             f"Sold final {fill_qty} shares @ ₹{fill_price:.2f}\n"
                             f"T2 = ₹{target2} ✅\n\n"
-                            f"Position fully closed. Cancel any remaining GTTs if still active."
+                            f"🤖 Stop GTT cancelled automatically.\n"
+                            f"Position fully closed. 🏁"
                         )
-                        print(f"📨 Telegram: T2 alert sent for {symbol}")
+                        print(f"📨 Telegram: T2 sent for {symbol}")
 
                     elif fill_qty == bought_qty and stop_loss:
-                        # Stop fired — full position sold
+                        # Stop fired: cancel T1 and T2 GTTs
+                        _cancel_gtt(gtt_t1_id)
+                        _cancel_gtt(gtt_t2_id)
+                        if t_key:
+                            q[t_key].update({"gtt_t1_id": None, "gtt_t2_id": None})
+                            _write_queue(q)
                         _tg(
                             f"🛑 <b>Stop hit: {name} ({symbol})</b>\n"
                             f"Sold {fill_qty} shares @ ₹{fill_price:.2f}\n"
                             f"Stop = ₹{stop_loss} triggered.\n\n"
-                            f"Cancel T1/T2 GTTs if still active on Zerodha."
+                            f"🤖 T1 + T2 GTTs cancelled automatically."
                         )
-                        print(f"📨 Telegram: stop alert sent for {symbol}")
+                        print(f"📨 Telegram: stop sent for {symbol}")
 
         # ── India SELL fills: remove/reduce shares in live portfolio ──
         if status == "COMPLETE" and side == "SELL" and avg_price:
