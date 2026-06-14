@@ -522,6 +522,11 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
     </div>
     <input class="modal-input" type="number" id="ibqQty" placeholder="auto-calculated" step="1" inputmode="decimal" oninput="_ibqCalcValue()"/>
     <div style="font-size:11px;color:var(--text3);margin-top:6px;min-height:16px" id="ibqValueNote"></div>
+    <div class="modal-lbl" style="margin-top:14px;display:flex;justify-content:space-between">
+      <span>Trailing Stop %</span>
+      <span style="font-size:10px;color:var(--text3);font-weight:400">auto-adjusts stop as price rises</span>
+    </div>
+    <input class="modal-input" type="number" id="ibqTsl" placeholder="0 = disabled" step="0.5" min="0" max="20" value="8"/>
     <div class="modal-acts" style="margin-top:22px">
       <button class="modal-cancel" onclick="_ibqClose()">Cancel</button>
       <button class="modal-confirm" style="background:#16a34a" id="ibqConfirm" onclick="_ibqSubmit()">Queue Buy</button>
@@ -562,6 +567,11 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
     <div class="modal-lbl">Quantity (shares)</div>
     <input class="modal-input" type="number" id="qswQty" placeholder="e.g. 5" step="1" inputmode="decimal" oninput="_qswCalcValue()"/>
     <div style="font-size:11px;color:var(--text3);margin-top:6px;min-height:16px" id="qswValueNote"></div>
+    <div class="modal-lbl" style="margin-top:14px;display:flex;justify-content:space-between">
+      <span>Trailing Stop %</span>
+      <span style="font-size:10px;color:var(--text3);font-weight:400">auto-adjusts stop as price rises</span>
+    </div>
+    <input class="modal-input" type="number" id="qswTsl" placeholder="0 = disabled" step="0.5" min="0" max="20" value="5"/>
     <div class="modal-acts" style="margin-top:22px">
       <button class="modal-cancel" onclick="_qswClose()">Cancel</button>
       <button class="modal-confirm" style="background:#16a34a" onclick="_qswSubmit()">Queue for 9AM</button>
@@ -1965,6 +1975,7 @@ function _ibqClose(){document.getElementById('indiaBuyQueueModal').classList.add
 async function _ibqSubmit(){
   const qty=parseInt(document.getElementById('ibqQty').value);
   if(!qty||qty<=0){alert('Enter a valid quantity.');return;}
+  const tsl=parseFloat(document.getElementById('ibqTsl').value)||0;
   const ticker=_ibqTicker;
   _ibqClose();
   _showSpinner('Queuing '+ticker.replace('.NS','')+' buy…');
@@ -1982,6 +1993,7 @@ async function _ibqSubmit(){
       ma20:_ibqEntry.ma20,
       ma50:_ibqEntry.ma50,
       budget_inr:INDIA_SLOT_BUDGET,
+      trailing_stop_pct:tsl>0?tsl:null,
       status:'queued',
     };
     const r=await fetch(`${API}/india/queue`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});
@@ -2126,6 +2138,7 @@ function _qswClose(){document.getElementById('queueSwModal').classList.add('hidd
 async function _qswSubmit(){
   const qty=parseFloat(document.getElementById('qswQty').value);
   if(!qty||isNaN(qty)||qty<=0){alert('Enter a valid quantity.');return;}
+  const tsl=parseFloat(document.getElementById('qswTsl').value)||0;
   const c=_qswCandidate;
   _qswClose();
   _showSpinner('Queuing '+((c.ticker||'').replace('.NS',''))+'…');
@@ -2144,6 +2157,7 @@ async function _qswSubmit(){
       entry_type:c.entry_type,
       entry_basis:c.entry_basis,
       scan_date:scanD,
+      trailing_stop_pct:tsl>0?tsl:null,
       status:'queued',
     };
     const r=await fetch(`${API}/swing/queue`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});

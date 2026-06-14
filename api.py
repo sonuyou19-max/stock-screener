@@ -1829,6 +1829,8 @@ def kite_postback():
                             "status":     "filled",
                             "fill_price": fill_price,
                             "fill_qty":   fill_qty,
+                            "stop_qty":   fill_qty,
+                            "trail_high": fill_price,
                             "order_id":   order_id,
                             "gtt_id":     gtt_id,
                             "gtt_t1_id":  gtt_t1_id,
@@ -1866,9 +1868,32 @@ def kite_postback():
                         print(f"✅ India auto-add: {symbol} {fill_qty}sh @ ₹{fill_price} → live portfolio")
 
                     if i_key:
+                        tsl_pct    = i_entry.get("trailing_stop_pct")
+                        tsl_gtt_id = None
+                        tsl_stop   = None
+                        if tsl_pct:
+                            try:
+                                tsl_stop = round(fill_price * (1 - float(tsl_pct) / 100), 2)
+                                tsl_res, _ = _vps_post("/place-gtt", {
+                                    "symbol":        symbol,
+                                    "trigger_price": tsl_stop,
+                                    "quantity":      fill_qty,
+                                    "side":          "SELL",
+                                    "order_type":    "MARKET",
+                                    "product":       "CNC",
+                                })
+                                tsl_gtt_id = tsl_res.get("gtt_id") or tsl_res.get("trigger_id")
+                                print(f"✅ India TSL GTT: {symbol} ₹{tsl_stop} qty={fill_qty} → id={tsl_gtt_id}")
+                            except Exception as tge:
+                                print(f"⚠️  India TSL GTT failed: {tge}")
                         iq[i_key].update({
                             "status":     "filled",
                             "fill_price": fill_price,
+                            "fill_qty":   fill_qty,
+                            "stop_qty":   fill_qty,
+                            "trail_high": fill_price,
+                            "tsl_stop":   tsl_stop,
+                            "gtt_id":     tsl_gtt_id,
                             "order_id":   order_id,
                         })
                         _write_india_queue(iq)
@@ -1928,7 +1953,8 @@ def kite_postback():
                                 print(f"⚠️  New stop GTT failed: {ge}")
 
                         if t_key:
-                            q[t_key]["gtt_id"] = new_gtt_id
+                            q[t_key]["gtt_id"]   = new_gtt_id
+                            q[t_key]["stop_qty"]  = qty_t2
                             _write_queue(q)
 
                         sl_note = (f"New stop GTT placed for {qty_t2} shares at ₹{stop_loss} ✅"
