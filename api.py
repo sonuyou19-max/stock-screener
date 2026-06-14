@@ -1471,6 +1471,107 @@ def trigger_llm_synth():
         return jsonify({"error": str(e)}), 500
 
 
+# ════════════════════════════════════════════════════════════════
+#  KITE CONNECT WEBHOOK ENDPOINTS
+#  These URLs are registered in Zerodha Kite Connect app settings:
+#    Redirect URL: https://<railway-domain>/kite/callback
+#    Postback URL: https://<railway-domain>/kite/postback
+# ════════════════════════════════════════════════════════════════
+
+ORACLE_VPS_URL   = os.getenv("ORACLE_VPS_URL", "")   # e.g. http://80.225.201.62:5001
+EXECUTOR_SECRET  = os.getenv("EXECUTOR_SECRET", "")   # shared secret with Oracle VPS
+
+
+@app.route("/kite/callback", methods=["GET", "OPTIONS"])
+def kite_callback():
+    """
+    Zerodha redirects here after OAuth login with ?request_token=xxx&status=success.
+    Forwards the request_token to the Oracle VPS to exchange for an access_token.
+    """
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+
+    status        = request.args.get("status", "")
+    request_token = request.args.get("request_token", "")
+    message       = request.args.get("message", "")
+
+    if status != "success" or not request_token:
+        print(f"⚠️  Kite callback error: status={status} message={message}")
+        return f"""
+        <html><body style="font-family:sans-serif;padding:40px">
+        <h2>Kite Login Failed</h2>
+        <p>Status: {status}</p>
+        <p>Message: {message or 'Unknown error'}</p>
+        </body></html>
+        """, 400
+
+    print(f"✅ Kite callback: request_token={request_token[:8]}… status={status}")
+
+    # Forward to Oracle VPS to exchange for access_token
+    exchange_ok = False
+    if ORACLE_VPS_URL:
+        try:
+            import urllib.request, urllib.error
+            import json as _json
+            payload = _json.dumps({"request_token": request_token}).encode()
+            req = urllib.request.Request(
+                f"{ORACLE_VPS_URL}/exchange-token",
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Executor-Secret": EXECUTOR_SECRET,
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                result = _json.loads(resp.read())
+                exchange_ok = result.get("status") == "ok"
+                print(f"✅ Token exchanged for user: {result.get('user_id')}")
+        except Exception as e:
+            print(f"⚠️  Could not forward token to Oracle VPS: {e}")
+
+    status_msg = "Access token updated on trading server." if exchange_ok else (
+        "Token received. Trading server update skipped (VPS not configured)."
+        if not ORACLE_VPS_URL else
+        "Warning: token received but trading server exchange failed — check VPS logs."
+    )
+
+    return f"""
+    <html><body style="font-family:sans-serif;padding:40px;max-width:500px;margin:auto">
+    <h2>&#10003; Kite Login Successful</h2>
+    <p>{status_msg}</p>
+    <p style="color:#888;font-size:13px">You can close this window.</p>
+    </body></html>
+    """
+
+
+@app.route("/kite/postback", methods=["POST", "OPTIONS"])
+def kite_postback():
+    """
+    Zerodha POSTs order status updates here (fills, rejections, cancellations).
+    Logs each event; future: reconcile with portfolio.
+    """
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+
+    try:
+        data = request.get_json(silent=True) or request.form.to_dict()
+        order_id  = data.get("order_id", "?")
+        status    = data.get("status", "?")
+        symbol    = data.get("tradingsymbol", "?")
+        side      = data.get("transaction_type", "?")
+        qty       = data.get("quantity", "?")
+        avg_price = data.get("average_price", "?")
+
+        print(f"📬 Kite postback: {side} {qty}x{symbol} @ ₹{avg_price} "
+              f"→ {status} (order_id={order_id})")
+    except Exception as e:
+        print(f"⚠️  Kite postback parse error: {e}")
+
+    # Zerodha expects 200 OK — always return it
+    return jsonify({"status": "ok"}), 200
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     app.run(host="0.0.0.0", port=port, debug=False)
