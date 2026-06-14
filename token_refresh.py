@@ -75,11 +75,27 @@ def refresh() -> str:
     connect_url = f"https://kite.trade/connect/login?api_key={API_KEY}&v=3"
     r = s.get(connect_url, allow_redirects=True)
     final_url = r.url
-    log.info("  → final URL: %s", final_url[:120])
+    log.info("  → URL after redirect: %s", final_url[:120])
+
+    # If landed on the consent/authorize page, POST to it to programmatically approve
+    if "connect/authorize" in final_url and "request_token" not in final_url:
+        from urllib.parse import urlparse, parse_qs
+        log.info("  → Consent page detected, submitting authorization …")
+        parsed  = urlparse(final_url)
+        qparams = parse_qs(parsed.query, keep_blank_values=True)
+        # Flatten single-value lists and send as form POST
+        form_data = {k: v[0] for k, v in qparams.items()}
+        r = s.post(
+            "https://kite.zerodha.com/connect/authorize",
+            data=form_data,
+            allow_redirects=True,
+        )
+        final_url = r.url
+        log.info("  → post-authorize URL: %s", final_url[:120])
 
     m = re.search(r"[?&]request_token=([^&\s]+)", final_url)
     if not m:
-        # Fallback: scan response body (some redirect chains end in HTML)
+        # Fallback: scan response body
         m = re.search(r"request_token=([^&\"'\s]+)", r.text)
     if not m:
         raise RuntimeError(
