@@ -38,29 +38,13 @@ IST              = ZoneInfo("Asia/Kolkata")
 SYNTHESIS_FILE   = os.path.join(os.path.dirname(__file__), "llm_synthesis.json")
 ANTHROPIC_API    = "https://api.anthropic.com/v1/messages"
 MODEL            = "claude-sonnet-4-6"
-MAX_TOKENS       = 2800
+MAX_TOKENS       = 1500
 
 BUCKET_LABELS = {
-    "Financial Services":             "🏦 Financial Services",
-    "Information Technology":         "💻 Information Technology",
-    "Oil Gas And Consumable Fuels":   "🛢️  Oil Gas & Fuels",
-    "Fast Moving Consumer Goods":     "🛒 FMCG",
-    "Healthcare":                     "💊 Healthcare",
-    "Automobile and Auto Components": "🚗 Auto & Auto Components",
-    "Capital Goods":                  "⚙️  Capital Goods",
-    "Metals And Mining":              "⛏️  Metals & Mining",
-    "Consumer Durables":              "📺 Consumer Durables",
-    "Chemicals":                      "🧪 Chemicals",
-    "Construction Materials":         "🏗️  Construction Materials",
-    "Power":                          "⚡ Power",
-    "Telecommunication":              "📡 Telecommunication",
-    "Consumer Services":              "🍽️  Consumer Services",
-    "Services And Logistics":         "🚚 Services & Logistics",
-    "Realty":                         "🏠 Realty",
-    "Diversified And Infrastructure": "🛤️  Diversified & Infrastructure",
-    "Textiles And Apparel":           "👗 Textiles & Apparel",
-    "Media And Entertainment":        "🎬 Media & Entertainment",
-    "Paper And Forest Products":      "📄 Paper & Forest Products",
+    "BFSI_IT":         "🏦 BFSI + IT (Banks, Financial Services, Insurance, IT)",
+    "DEFENCE_INFRA":   "🛡️  Defence + Infrastructure (Capital Goods, Defence, Construction)",
+    "GREEN_ENERGY_EV": "🌿 Green Energy + EV (Power, Renewables, Auto & EV)",
+    "FMCG_PHARMA":     "🛒 FMCG + Pharma (Consumer Staples, Healthcare, Chemicals)",
 }
 
 
@@ -162,26 +146,26 @@ def synthesise_macro_verdict(macro: dict) -> dict | None:
         "Always respond with valid JSON only, no markdown, no preamble."
     )
 
-    sectors_list = "\n".join(f"{i+1}. {s}" for i, s in enumerate(BUCKET_LABELS))
+    buckets_list = "\n".join(f"{i+1}. {k} — {v}" for i, (k, v) in enumerate(BUCKET_LABELS.items()))
     example_sector = list(BUCKET_LABELS.keys())[0]
 
     user_prompt = f"""Today's macro signals for Indian equity markets:
 
 {context}
 
-The portfolio covers 20 NSE sectors. For each sector, provide a verdict considering ALL signals above — especially when they conflict.
+The portfolio is organised into 4 sector buckets. For each bucket, provide a verdict considering ALL signals above — especially when they conflict.
 
-For EACH sector provide:
+For EACH bucket provide:
 - verdict: exactly one of: Positive | Cautious | Neutral | Negative
 - confidence: exactly one of: High | Medium | Low
 - key_driver: one sentence — the main signal driving this verdict
-- action: one sentence — what to do with this sector's allocation
+- action: one sentence — what to do with this bucket's allocation
 - watch_for: one thing to monitor in the next 2-4 weeks
 
-Sectors to analyse:
-{sectors_list}
+Buckets to analyse:
+{buckets_list}
 
-Respond with ONLY a JSON object in this exact format (all 20 sectors + overall_market):
+Respond with ONLY a JSON object (exactly 4 buckets + overall_market):
 {{
   "{example_sector}": {{
     "verdict": "...",
@@ -190,7 +174,7 @@ Respond with ONLY a JSON object in this exact format (all 20 sectors + overall_m
     "action": "...",
     "watch_for": "..."
   }},
-  ... (all 20 sectors) ...,
+  ... (all 4 buckets) ...,
   "overall_market": "one sentence on overall Indian market outlook"
 }}"""
 
