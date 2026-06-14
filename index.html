@@ -439,6 +439,20 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
       <div class="modal-lbl">Quantity (shares)</div>
       <input class="modal-input" type="number" id="asQty" placeholder="e.g. 2" step="any" inputmode="decimal"/>
     </div>
+    <!-- Zerodha order section — shown only for Indian stocks -->
+    <div id="asKiteRow" style="display:none;margin-top:14px;padding:12px 14px;background:#f0fdf4;border-radius:10px;border:1px solid #86efac">
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+        <input type="checkbox" id="asKiteOrder" onchange="_asToggleKite()" style="width:17px;height:17px;accent-color:#16a34a">
+        <span style="font-weight:600;color:#166534;font-size:14px">Also place order on Zerodha</span>
+      </label>
+      <div id="asOrderTypeRow" style="display:none;margin-top:10px">
+        <div class="modal-lbl" style="margin-bottom:4px">Order Type</div>
+        <select id="asOrderType" style="width:100%;padding:9px 10px;border-radius:7px;border:1px solid #d1d5db;font-size:14px;background:#fff">
+          <option value="LIMIT">Limit — at my entered price</option>
+          <option value="MARKET">Market — at current price</option>
+        </select>
+      </div>
+    </div>
     <div class="modal-acts" style="margin-top:22px">
       <button class="modal-cancel" onclick="_asClose()">Cancel</button>
       <button class="modal-confirm" id="asConfirmBtn" onclick="_asSubmit()">Add to Portfolio</button>
@@ -1475,10 +1489,18 @@ async function _asOpen(ticker,mkt){
   document.getElementById('asSub').textContent=_asMktPrice
     ?'Screener price: '+curr+_asMktPrice.toFixed(2)+' — tap to use it'
     :'Enter trade details';
+  const kiteRow=document.getElementById('asKiteRow');
+  if(mkt==='ind'){kiteRow.style.display='block';}else{kiteRow.style.display='none';}
+  document.getElementById('asKiteOrder').checked=false;
+  document.getElementById('asOrderTypeRow').style.display='none';
   setTimeout(()=>document.getElementById('asPrice').focus(),80);
 }
 
 function _asClose(){document.getElementById('addStockModal').classList.add('hidden');_asTicker=null;}
+function _asToggleKite(){
+  const checked=document.getElementById('asKiteOrder').checked;
+  document.getElementById('asOrderTypeRow').style.display=checked?'block':'none';
+}
 
 async function _asFillMkt(){
   if(_asMktPrice){
@@ -1542,6 +1564,21 @@ async function _asSubmit(){
           price,buy_price:price,approx_shares:qty,allocation_inr:alloc,buy_date:today};
       const r=await fetch(`${API}/portfolio/live/add`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});
       if(!r.ok){_hideSpinner();alert('⚠️ Could not add ('+r.status+'). Check your session.');return;}
+      if(document.getElementById('asKiteOrder')?.checked){
+        const orderType=document.getElementById('asOrderType').value;
+        const nseSymbol=ticker.replace(/\.NS$/i,'').replace(/\.BO$/i,'');
+        _showSpinner('Placing order on Zerodha…');
+        try{
+          const kiteRes=await fetch(`${API}/kite/place-order`,{method:'POST',headers:_postHeaders(),body:JSON.stringify({
+            symbol:nseSymbol,side:'BUY',quantity:Math.round(qty),
+            order_type:orderType,price:orderType==='LIMIT'?price:undefined,
+            product:'CNC',tag:'eq-advisor'
+          })});
+          const kiteData=await kiteRes.json();
+          if(kiteData.order_id){alert('✅ Order placed on Zerodha!\nOrder ID: '+kiteData.order_id+'\nCheck Kite app for status.');}
+          else{alert('⚠️ Portfolio updated but Zerodha order failed:\n'+(kiteData.error||'Unknown error'));}
+        }catch(e){alert('⚠️ Portfolio updated but Zerodha order failed:\n'+e.message);}
+      }
       _iL=false;_indPicksData=null;await loadIndia();
     }else{
       const advPick=(_usAdvData?.top_picks||[]).find(p=>p.ticker===ticker);

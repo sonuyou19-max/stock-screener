@@ -1482,6 +1482,64 @@ ORACLE_VPS_URL   = os.getenv("ORACLE_VPS_URL", "")   # e.g. http://80.225.201.62
 EXECUTOR_SECRET  = os.getenv("EXECUTOR_SECRET", "")   # shared secret with Oracle VPS
 
 
+def _vps_post(endpoint: str, payload: dict):
+    """POST to Oracle VPS executor with auth header. Returns (data, status_code)."""
+    import urllib.request, urllib.error, json as _json
+    if not ORACLE_VPS_URL:
+        return {"error": "Oracle VPS not configured (ORACLE_VPS_URL missing)"}, 503
+    body = _json.dumps(payload).encode()
+    req = urllib.request.Request(
+        f"{ORACLE_VPS_URL}{endpoint}",
+        data=body,
+        headers={"Content-Type": "application/json", "X-Executor-Secret": EXECUTOR_SECRET},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return _json.loads(resp.read()), resp.status
+    except urllib.error.HTTPError as e:
+        return _json.loads(e.read()), e.code
+    except Exception as e:
+        return {"error": str(e)}, 502
+
+
+@app.route("/kite/place-order", methods=["POST", "OPTIONS"])
+def kite_place_order():
+    """Proxy: dashboard → Railway → Oracle VPS → Zerodha."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    data = request.get_json(force=True) or {}
+    result, status = _vps_post("/place-order", data)
+    return jsonify(result), status
+
+
+@app.route("/kite/cancel-order", methods=["POST", "OPTIONS"])
+def kite_cancel_order():
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    data = request.get_json(force=True) or {}
+    result, status = _vps_post("/cancel-order", data)
+    return jsonify(result), status
+
+
+@app.route("/kite/get-pnl", methods=["GET", "OPTIONS"])
+def kite_get_pnl():
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    import urllib.request, json as _json
+    if not ORACLE_VPS_URL:
+        return jsonify({"error": "Oracle VPS not configured"}), 503
+    try:
+        req = urllib.request.Request(
+            f"{ORACLE_VPS_URL}/get-pnl",
+            headers={"X-Executor-Secret": EXECUTOR_SECRET},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return jsonify(_json.loads(resp.read()))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 502
+
+
 @app.route("/kite/callback", methods=["GET", "OPTIONS"])
 def kite_callback():
     """
