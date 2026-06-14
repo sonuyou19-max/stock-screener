@@ -510,6 +510,49 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
   </div>
 </div>
 
+<!-- INDIA BUY QUEUE MODAL -->
+<div class="modal-overlay hidden" id="indiaBuyQueueModal">
+  <div class="modal-sheet">
+    <div class="modal-title" id="ibqTitle">Queue Buy for Tomorrow</div>
+    <div class="modal-sub" id="ibqSub"></div>
+    <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:12px;line-height:1.8;color:#166534" id="ibqEntryInfo">Fetching entry price…</div>
+    <div class="modal-lbl" style="display:flex;justify-content:space-between">
+      <span>Quantity (shares)</span>
+      <span id="ibqQtyNote" style="font-size:11px;color:var(--green);font-weight:600"></span>
+    </div>
+    <input class="modal-input" type="number" id="ibqQty" placeholder="auto-calculated" step="1" inputmode="decimal" oninput="_ibqCalcValue()"/>
+    <div style="font-size:11px;color:var(--text3);margin-top:6px;min-height:16px" id="ibqValueNote"></div>
+    <div class="modal-acts" style="margin-top:22px">
+      <button class="modal-cancel" onclick="_ibqClose()">Cancel</button>
+      <button class="modal-confirm" style="background:#16a34a" id="ibqConfirm" onclick="_ibqSubmit()">Queue Buy</button>
+    </div>
+  </div>
+</div>
+
+<!-- INDIA SELL QUEUE MODAL -->
+<div class="modal-overlay hidden" id="indiaSellQueueModal">
+  <div class="modal-sheet">
+    <div class="modal-title" id="isqTitle">Queue Sell for Tomorrow</div>
+    <div class="modal-sub" id="isqSub"></div>
+    <div style="background:#fff5f5;border:1px solid #fca5a5;border-radius:10px;padding:12px 14px;margin-bottom:14px;font-size:12px;line-height:1.8;color:#991b1b" id="isqInfo"></div>
+    <div class="modal-lbl" style="display:flex;justify-content:space-between">
+      <span id="isqSliderLbl">Sell percentage</span>
+      <span id="isqPctDisplay" style="font-weight:700;color:var(--red);font-size:14px">50%</span>
+    </div>
+    <input type="range" id="isqSlider" min="10" max="100" step="5" value="50"
+      style="width:100%;margin:10px 0 4px;accent-color:var(--red)"
+      oninput="_isqSliderUpdate()"/>
+    <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3);margin-bottom:12px">
+      <span>10%</span><span>Trim 25%</span><span>Half 50%</span><span>Full 100%</span>
+    </div>
+    <div style="background:var(--surface2);border-radius:8px;padding:10px 12px;font-size:12px;line-height:1.7" id="isqCalcResult"></div>
+    <div class="modal-acts" style="margin-top:18px">
+      <button class="modal-cancel" onclick="_isqClose()">Cancel</button>
+      <button class="modal-confirm" style="background:#dc2626" onclick="_isqSubmit()">Queue Sell</button>
+    </div>
+  </div>
+</div>
+
 <!-- QUEUE SWING MODAL -->
 <div class="modal-overlay hidden" id="queueSwModal">
   <div class="modal-sheet">
@@ -886,10 +929,13 @@ async function fetchUsSnap(){
 
 /* ═══ INDIA DETAIL ═══ */
 async function loadIndia(){
-  const[port,sig,fii,picks,adv,latest]=await Promise.all([
+  const[port,sig,fii,picks,adv,latest,indQ]=await Promise.all([
     fd('/portfolio/live'),fd('/signals'),fd('/fiidii'),
-    fd('/portfolio/picks'),fd('/portfolio/advisory'),fd('/portfolio/latest')
+    fd('/portfolio/picks'),fd('/portfolio/advisory'),fd('/portfolio/latest'),
+    fd('/india/queue'),
   ]);
+  _indiaQueue={};
+  (indQ?.queue||[]).forEach(e=>{_indiaQueue[e.ticker]=e;});
   if(port){
     indPortfolio=port;
     // Merge from current picks first, then from latest screener output as fallback
@@ -1333,7 +1379,13 @@ function renderAdvisory(adv){
         const flagged=v==='EXIT'||v==='TRIM';
         const vColor=v==='EXIT'?'var(--red)':v==='TRIM'?'#f59e0b':v==='WATCH'?'var(--text2)':v==='HOLD'?'var(--green)':'var(--text3)';
         const vIco=v==='EXIT'?'🔴':v==='TRIM'?'🟠':v==='WATCH'?'🟡':v==='HOLD'?'✅':'—';
-        const btnHtml=flagged?`<button style="background:rgba(255,98,89,.15);border:1px solid rgba(255,98,89,.3);color:var(--red);border-radius:50%;width:22px;height:22px;font-size:14px;line-height:1;cursor:pointer;flex-shrink:0" onclick="exitIndiaStock('${h.ticker}')" title="Exit ${h.ticker.replace('.NS','')}">−</button>`:'';
+        const queued=_indiaQueue[h.ticker]?.action==='SELL';
+        const btnHtml=flagged?(queued
+          ?`<span style="font-size:9px;color:var(--red);font-weight:600;white-space:nowrap">✓ ${_indiaQueue[h.ticker].quantity}sh</span>
+             <button style="background:rgba(255,98,89,.15);border:1px solid rgba(255,98,89,.3);color:var(--red);border-radius:50%;width:22px;height:22px;font-size:12px;line-height:1;cursor:pointer;flex-shrink:0" onclick="dequeueIndiaSell('${h.ticker}')" title="Remove from sell queue">×</button>`
+          :`<button style="background:rgba(245,158,11,.15);border:1px solid rgba(245,158,11,.3);color:#d97706;border-radius:6px;padding:2px 7px;font-size:10px;font-weight:600;cursor:pointer;flex-shrink:0" onclick="queueIndiaSell('${h.ticker}','${v}')" title="Queue sell order">Queue</button>
+             <button style="background:rgba(255,98,89,.15);border:1px solid rgba(255,98,89,.3);color:var(--red);border-radius:50%;width:22px;height:22px;font-size:14px;line-height:1;cursor:pointer;flex-shrink:0" onclick="exitIndiaStock('${h.ticker}')" title="Exit now">−</button>`)
+          :'';
         return`<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:var(--surface2);border-radius:7px;margin-bottom:4px">
           <span style="font-weight:700;font-size:12px;min-width:52px">${h.ticker.replace('.NS','')}</span>
           <span style="flex:1;font-size:10px;color:var(--text3)">${(h.name||'').slice(0,22)}</span>
@@ -1370,7 +1422,12 @@ function renderAdvisory(adv){
           ${qtyHtml}
         </div>
         <span class="adv-pick-score">${p.score}</span>
-        <button class="pick-add-btn" onclick="addToPickedPortfolio('${p.ticker}')" title="Add to portfolio">+</button>
+        ${_indiaQueue[p.ticker]?.action==='BUY'
+          ?`<span style="font-size:10px;color:var(--green);font-weight:600;white-space:nowrap">✓ ${_indiaQueue[p.ticker].quantity}sh</span>
+             <button class="pick-add-btn" style="background:rgba(255,98,89,.15);color:var(--red);border-color:rgba(255,98,89,.3);font-size:13px" onclick="dequeueIndiaBuy('${p.ticker}')" title="Remove from queue">×</button>`
+          :`<button class="pick-add-btn" style="background:rgba(48,209,88,.15);color:var(--green);border-color:rgba(48,209,88,.3);font-size:11px;padding:0 6px" onclick="queueIndiaBuy('${p.ticker}')" title="Queue for tomorrow">Q</button>
+             <button class="pick-add-btn" onclick="addToPickedPortfolio('${p.ticker}')" title="Add to portfolio now">+</button>`
+        }
       </div>
       <div id="idet-${p.ticker.replace('.','_')}" style="display:none;background:var(--surface2);border-radius:8px;padding:10px 12px;margin:2px 0 6px;font-size:11px;color:var(--text2)"></div>`;}).join('')}
     </div>`:''
@@ -1729,6 +1786,7 @@ async function _exSubmit(){
 let _eswCandidate=null;
 let _swCandByTicker={};
 let _swQueue={};
+let _indiaQueue={};
 
 function enterSwingTrade(ticker){_eswOpen(_swCandByTicker[ticker]||{ticker});}
 
@@ -1839,6 +1897,194 @@ function _eswEntryTypeLabel(t){
 function _eswToggleKite(){
   document.getElementById('eswOrderTypeRow').style.display=
     document.getElementById('eswKiteOrder').checked?'block':'none';
+}
+
+/* ── India monthly queue functions ───────────────────── */
+const INDIA_SLOT_BUDGET = 10000; // ₹10,000 per position slot
+
+// ─── BUY queue ────────────────────────────────────────
+let _ibqTicker=null, _ibqEntry={};
+
+async function queueIndiaBuy(ticker){
+  _ibqTicker=ticker;
+  const sym=ticker.replace(/\.NS$/i,'').replace(/\.BO$/i,'');
+  document.getElementById('ibqTitle').textContent='Queue '+sym+' — Buy Tomorrow';
+  document.getElementById('ibqSub').textContent='Fetching technical entry from Zerodha…';
+  document.getElementById('ibqEntryInfo').textContent='Fetching entry price…';
+  document.getElementById('ibqQty').value='';
+  document.getElementById('ibqQtyNote').textContent='';
+  document.getElementById('ibqValueNote').textContent='';
+  document.getElementById('indiaBuyQueueModal').classList.remove('hidden');
+
+  // Fetch OHLCV and compute entry
+  try{
+    const r=await fetch(`${API}/kite/historical?symbol=${sym}&days=200`,{headers:{'Content-Type':'application/json'}});
+    const data=await r.json();
+    const rows=data.rows||[];
+    if(rows.length<20){throw new Error('Insufficient OHLCV data');}
+    const closes=rows.map(r=>r.close);
+    const last20=closes.slice(-20);
+    const ma20=last20.reduce((a,b)=>a+b,0)/20;
+    const last50=closes.slice(-50);
+    const ma50=last50.reduce((a,b)=>a+b,0)/50;
+    const curr=closes[closes.length-1];
+    const support=Math.max(ma20, ma50*0.97);
+    const optEntry=parseFloat(Math.min(curr, support*1.002).toFixed(2));
+    const gate=parseFloat((curr*1.03).toFixed(2));
+    const autoQty=Math.max(1,Math.floor(INDIA_SLOT_BUDGET/optEntry));
+    const basisLabel=curr<=ma20?'Price at/below 20-DMA — buy at market':'20-DMA support zone';
+    _ibqEntry={ticker,nse_symbol:sym,optimal_entry:optEntry,limit_price:gate,ma20:parseFloat(ma20.toFixed(2)),ma50:parseFloat(ma50.toFixed(2)),current_price:curr};
+    document.getElementById('ibqSub').textContent='Stop: set via rebalancer · Budget: ₹'+INDIA_SLOT_BUDGET.toLocaleString('en-IN');
+    document.getElementById('ibqEntryInfo').innerHTML=
+      `<strong>Optimal entry:</strong> ₹${optEntry.toFixed(2)}<br>`+
+      `<strong>Entry basis:</strong> ${basisLabel}<br>`+
+      `<strong>20-DMA:</strong> ₹${ma20.toFixed(2)} · <strong>50-DMA:</strong> ₹${ma50.toFixed(2)}<br>`+
+      `<strong>Max gate:</strong> ₹${gate.toFixed(2)} (skip if gaps above 3%)`;
+    document.getElementById('ibqQty').value=autoQty;
+    document.getElementById('ibqQtyNote').textContent='Auto: ₹'+INDIA_SLOT_BUDGET.toLocaleString('en-IN')+' ÷ ₹'+optEntry.toFixed(0)+' = '+autoQty+' shares';
+    _ibqCalcValue();
+  }catch(e){
+    document.getElementById('ibqEntryInfo').textContent='Could not fetch entry price: '+e.message+'. Enter price manually.';
+    document.getElementById('ibqSub').textContent=sym+' — enter quantity manually';
+    _ibqEntry={ticker,nse_symbol:sym};
+  }
+  setTimeout(()=>document.getElementById('ibqQty').focus(),80);
+}
+
+function _ibqCalcValue(){
+  const qty=parseFloat(document.getElementById('ibqQty').value);
+  const entry=_ibqEntry.optimal_entry||0;
+  if(!qty)return;
+  const val=qty*(entry||0);
+  document.getElementById('ibqValueNote').textContent=
+    val>0?'Est. investment: ₹'+val.toLocaleString('en-IN',{maximumFractionDigits:0}):'';
+}
+
+function _ibqClose(){document.getElementById('indiaBuyQueueModal').classList.add('hidden');_ibqTicker=null;}
+
+async function _ibqSubmit(){
+  const qty=parseInt(document.getElementById('ibqQty').value);
+  if(!qty||qty<=0){alert('Enter a valid quantity.');return;}
+  const ticker=_ibqTicker;
+  _ibqClose();
+  _showSpinner('Queuing '+ticker.replace('.NS','')+' buy…');
+  try{
+    // Get name from advisory data
+    const advPick=(_advData?.top_picks||[]).find(p=>p.ticker===ticker);
+    const entry={
+      ticker,
+      nse_symbol:_ibqEntry.nse_symbol||ticker.replace(/\.NS$/i,''),
+      name:advPick?.name||ticker.replace('.NS',''),
+      action:'BUY',
+      quantity:qty,
+      optimal_entry:_ibqEntry.optimal_entry,
+      limit_price:_ibqEntry.limit_price,
+      ma20:_ibqEntry.ma20,
+      ma50:_ibqEntry.ma50,
+      budget_inr:INDIA_SLOT_BUDGET,
+      status:'queued',
+    };
+    const r=await fetch(`${API}/india/queue`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});
+    const res=await r.json();
+    _hideSpinner();
+    if(res.status==='ok'){
+      _indiaQueue[ticker]=entry;
+      renderAdvisory(_advData);
+      alert('✅ '+ticker.replace('.NS','')+' queued for 9:15 AM buy.\nQuantity: '+qty+' shares @ ₹'+((_ibqEntry.optimal_entry||0).toFixed(2)));
+    }else{alert('Error: '+JSON.stringify(res));}
+  }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
+}
+
+async function dequeueIndiaBuy(ticker){
+  if(!confirm('Remove '+ticker.replace('.NS','')+' from buy queue?'))return;
+  _showSpinner('Removing…');
+  try{
+    const r=await fetch(`${API}/india/queue/remove`,{method:'POST',headers:_postHeaders(),body:JSON.stringify({ticker})});
+    const res=await r.json();
+    _hideSpinner();
+    if(res.status==='ok'){delete _indiaQueue[ticker];renderAdvisory(_advData);}
+    else{alert('Error: '+JSON.stringify(res));}
+  }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
+}
+
+// ─── SELL queue ───────────────────────────────────────
+let _isqTicker=null, _isqAction=null, _isqHeldShares=0;
+
+function queueIndiaSell(ticker, rebalAction){
+  _isqTicker=ticker;
+  _isqAction=rebalAction;
+  const sym=ticker.replace(/\.NS$/i,'');
+  // Find held shares from live portfolio
+  let heldShares=0;
+  for(const b of Object.values(indPortfolio||{})){
+    const s=(b.stocks||[]).find(x=>x.ticker===ticker);
+    if(s){heldShares=s.approx_shares||s.shares||0;break;}
+  }
+  _isqHeldShares=Math.floor(heldShares);
+  document.getElementById('isqTitle').textContent='Queue '+sym+' — Sell Tomorrow';
+  const defPct=rebalAction==='EXIT'?100:50;
+  document.getElementById('isqSlider').value=defPct;
+  document.getElementById('isqPctDisplay').textContent=defPct+'%';
+  document.getElementById('isqSub').textContent='Rebalancer: '+rebalAction+' · Held: '+_isqHeldShares+' shares';
+  document.getElementById('isqInfo').innerHTML=
+    `<strong>Rebalancer verdict:</strong> ${rebalAction}<br>`+
+    `<strong>Shares held:</strong> ${_isqHeldShares}<br>`+
+    `Order type: MARKET at 9:15 AM open`;
+  _isqSliderUpdate();
+  document.getElementById('indiaSellQueueModal').classList.remove('hidden');
+}
+
+function _isqSliderUpdate(){
+  const pct=parseInt(document.getElementById('isqSlider').value);
+  document.getElementById('isqPctDisplay').textContent=pct+'%';
+  const qty=Math.floor(_isqHeldShares*pct/100);
+  const warn=qty===0?'<span style="color:var(--red)">⚠️ 0 shares — cannot queue. Increase percentage or choose EXIT.</span>':'';
+  document.getElementById('isqCalcResult').innerHTML=
+    `Sell <strong>${qty} of ${_isqHeldShares}</strong> shares (${pct}%)`+
+    (qty>0?` · Keep ${_isqHeldShares-qty} shares`:'')+warn;
+}
+
+function _isqClose(){document.getElementById('indiaSellQueueModal').classList.add('hidden');_isqTicker=null;}
+
+async function _isqSubmit(){
+  const pct=parseInt(document.getElementById('isqSlider').value);
+  const qty=Math.floor(_isqHeldShares*pct/100);
+  if(qty<=0){alert('0 shares to sell at this percentage. Increase the slider or choose EXIT.');return;}
+  const ticker=_isqTicker;
+  _isqClose();
+  _showSpinner('Queuing '+ticker.replace('.NS','')+' sell…');
+  try{
+    const entry={
+      ticker,
+      nse_symbol:ticker.replace(/\.NS$/i,''),
+      action:'SELL',
+      quantity:qty,
+      trim_pct:pct,
+      held_shares:_isqHeldShares,
+      rebalancer_action:_isqAction,
+      status:'queued',
+    };
+    const r=await fetch(`${API}/india/queue`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});
+    const res=await r.json();
+    _hideSpinner();
+    if(res.status==='ok'){
+      _indiaQueue[ticker]=entry;
+      renderAdvisory(_advData);
+      alert('✅ '+ticker.replace('.NS','')+' queued: SELL '+qty+' shares ('+pct+'%) at 9:15 AM market open.');
+    }else{alert('Error: '+JSON.stringify(res));}
+  }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
+}
+
+async function dequeueIndiaSell(ticker){
+  if(!confirm('Remove '+ticker.replace('.NS','')+' from sell queue?'))return;
+  _showSpinner('Removing…');
+  try{
+    const r=await fetch(`${API}/india/queue/remove`,{method:'POST',headers:_postHeaders(),body:JSON.stringify({ticker})});
+    const res=await r.json();
+    _hideSpinner();
+    if(res.status==='ok'){delete _indiaQueue[ticker];renderAdvisory(_advData);}
+    else{alert('Error: '+JSON.stringify(res));}
+  }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
 }
 
 /* ── Swing queue functions ────────────────────────────── */
