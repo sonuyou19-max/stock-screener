@@ -522,11 +522,6 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
     </div>
     <input class="modal-input" type="number" id="ibqQty" placeholder="auto-calculated" step="1" inputmode="decimal" oninput="_ibqCalcValue()"/>
     <div style="font-size:11px;color:var(--text3);margin-top:6px;min-height:16px" id="ibqValueNote"></div>
-    <div class="modal-lbl" style="margin-top:14px;display:flex;justify-content:space-between">
-      <span>Trailing Stop %</span>
-      <span style="font-size:10px;color:var(--text3);font-weight:400">auto-adjusts stop as price rises</span>
-    </div>
-    <input class="modal-input" type="number" id="ibqTsl" placeholder="0 = disabled" step="0.5" min="0" max="20" value="8"/>
     <div class="modal-acts" style="margin-top:22px">
       <button class="modal-cancel" onclick="_ibqClose()">Cancel</button>
       <button class="modal-confirm" style="background:#16a34a" id="ibqConfirm" onclick="_ibqSubmit()">Queue Buy</button>
@@ -567,11 +562,6 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
     <div class="modal-lbl">Quantity (shares)</div>
     <input class="modal-input" type="number" id="qswQty" placeholder="e.g. 5" step="1" inputmode="decimal" oninput="_qswCalcValue()"/>
     <div style="font-size:11px;color:var(--text3);margin-top:6px;min-height:16px" id="qswValueNote"></div>
-    <div class="modal-lbl" style="margin-top:14px;display:flex;justify-content:space-between">
-      <span>Trailing Stop %</span>
-      <span style="font-size:10px;color:var(--text3);font-weight:400">auto-adjusts stop as price rises</span>
-    </div>
-    <input class="modal-input" type="number" id="qswTsl" placeholder="0 = disabled" step="0.5" min="0" max="20" value="5"/>
     <div class="modal-acts" style="margin-top:22px">
       <button class="modal-cancel" onclick="_qswClose()">Cancel</button>
       <button class="modal-confirm" style="background:#16a34a" onclick="_qswSubmit()">Queue for 9AM</button>
@@ -1943,13 +1933,16 @@ async function queueIndiaBuy(ticker){
     const gate=parseFloat((curr*1.03).toFixed(2));
     const autoQty=Math.max(1,Math.floor(INDIA_SLOT_BUDGET/optEntry));
     const basisLabel=curr<=ma20?'Price at/below 20-DMA — buy at market':'20-DMA support zone';
+    const advPick=(_advData?.top_picks||[]).find(p=>p.ticker===ticker);
+    const trailRs=advPick?.trailing_stop_dist?`₹${parseFloat(advPick.trailing_stop_dist).toFixed(2)} (1.5× ATR) below day's high`:'ATR data unavailable';
     _ibqEntry={ticker,nse_symbol:sym,optimal_entry:optEntry,limit_price:gate,ma20:parseFloat(ma20.toFixed(2)),ma50:parseFloat(ma50.toFixed(2)),current_price:curr};
-    document.getElementById('ibqSub').textContent='Stop: set via rebalancer · Budget: ₹'+INDIA_SLOT_BUDGET.toLocaleString('en-IN');
+    document.getElementById('ibqSub').textContent='Budget: ₹'+INDIA_SLOT_BUDGET.toLocaleString('en-IN');
     document.getElementById('ibqEntryInfo').innerHTML=
       `<strong>Optimal entry:</strong> ₹${optEntry.toFixed(2)}<br>`+
       `<strong>Entry basis:</strong> ${basisLabel}<br>`+
       `<strong>20-DMA:</strong> ₹${ma20.toFixed(2)} · <strong>50-DMA:</strong> ₹${ma50.toFixed(2)}<br>`+
-      `<strong>Max gate:</strong> ₹${gate.toFixed(2)} (skip if gaps above 3%)`;
+      `<strong>Max gate:</strong> ₹${gate.toFixed(2)} (skip if gaps above 3%)<br>`+
+      `<strong>Trailing stop (ATR):</strong> ${trailRs}`;
     document.getElementById('ibqQty').value=autoQty;
     document.getElementById('ibqQtyNote').textContent='Auto: ₹'+INDIA_SLOT_BUDGET.toLocaleString('en-IN')+' ÷ ₹'+optEntry.toFixed(0)+' = '+autoQty+' shares';
     _ibqCalcValue();
@@ -1975,7 +1968,6 @@ function _ibqClose(){document.getElementById('indiaBuyQueueModal').classList.add
 async function _ibqSubmit(){
   const qty=parseInt(document.getElementById('ibqQty').value);
   if(!qty||qty<=0){alert('Enter a valid quantity.');return;}
-  const tsl=parseFloat(document.getElementById('ibqTsl').value)||0;
   const ticker=_ibqTicker;
   _ibqClose();
   _showSpinner('Queuing '+ticker.replace('.NS','')+' buy…');
@@ -1993,7 +1985,7 @@ async function _ibqSubmit(){
       ma20:_ibqEntry.ma20,
       ma50:_ibqEntry.ma50,
       budget_inr:INDIA_SLOT_BUDGET,
-      trailing_stop_pct:tsl>0?tsl:null,
+      trail_atr:advPick?.trailing_stop_dist||null,
       status:'queued',
     };
     const r=await fetch(`${API}/india/queue`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});
@@ -2113,11 +2105,13 @@ function queueSwingTrade(ticker){
   const basisLabel={'breakout-pullback':'Broken resistance (now support)','bb-cross':'20-DMA support zone','momentum-dip':'Pullback from scan close'}[entryType]||entryType;
   const opt=c.optimal_entry||c.current_price||0;
   const gate=c.limit_price||(opt*1.02);
+  const trailRs=(c.trailing_stop||0).toFixed?.(2)||(c.trailing_stop||'—');
   document.getElementById('qswEntryInfo').innerHTML=
     `<strong>Optimal entry:</strong> ₹${parseFloat(opt).toFixed(2)}<br>`+
     `<strong>Entry basis:</strong> ${basisLabel}<br>`+
     `<strong>Max entry gate:</strong> ₹${parseFloat(gate).toFixed(2)} (skip if gap above)<br>`+
-    `<strong>Auto stop-loss GTT:</strong> ₹${(c.stop_loss||0).toFixed?.(2)||(c.stop_loss||'—')} on fill`;
+    `<strong>Auto stop-loss GTT:</strong> ₹${(c.stop_loss||0).toFixed?.(2)||(c.stop_loss||'—')} on fill<br>`+
+    `<strong>Trailing stop (ATR):</strong> ₹${trailRs} below day's high — auto-updated daily`;
   document.getElementById('qswQty').value='';
   document.getElementById('qswValueNote').textContent='';
   document.getElementById('queueSwModal').classList.remove('hidden');
@@ -2138,7 +2132,6 @@ function _qswClose(){document.getElementById('queueSwModal').classList.add('hidd
 async function _qswSubmit(){
   const qty=parseFloat(document.getElementById('qswQty').value);
   if(!qty||isNaN(qty)||qty<=0){alert('Enter a valid quantity.');return;}
-  const tsl=parseFloat(document.getElementById('qswTsl').value)||0;
   const c=_qswCandidate;
   _qswClose();
   _showSpinner('Queuing '+((c.ticker||'').replace('.NS',''))+'…');
@@ -2157,7 +2150,7 @@ async function _qswSubmit(){
       entry_type:c.entry_type,
       entry_basis:c.entry_basis,
       scan_date:scanD,
-      trailing_stop_pct:tsl>0?tsl:null,
+      trail_atr:c.trailing_stop||null,
       status:'queued',
     };
     const r=await fetch(`${API}/swing/queue`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});

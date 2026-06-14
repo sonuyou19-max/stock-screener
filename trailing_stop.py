@@ -2,9 +2,9 @@
 """
 trailing_stop.py — 2:30 PM IST cron: update trailing stop-loss GTTs.
 
-For every filled swing trade and India monthly BUY with trailing_stop_pct set:
+For every filled swing trade and India monthly BUY with trail_atr set:
   - Fetch current live price
-  - If live > trail_high: compute new_stop = live * (1 - pct/100)
+  - If live > trail_high: compute new_stop = live - trail_atr (ATR-based distance)
     → cancel old stop GTT, place new one, update trail_high in queue
   - Telegram summary of all adjustments
 
@@ -101,20 +101,20 @@ def update_india_queue(updates: list):
 
 def process_queue(entries: list, queue_type: str, update_fn) -> list:
     """
-    For each filled entry with trailing_stop_pct, check if live price is a new
+    For each filled entry with trail_atr set, check if live price is a new
     high and update the stop GTT accordingly. Returns list of adjustment messages.
     """
     msgs = []
 
     for entry in entries:
-        tsl_pct = entry.get("trailing_stop_pct")
-        if not tsl_pct:
+        trail_atr = entry.get("trail_atr")
+        if not trail_atr:
             continue
 
-        ticker = entry.get("ticker", "")
-        symbol = entry.get("nse_symbol") or ticker.replace(".NS", "")
-        name   = entry.get("name", symbol)
-        pct    = float(tsl_pct)
+        ticker    = entry.get("ticker", "")
+        symbol    = entry.get("nse_symbol") or ticker.replace(".NS", "")
+        name      = entry.get("name", symbol)
+        atr_dist  = float(trail_atr)
 
         trail_high = float(entry.get("trail_high") or entry.get("fill_price") or 0)
         stop_qty   = int(entry.get("stop_qty") or entry.get("fill_qty") or entry.get("quantity") or 0)
@@ -130,16 +130,16 @@ def process_queue(entries: list, queue_type: str, update_fn) -> list:
             msgs.append(f"❌ {symbol}: price fetch failed — {e}")
             continue
 
-        print(f"[{queue_type}] {symbol}: live ₹{live:.2f} | trail_high ₹{trail_high:.2f} | pct {pct}%")
+        print(f"[{queue_type}] {symbol}: live ₹{live:.2f} | trail_high ₹{trail_high:.2f} | ATR dist ₹{atr_dist:.2f}")
 
         if live <= trail_high:
             print(f"  → no new high, stop unchanged")
             continue
 
-        new_stop = round(live * (1 - pct / 100), 2)
+        new_stop = round(live - atr_dist, 2)
         old_stop = entry.get("tsl_stop") or entry.get("stop_loss", "?")
 
-        print(f"  → new high! stop ₹{old_stop} → ₹{new_stop} (live ₹{live:.2f} - {pct}%)")
+        print(f"  → new high! stop ₹{old_stop} → ₹{new_stop} (₹{live:.2f} − ₹{atr_dist:.2f} ATR)")
 
         cancel_gtt(gtt_id)
         new_gtt_id = place_gtt(symbol, new_stop, stop_qty)
@@ -154,7 +154,7 @@ def process_queue(entries: list, queue_type: str, update_fn) -> list:
         if new_gtt_id:
             msgs.append(
                 f"📈 <b>{name}</b> ({symbol})\n"
-                f"   New high ₹{live:.2f} → stop raised to ₹{new_stop:.2f} ({pct}% trail)\n"
+                f"   New high ₹{live:.2f} → stop raised to ₹{new_stop:.2f} (−₹{atr_dist:.2f} ATR)\n"
                 f"   GTT updated ✅"
             )
         else:
@@ -188,8 +188,8 @@ def main():
         print(f"⚠️  Could not fetch India queue: {e}")
         ind_entries = []
 
-    tsl_sw  = [e for e in sw_entries  if e.get("trailing_stop_pct")]
-    tsl_ind = [e for e in ind_entries if e.get("trailing_stop_pct")]
+    tsl_sw  = [e for e in sw_entries  if e.get("trail_atr")]
+    tsl_ind = [e for e in ind_entries if e.get("trail_atr")]
 
     if not tsl_sw and not tsl_ind:
         print("No positions with trailing stop enabled — nothing to do.")

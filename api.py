@@ -1868,12 +1868,12 @@ def kite_postback():
                         print(f"✅ India auto-add: {symbol} {fill_qty}sh @ ₹{fill_price} → live portfolio")
 
                     if i_key:
-                        tsl_pct    = i_entry.get("trailing_stop_pct")
+                        trail_atr  = i_entry.get("trail_atr")
                         tsl_gtt_id = None
                         tsl_stop   = None
-                        if tsl_pct:
+                        if trail_atr:
                             try:
-                                tsl_stop = round(fill_price * (1 - float(tsl_pct) / 100), 2)
+                                tsl_stop = round(fill_price - float(trail_atr), 2)
                                 tsl_res, _ = _vps_post("/place-gtt", {
                                     "symbol":        symbol,
                                     "trigger_price": tsl_stop,
