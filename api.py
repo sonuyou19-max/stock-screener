@@ -1571,8 +1571,24 @@ def trigger_llm_synth():
 
 ORACLE_VPS_URL   = os.getenv("ORACLE_VPS_URL", "")   # e.g. http://80.225.201.62:5001
 EXECUTOR_SECRET  = os.getenv("EXECUTOR_SECRET", "")   # shared secret with Oracle VPS
+_TG_BOT          = os.getenv("TELEGRAM_BOT_TOKEN", "")
+_TG_CHAT         = os.getenv("TELEGRAM_CHAT_ID", "")
 
 _VPS_HEADERS = lambda: {"X-Executor-Secret": EXECUTOR_SECRET}
+
+
+def _tg(msg: str):
+    if not _TG_BOT or not _TG_CHAT:
+        return
+    try:
+        import urllib.request as _ur, json as _j
+        body = _j.dumps({"chat_id": _TG_CHAT, "text": msg, "parse_mode": "HTML"}).encode()
+        req = _ur.Request(f"https://api.telegram.org/bot{_TG_BOT}/sendMessage",
+                          data=body, headers={"Content-Type": "application/json"}, method="POST")
+        with _ur.urlopen(req, timeout=10):
+            pass
+    except Exception as e:
+        print(f"Telegram error: {e}")
 
 
 def _vps_post(endpoint: str, payload: dict):
@@ -1812,6 +1828,7 @@ def kite_postback():
                         q[t_key].update({
                             "status":     "filled",
                             "fill_price": fill_price,
+                            "fill_qty":   fill_qty,
                             "order_id":   order_id,
                             "gtt_id":     gtt_id,
                             "gtt_t1_id":  gtt_t1_id,
@@ -1855,6 +1872,66 @@ def kite_postback():
                             "order_id":   order_id,
                         })
                         _write_india_queue(iq)
+
+        # ── Swing SELL fills: detect T1/T2/stop and alert via Telegram ──
+        if status == "COMPLETE" and side == "SELL" and avg_price:
+            try:
+                fill_price = float(avg_price)
+                fill_qty   = int(data.get("filled_quantity") or qty or 0)
+            except (TypeError, ValueError):
+                fill_price, fill_qty = 0, 0
+
+            if fill_qty > 0:
+                q = _read_queue()
+                ticker_ns = f"{symbol}.NS"
+                entry = q.get(ticker_ns) or q.get(symbol)
+
+                if entry and entry.get("status") == "filled":
+                    bought_qty = int(entry.get("fill_qty") or entry.get("quantity") or 0)
+                    stop_loss  = entry.get("stop_loss")
+                    target1    = entry.get("target1")
+                    target2    = entry.get("target2")
+                    gtt_id     = entry.get("gtt_id")
+                    qty_t1     = bought_qty // 2
+                    qty_t2     = bought_qty - qty_t1
+                    remaining  = bought_qty - fill_qty
+                    name       = entry.get("name", symbol)
+
+                    if fill_qty == qty_t1 and target1:
+                        # T1 fired — 50% sold, stop GTT still set for full qty
+                        _tg(
+                            f"🎯 <b>T1 hit: {name} ({symbol})</b>\n"
+                            f"Sold {fill_qty} of {bought_qty} shares @ ₹{fill_price:.2f}\n"
+                            f"T1 = ₹{target1} ✅\n\n"
+                            f"⚠️ <b>Action required:</b>\n"
+                            f"Your stop-loss GTT (id: <code>{gtt_id}</code>) is still set for "
+                            f"<b>{bought_qty} shares</b> but you now hold only <b>{remaining}</b>.\n"
+                            f"• Go to Zerodha → GTT → cancel that GTT\n"
+                            f"• Place a new stop GTT for <b>{remaining} shares</b> at ₹{stop_loss}\n"
+                            f"• Or move stop to breakeven (₹{entry.get('fill_price', '?')})\n\n"
+                            f"T2 ({remaining} shares) still live at ₹{target2}"
+                        )
+                        print(f"📨 Telegram: T1 alert sent for {symbol}")
+
+                    elif fill_qty == qty_t2 and target2:
+                        # T2 fired — position fully closed
+                        _tg(
+                            f"🎯 <b>T2 hit: {name} ({symbol})</b>\n"
+                            f"Sold final {fill_qty} shares @ ₹{fill_price:.2f}\n"
+                            f"T2 = ₹{target2} ✅\n\n"
+                            f"Position fully closed. Cancel any remaining GTTs if still active."
+                        )
+                        print(f"📨 Telegram: T2 alert sent for {symbol}")
+
+                    elif fill_qty == bought_qty and stop_loss:
+                        # Stop fired — full position sold
+                        _tg(
+                            f"🛑 <b>Stop hit: {name} ({symbol})</b>\n"
+                            f"Sold {fill_qty} shares @ ₹{fill_price:.2f}\n"
+                            f"Stop = ₹{stop_loss} triggered.\n\n"
+                            f"Cancel T1/T2 GTTs if still active on Zerodha."
+                        )
+                        print(f"📨 Telegram: stop alert sent for {symbol}")
 
         # ── India SELL fills: remove/reduce shares in live portfolio ──
         if status == "COMPLETE" and side == "SELL" and avg_price:
