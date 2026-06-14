@@ -18,7 +18,11 @@ Endpoints:
 import os
 import logging
 from flask import Flask, request, jsonify
-from kiteconnect import KiteConnect, KiteException
+from kiteconnect import KiteConnect
+try:
+    from kiteconnect import KiteException
+except ImportError:
+    from kiteconnect.exceptions import KiteException
 from dotenv import load_dotenv
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
