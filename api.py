@@ -1756,6 +1756,7 @@ def kite_postback():
                 fill_price, fill_qty = 0, 0
 
             if fill_price > 0 and fill_qty > 0:
+                # ── Swing queue: auto-place GTT stop-loss ──────────────
                 q = _read_queue()
                 ticker_ns = f"{symbol}.NS"
                 entry = q.get(ticker_ns) or q.get(symbol)
@@ -1783,6 +1784,75 @@ def kite_postback():
                                 "gtt_id":     gtt_id,
                             })
                             _write_queue(q)
+
+                # ── India monthly queue: auto-add to live portfolio ────
+                iq = _read_india_queue()
+                i_entry = iq.get(ticker_ns) or iq.get(symbol)
+                i_key   = ticker_ns if ticker_ns in iq else (symbol if symbol in iq else None)
+
+                if i_entry and i_entry.get("action") == "BUY" and i_entry.get("status") in ("queued", "order_placed"):
+                    from datetime import datetime as _dt
+                    live = _read_live_ind()
+                    stock_rec = {
+                        "ticker":       ticker_ns,
+                        "name":         i_entry.get("name", symbol),
+                        "buy_price":    fill_price,
+                        "price":        fill_price,
+                        "approx_shares": fill_qty,
+                        "allocation_inr": round(fill_price * fill_qty, 2),
+                        "buy_date":     _dt.now().strftime("%Y-%m-%d"),
+                    }
+                    # Avoid duplicate
+                    already = any(
+                        s.get("ticker") == ticker_ns
+                        for b in live.values()
+                        for s in b.get("stocks", [])
+                    )
+                    if not already:
+                        live.setdefault("top_picks", {"label": "Monthly Top Picks", "stocks": []})
+                        live["top_picks"].setdefault("stocks", []).append(stock_rec)
+                        _write_live_ind(live)
+                        print(f"✅ India auto-add: {symbol} {fill_qty}sh @ ₹{fill_price} → live portfolio")
+
+                    if i_key:
+                        iq[i_key].update({
+                            "status":     "filled",
+                            "fill_price": fill_price,
+                            "order_id":   order_id,
+                        })
+                        _write_india_queue(iq)
+
+        # ── India SELL fills: remove/reduce shares in live portfolio ──
+        if status == "COMPLETE" and side == "SELL" and avg_price:
+            try:
+                fill_price = float(avg_price)
+                fill_qty   = int(data.get("filled_quantity") or qty or 0)
+            except (TypeError, ValueError):
+                fill_price, fill_qty = 0, 0
+
+            if fill_qty > 0:
+                iq = _read_india_queue()
+                ticker_ns = f"{symbol}.NS"
+                i_entry = iq.get(ticker_ns) or iq.get(symbol)
+                i_key   = ticker_ns if ticker_ns in iq else (symbol if symbol in iq else None)
+
+                if i_entry and i_entry.get("action") == "SELL" and i_entry.get("status") in ("queued", "order_placed"):
+                    live = _read_live_ind()
+                    for b in live.values():
+                        for s in b.get("stocks", []):
+                            if s.get("ticker") == ticker_ns:
+                                held = int(s.get("approx_shares", 0))
+                                remaining = held - fill_qty
+                                if remaining <= 0:
+                                    b["stocks"] = [x for x in b["stocks"] if x.get("ticker") != ticker_ns]
+                                else:
+                                    s["approx_shares"] = remaining
+                                    s["allocation_inr"] = round(remaining * fill_price, 2)
+                                print(f"✅ India SELL: {symbol} {fill_qty}sh sold, {max(0,remaining)} remaining")
+                    _write_live_ind(live)
+                    if i_key:
+                        iq[i_key].update({"status": "filled", "fill_price": fill_price, "order_id": order_id})
+                        _write_india_queue(iq)
     except Exception as e:
         print(f"⚠️  Kite postback error: {e}")
 
