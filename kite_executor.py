@@ -7,16 +7,20 @@ Start manually:   python kite_executor.py
 Start via systemd: see setup instructions below.
 
 Endpoints:
-  GET  /health          — liveness check
-  POST /exchange-token  — called by Railway /kite/callback to swap request_token → access_token
-  POST /place-order     — place a market/limit order on Kite
-  POST /cancel-order    — cancel a pending order
-  GET  /get-pnl         — positions + holdings + aggregate P&L
-  GET  /get-orders      — today's order list
-  POST /place-gtt       — place a GTT stop-loss order
+  GET  /health            — liveness check
+  POST /exchange-token    — called by Railway /kite/callback to swap request_token → access_token
+  POST /place-order       — place a market/limit order on Kite
+  POST /cancel-order      — cancel a pending order
+  GET  /get-pnl           — positions + holdings + aggregate P&L
+  GET  /get-orders        — today's order list
+  POST /place-gtt         — place a GTT stop-loss order
+  GET  /get-quote         — live LTP for one or more NSE symbols
+  GET  /get-historical    — daily OHLCV history for an NSE symbol (from Zerodha)
 """
 import os
+import threading
 import logging
+from datetime import date, datetime, timedelta
 from flask import Flask, request, jsonify
 from kiteconnect import KiteConnect
 try:
@@ -309,6 +313,88 @@ def place_gtt():
     except KiteException as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Instrument token cache ────────────────────────────────────────────────────
+# Tokens are stable (same symbol = same token indefinitely), but new listings
+# and delistings mean we refresh once per calendar day on first use.
+
+_inst_lock       = threading.Lock()
+_inst_cache: dict = {}      # "RELIANCE" → instrument_token (int)
+_inst_cache_date = None
+
+
+def _ensure_instruments(kite: KiteConnect):
+    global _inst_cache, _inst_cache_date
+    today = date.today()
+    with _inst_lock:
+        if _inst_cache_date == today and _inst_cache:
+            return
+        log.info("Refreshing NSE instruments cache…")
+        instruments = kite.instruments("NSE")
+        _inst_cache = {i["tradingsymbol"]: i["instrument_token"] for i in instruments}
+        _inst_cache_date = today
+        log.info("Instrument cache: %d symbols", len(_inst_cache))
+
+
+# ── Historical OHLCV ──────────────────────────────────────────────────────────
+
+@app.route("/get-historical", methods=["GET"])
+def get_historical():
+    """
+    Fetch daily OHLCV for one NSE symbol directly from Zerodha's data feed.
+    Query params:
+      symbol — NSE trading symbol without exchange suffix, e.g. RELIANCE
+      days   — calendar days of history to fetch (default 400 ≈ 1 year of trading days)
+    Returns:
+      { "symbol": "RELIANCE", "rows": [{"date","open","high","low","close","volume"}, …] }
+    """
+    err = _check_auth()
+    if err:
+        return err
+    symbol = request.args.get("symbol", "").strip().upper()
+    if not symbol:
+        return jsonify({"error": "symbol required"}), 400
+    try:
+        days = int(request.args.get("days", 400))
+    except ValueError:
+        days = 400
+    try:
+        kite = _get_kite()
+        _ensure_instruments(kite)
+        token = _inst_cache.get(symbol)
+        if not token:
+            return jsonify({"error": f"Instrument not found on NSE: {symbol}"}), 404
+
+        to_dt   = datetime.now()
+        from_dt = to_dt - timedelta(days=days)
+        rows = kite.historical_data(
+            instrument_token=token,
+            from_date=from_dt,
+            to_date=to_dt,
+            interval="day",
+            continuous=False,
+            oi=False,
+        )
+        # Convert datetime objects to ISO strings so the response is JSON-serialisable
+        clean = []
+        for r in rows:
+            clean.append({
+                "date":   r["date"].isoformat() if hasattr(r["date"], "isoformat") else str(r["date"]),
+                "open":   r["open"],
+                "high":   r["high"],
+                "low":    r["low"],
+                "close":  r["close"],
+                "volume": r["volume"],
+            })
+        log.info("Historical: %s  %d rows", symbol, len(clean))
+        return jsonify({"symbol": symbol, "rows": clean})
+    except KiteException as e:
+        log.error("Kite historical error for %s: %s", symbol, e)
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        log.error("get_historical error for %s: %s", symbol, e)
         return jsonify({"error": str(e)}), 500
 
 

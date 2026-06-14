@@ -81,6 +81,10 @@ DATA_DIR        = os.getenv("DATA_DIR", "/data")
 API_URL         = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
 CANDIDATES_FILE = os.path.join(DATA_DIR, "swing_candidates.json")
 
+# Oracle VPS — used for Zerodha OHLCV (more accurate NSE data than yfinance)
+VPS_URL    = os.getenv("ORACLE_VPS_URL", "")
+VPS_SECRET = os.getenv("EXECUTOR_SECRET", "")
+
 # Signal parameters
 RSI_PERIOD       = 14
 RSI_MIN          = 45      # confirmed upswing — not still declining from oversold
@@ -179,8 +183,45 @@ SENTIMENT_SCORE = {
 
 def fetch_ohlcv(ticker: str) -> Optional[pd.DataFrame]:
     """
-    Fetch 1 year of daily OHLCV — one call gives all signal data.
+    Fetch ~1 year of daily OHLCV for signal calculation.
+    Tries Zerodha via Oracle VPS first (authoritative NSE feed),
+    falls back to yfinance if VPS is unreachable or returns no data.
     """
+    symbol = ticker.replace(".NS", "").replace(".BO", "")
+    if VPS_URL:
+        df = _fetch_ohlcv_kite(symbol)
+        if df is not None:
+            return df
+        print(f"  ↩  {symbol}: Zerodha fetch failed — falling back to yfinance")
+    return _fetch_ohlcv_yf(ticker)
+
+
+def _fetch_ohlcv_kite(symbol: str) -> Optional[pd.DataFrame]:
+    """Fetch OHLCV from Zerodha via Oracle VPS. Returns DataFrame matching yfinance format."""
+    try:
+        req = _urllib.Request(
+            f"{VPS_URL}/get-historical?symbol={symbol}&days=400",
+            headers={"X-Executor-Secret": VPS_SECRET},
+        )
+        with _urllib.urlopen(req, timeout=15) as r:
+            data = json.loads(r.read().decode())
+        rows = data.get("rows", [])
+        if len(rows) < 60:
+            return None
+        df = pd.DataFrame(rows)
+        df["Date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
+        df = df.set_index("Date").rename(columns={
+            "open": "Open", "high": "High",
+            "low":  "Low",  "close": "Close", "volume": "Volume",
+        })
+        return df[["Open", "High", "Low", "Close", "Volume"]]
+    except Exception as e:
+        print(f"  ⚠️  Kite OHLCV error for {symbol}: {e}")
+        return None
+
+
+def _fetch_ohlcv_yf(ticker: str) -> Optional[pd.DataFrame]:
+    """Fetch OHLCV from yfinance (fallback)."""
     try:
         hist = yf.Ticker(ticker).history(period="1y")
         if hist.empty or len(hist) < 60:
@@ -931,7 +972,9 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
     liq_fail    = 0
     sig_fail    = 0
 
-    print(f"\n  Scanning {len(tickers)} stocks...\n")
+    ohlcv_src = f"Zerodha ({VPS_URL})" if VPS_URL else "yfinance (fallback)"
+    print(f"\n  OHLCV source: {ohlcv_src}")
+    print(f"  Scanning {len(tickers)} stocks...\n")
 
     for ticker in tickers:
         try:
@@ -955,7 +998,8 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
                 print(f"  ... {scanned}/{len(tickers)} scanned, "
                       f"{len(candidates)} candidates so far")
 
-            time.sleep(0.3)
+            # Zerodha historical data limit: 3 req/sec → sleep ≥ 0.35s
+            time.sleep(0.4 if VPS_URL else 0.3)
 
         except Exception as e:
             print(f"  ⚠️  {ticker}: {e}")
