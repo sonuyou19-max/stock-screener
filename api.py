@@ -306,18 +306,12 @@ def signals():
 @app.route("/portfolio/live", methods=["GET", "OPTIONS"])
 def live_portfolio():
     """Return what the investor actually holds on Kite right now."""
-    global _live_cache
     if request.method == "OPTIONS":
         return jsonify({}), 200
-    # Try cache
-    if _live_cache:
-        return jsonify(_sanitise(_live_cache))
-    # Try disk
-    path = os.path.join(DATA_DIR, "portfolio_live.json")
-    data = _load_json(path)
-    if data:
-        _live_cache = data
-        return jsonify(_sanitise(data))
+    # Always read from disk — multi-instance safe
+    live = _read_live_ind()
+    if live:
+        return jsonify(_sanitise(live))
     # Fall back to latest screener picks (first run migration)
     path = _find_latest_portfolio()
     if path:
@@ -350,19 +344,22 @@ def upload_live_portfolio():
 
 
 def _read_live_ind():
-    """Single source of truth for the India live portfolio (cache → disk)."""
+    """Always read from disk — single source of truth, multi-instance safe."""
+    path = os.path.join(DATA_DIR, "portfolio_live.json")
+    data = _load_json(path)
+    result = data if isinstance(data, dict) else {}
     global _live_cache
-    if _live_cache:
-        return _live_cache
-    data = _load_json(os.path.join(DATA_DIR, "portfolio_live.json"))
-    _live_cache = data if isinstance(data, dict) else {}
-    return _live_cache
+    _live_cache = result
+    return result
 
 
 def _write_live_ind(data):
     global _live_cache
-    _live_cache = _sanitise(data)
-    _save_json(os.path.join(DATA_DIR, "portfolio_live.json"), _live_cache)
+    sanitised = _sanitise(data)
+    path = os.path.join(DATA_DIR, "portfolio_live.json")
+    if not _save_json(path, sanitised):
+        raise RuntimeError(f"Failed to write India live portfolio to {path}")
+    _live_cache = sanitised
 
 
 @app.route("/portfolio/live/add", methods=["POST", "OPTIONS"])
@@ -901,13 +898,9 @@ def performance_upload():
 
 @app.route("/us/portfolio/live", methods=["GET", "OPTIONS"])
 def us_portfolio_live_get():
-    global _us_live_cache
     if request.method == "OPTIONS":
         return jsonify({}), 200
-    if not _us_live_cache:
-        loaded = _load_json(US_LIVE_FILE)
-        _us_live_cache = loaded if isinstance(loaded, dict) else {}
-    return jsonify(_sanitise(_us_live_cache))
+    return jsonify(_sanitise(_read_live_us()))
 
 
 @app.route("/us/portfolio/live/upload", methods=["POST", "OPTIONS"])
@@ -925,19 +918,20 @@ def us_portfolio_live_upload():
 
 
 def _read_live_us():
-    """Single source of truth for the US live portfolio (cache → disk)."""
-    global _us_live_cache
-    if _us_live_cache:
-        return _us_live_cache
+    """Always read from disk — single source of truth, multi-instance safe."""
     data = _load_json(US_LIVE_FILE)
-    _us_live_cache = data if isinstance(data, dict) else {}
-    return _us_live_cache
+    result = data if isinstance(data, dict) else {}
+    global _us_live_cache
+    _us_live_cache = result
+    return result
 
 
 def _write_live_us(data):
     global _us_live_cache
-    _us_live_cache = _sanitise(data)
-    _save_json(US_LIVE_FILE, _us_live_cache)
+    sanitised = _sanitise(data)
+    if not _save_json(US_LIVE_FILE, sanitised):
+        raise RuntimeError(f"Failed to write US live portfolio to {US_LIVE_FILE}")
+    _us_live_cache = sanitised
 
 
 @app.route("/us/portfolio/live/add", methods=["POST", "OPTIONS"])
@@ -1092,6 +1086,31 @@ def us_advisory_upload():
         _save_json(US_ADVISORY_FILE, _us_advisory_cache)
         print(f"✅ US monthly advisory saved — action: {data.get('action','?')}")
         return jsonify({"status": "ok", "action": data.get("action", "?")})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/price", methods=["GET"])
+def single_price():
+    """Fetch live price for any single ticker. GET /price?ticker=STX"""
+    try:
+        import yfinance as yf, math
+        ticker = request.args.get("ticker", "").strip().upper()
+        if not ticker:
+            return jsonify({"error": "ticker param required"}), 400
+        info = yf.Ticker(ticker).fast_info
+        p = getattr(info, "last_price", None) or getattr(info, "regular_market_price", None)
+        chg = getattr(info, "regular_market_change_percent", None)
+        prev = getattr(info, "previous_close", None)
+        if p is None or math.isnan(float(p)):
+            return jsonify({"error": f"No price data for {ticker}"}), 404
+        if (not chg or math.isnan(float(chg))) and prev:
+            chg = (float(p) - float(prev)) / float(prev) * 100
+        return jsonify({
+            "ticker": ticker,
+            "price": round(float(p), 2),
+            "change_pct": round(float(chg) if chg and not math.isnan(float(chg)) else 0, 2),
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -1450,6 +1469,107 @@ def trigger_llm_synth():
         return jsonify({"status": "ok", "verdict": verdict})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ════════════════════════════════════════════════════════════════
+#  KITE CONNECT WEBHOOK ENDPOINTS
+#  These URLs are registered in Zerodha Kite Connect app settings:
+#    Redirect URL: https://<railway-domain>/kite/callback
+#    Postback URL: https://<railway-domain>/kite/postback
+# ════════════════════════════════════════════════════════════════
+
+ORACLE_VPS_URL   = os.getenv("ORACLE_VPS_URL", "")   # e.g. http://80.225.201.62:5001
+EXECUTOR_SECRET  = os.getenv("EXECUTOR_SECRET", "")   # shared secret with Oracle VPS
+
+
+@app.route("/kite/callback", methods=["GET", "OPTIONS"])
+def kite_callback():
+    """
+    Zerodha redirects here after OAuth login with ?request_token=xxx&status=success.
+    Forwards the request_token to the Oracle VPS to exchange for an access_token.
+    """
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+
+    status        = request.args.get("status", "")
+    request_token = request.args.get("request_token", "")
+    message       = request.args.get("message", "")
+
+    if status != "success" or not request_token:
+        print(f"⚠️  Kite callback error: status={status} message={message}")
+        return f"""
+        <html><body style="font-family:sans-serif;padding:40px">
+        <h2>Kite Login Failed</h2>
+        <p>Status: {status}</p>
+        <p>Message: {message or 'Unknown error'}</p>
+        </body></html>
+        """, 400
+
+    print(f"✅ Kite callback: request_token={request_token[:8]}… status={status}")
+
+    # Forward to Oracle VPS to exchange for access_token
+    exchange_ok = False
+    if ORACLE_VPS_URL:
+        try:
+            import urllib.request, urllib.error
+            import json as _json
+            payload = _json.dumps({"request_token": request_token}).encode()
+            req = urllib.request.Request(
+                f"{ORACLE_VPS_URL}/exchange-token",
+                data=payload,
+                headers={
+                    "Content-Type": "application/json",
+                    "X-Executor-Secret": EXECUTOR_SECRET,
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                result = _json.loads(resp.read())
+                exchange_ok = result.get("status") == "ok"
+                print(f"✅ Token exchanged for user: {result.get('user_id')}")
+        except Exception as e:
+            print(f"⚠️  Could not forward token to Oracle VPS: {e}")
+
+    status_msg = "Access token updated on trading server." if exchange_ok else (
+        "Token received. Trading server update skipped (VPS not configured)."
+        if not ORACLE_VPS_URL else
+        "Warning: token received but trading server exchange failed — check VPS logs."
+    )
+
+    return f"""
+    <html><body style="font-family:sans-serif;padding:40px;max-width:500px;margin:auto">
+    <h2>&#10003; Kite Login Successful</h2>
+    <p>{status_msg}</p>
+    <p style="color:#888;font-size:13px">You can close this window.</p>
+    </body></html>
+    """
+
+
+@app.route("/kite/postback", methods=["POST", "OPTIONS"])
+def kite_postback():
+    """
+    Zerodha POSTs order status updates here (fills, rejections, cancellations).
+    Logs each event; future: reconcile with portfolio.
+    """
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+
+    try:
+        data = request.get_json(silent=True) or request.form.to_dict()
+        order_id  = data.get("order_id", "?")
+        status    = data.get("status", "?")
+        symbol    = data.get("tradingsymbol", "?")
+        side      = data.get("transaction_type", "?")
+        qty       = data.get("quantity", "?")
+        avg_price = data.get("average_price", "?")
+
+        print(f"📬 Kite postback: {side} {qty}x{symbol} @ ₹{avg_price} "
+              f"→ {status} (order_id={order_id})")
+    except Exception as e:
+        print(f"⚠️  Kite postback parse error: {e}")
+
+    # Zerodha expects 200 OK — always return it
+    return jsonify({"status": "ok"}), 200
 
 
 if __name__ == "__main__":
