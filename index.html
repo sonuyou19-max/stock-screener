@@ -1396,11 +1396,11 @@ function renderAdvisory(adv){
       }).join('')}
     </div>`:'';
 
-  // ── Picks — show all 7 from screener, exclude current holdings ─────────
+  // ── Picks — show all screener picks, exclude current holdings ──────────
   let _raDep=0;
   for(const b of Object.values(indPortfolio||{}))for(const s of(b.stocks||[]))_raDep+=s.allocation_inr||0;
   const _raAvail=Math.max(0,100000-_raDep);
-  const _raSlots=Math.max(0,7-liveTkrs.size);
+  const _raSlots=Math.max(0,INDIA_MAX_SLOTS-liveTkrs.size);
   const allPicks=(adv.top_picks||[]).filter(p=>!liveTkrs.has(p.ticker));
   const picks=allPicks; // show all screener picks (not capped to open slots)
   const perAlloc=picks.length>0&&_raSlots>0?Math.floor(_raAvail/picks.length):0;
@@ -1901,6 +1901,7 @@ function _eswToggleKite(){
 
 /* ── India monthly queue functions ───────────────────── */
 const INDIA_SLOT_BUDGET = 10000; // ₹10,000 per position slot
+const INDIA_MAX_SLOTS   = 10;    // ₹1,00,000 corpus / ₹10,000 = 10 positions (matches screener TOP_PICKS)
 
 // ─── BUY queue ────────────────────────────────────────
 let _ibqTicker=null, _ibqEntry={};

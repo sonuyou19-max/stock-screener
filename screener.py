@@ -1,10 +1,10 @@
 """
-Indian Stock Screener — Monthly Top 7
+Indian Stock Screener — Monthly Top 10
 ======================================
 Fetches live data from Yahoo Finance (yfinance) for all Nifty 500 stocks,
 applies universal fundamental + quality filters, scores globally across
 20 NSE sectors, integrates swing-news sentiment signals (hard-excludes
-negative-sentiment sectors), and selects the top 7 stocks.
+negative-sentiment sectors), and selects the top 10 stocks.
 
 Sectors match the 20 NSE classifications used by the swing scanner.
 Run monthly to refresh your portfolio picks.
@@ -51,7 +51,9 @@ from nse_universe import (
 # ─────────────────────────────────────────────
 
 BUDGET         = 100_000   # Total corpus in INR
-TOP_PICKS      = 7         # Global top-N to select
+TOP_PICKS      = 10        # Global top-N to select. 10 slots → ₹100,000/10 =
+                           # ₹10,000 per slot, matching INDIA_SLOT_BUDGET in the
+                           # dashboard's queue/auto-buy system.
 MAX_PER_SECTOR = 2         # Diversification cap — max picks from one NSE sector
 
 ATR_MULT       = 2.5       # Stop-loss = buy_price - ATR_MULT * ATR
@@ -1257,7 +1259,7 @@ def screen_all(
       10. Global normalisation (scores relative to entire Nifty 500 universe)
       11. All quality adjustments applied to final_score
       12. Sentiment bonus/penalty applied per sector
-      13. Sort globally → return (top_7_df, all_df)
+      13. Sort globally → return (top_picks_df, all_df)
     """
     records            = []
     excluded_sentiment = 0
@@ -1502,7 +1504,7 @@ def select_top_diversified(all_df: pd.DataFrame, n_picks: int, max_per_sector: i
 # ─────────────────────────────────────────────
 
 def build_portfolio(budget: int = BUDGET) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
-    """Run screener across all 20 NSE sectors and build the top-7 portfolio."""
+    """Run screener across all 20 NSE sectors and build the top-10 portfolio."""
 
     print("\n" + "="*60)
     print("  INDIAN STOCK SCREENER — MONTHLY TOP 7")
@@ -1641,7 +1643,7 @@ def build_portfolio(budget: int = BUDGET) -> tuple[dict, pd.DataFrame, pd.DataFr
 
     portfolio = {
         "top_picks": {
-            "label":                "Monthly Top 7 — Nifty 500",
+            "label":                f"Monthly Top {TOP_PICKS} — Nifty 500",
             "total_allocation":     budget,
             "per_stock_allocation": round(per_stock, 0),
             "stocks":               stocks_list,
@@ -1844,10 +1846,10 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
         print(f"  ⚠️  Rebalancer API report not available ({e}) — running lightweight check")
         live_holdings = rebalance_holdings(live_holdings, all_df)
 
-    # ── Build screener top-10 (new buys only, not already in portfolio) ───────
+    # ── Build screener top picks (new buys only, not already in portfolio) ────
     new_picks    = []
     live_tickers = {h["ticker"] for h in live_holdings}
-    for _, row in sorted_df.head(10).iterrows():
+    for _, row in sorted_df.head(TOP_PICKS).iterrows():
         new_picks.append({
             "ticker":    row["ticker"],
             "name":      row["name"],
@@ -1865,7 +1867,7 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
     base = {
         "generated_at":        generated_at,
         "current_holdings":    len(live_holdings),
-        "top_picks":           new_picks[:7],
+        "top_picks":           new_picks[:TOP_PICKS],
         "holdings_health":     live_holdings,   # rebalancer data per holding
         "rebalance_report_date": rb_report.get("date") if rb_report else None,
     }
@@ -1895,7 +1897,7 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
             f"  {i+1}. {p['ticker'].replace('.NS','')} ({p['name'][:28]}) "
             f"| {p['sector']} | Score {p['score']} | Mom-3M {(p.get('mom_3m') or 0):+.1f}% "
             f"| ROE {(p.get('roe') or 0):.0f}% | PE {(p.get('pe') or 0):.0f}"
-            for i, p in enumerate(new_entry_picks[:7])
+            for i, p in enumerate(new_entry_picks[:TOP_PICKS])
         )
 
         rb_note = (
@@ -1924,7 +1926,7 @@ TASK: Pick exactly ONE action:
 A) HOLD        — no exits flagged, all positions healthy
 B) EXIT        [ticker] — bank profits from this position, hold cash
 C) EXIT_AND_ADD [sell] → [buy] — exit one position, immediately redeploy into screener top pick
-D) ADD         [ticker] — add a new position if portfolio < 7 and cash is available
+D) ADD         [ticker] — add a new position if portfolio < {TOP_PICKS} and cash is available
 
 RULES:
 - Only recommend EXIT/EXIT_AND_ADD for a holding whose rebalancer verdict is EXIT or TRIM
