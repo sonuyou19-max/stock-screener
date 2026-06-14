@@ -1481,6 +1481,83 @@ def trigger_llm_synth():
 ORACLE_VPS_URL   = os.getenv("ORACLE_VPS_URL", "")   # e.g. http://80.225.201.62:5001
 EXECUTOR_SECRET  = os.getenv("EXECUTOR_SECRET", "")   # shared secret with Oracle VPS
 
+_VPS_HEADERS = lambda: {"X-Executor-Secret": EXECUTOR_SECRET}
+
+
+def _vps_post(endpoint: str, payload: dict):
+    import urllib.request, urllib.error, json as _json
+    if not ORACLE_VPS_URL:
+        return {"error": "Oracle VPS not configured"}, 503
+    body = _json.dumps(payload).encode()
+    req = urllib.request.Request(
+        f"{ORACLE_VPS_URL}{endpoint}", data=body,
+        headers={"Content-Type": "application/json", **_VPS_HEADERS()},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return _json.loads(resp.read()), resp.status
+    except urllib.error.HTTPError as e:
+        return _json.loads(e.read()), e.code
+    except Exception as e:
+        return {"error": str(e)}, 502
+
+
+def _vps_get(endpoint: str):
+    import urllib.request, urllib.error, json as _json
+    if not ORACLE_VPS_URL:
+        return {"error": "Oracle VPS not configured"}, 503
+    req = urllib.request.Request(
+        f"{ORACLE_VPS_URL}{endpoint}",
+        headers=_VPS_HEADERS(),
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return _json.loads(resp.read()), resp.status
+    except urllib.error.HTTPError as e:
+        return _json.loads(e.read()), e.code
+    except Exception as e:
+        return {"error": str(e)}, 502
+
+
+@app.route("/kite/quote", methods=["GET", "OPTIONS"])
+def kite_quote():
+    """Proxy live LTP from Zerodha. ?symbol=RELIANCE or ?symbol=RELIANCE,TCS"""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    symbol = request.args.get("symbol", "").strip().upper()
+    if not symbol:
+        return jsonify({"error": "symbol required"}), 400
+    result, status = _vps_get(f"/get-quote?symbol={symbol}")
+    return jsonify(result), status
+
+
+@app.route("/kite/place-order", methods=["POST", "OPTIONS"])
+def kite_place_order():
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    data = request.get_json(force=True) or {}
+    result, status = _vps_post("/place-order", data)
+    return jsonify(result), status
+
+
+@app.route("/kite/cancel-order", methods=["POST", "OPTIONS"])
+def kite_cancel_order():
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    data = request.get_json(force=True) or {}
+    result, status = _vps_post("/cancel-order", data)
+    return jsonify(result), status
+
+
+@app.route("/kite/get-pnl", methods=["GET", "OPTIONS"])
+def kite_get_pnl():
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    result, status = _vps_get("/get-pnl")
+    return jsonify(result), status
+
 
 def _vps_post(endpoint: str, payload: dict):
     """POST to Oracle VPS executor with auth header. Returns (data, status_code)."""

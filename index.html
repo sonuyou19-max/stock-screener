@@ -481,8 +481,12 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
   <div class="modal-sheet">
     <div class="modal-title" id="eswTitle">Enter Swing Trade</div>
     <div class="modal-sub" id="eswSub"></div>
-    <div class="modal-lbl">Entry Price (₹) — from scanner</div>
+    <div class="modal-lbl" style="display:flex;align-items:center;justify-content:space-between">
+      <span>Entry Price (₹)</span>
+      <span id="eswPriceNote" style="font-size:11px;font-weight:600"></span>
+    </div>
     <input class="modal-input" type="number" id="eswPrice" placeholder="0.00" step="0.01" inputmode="decimal" readonly style="opacity:.7"/>
+    <div id="eswEntryDetail" style="display:none;font-size:12px;color:#555;margin-top:4px;padding:6px 10px;background:#f8f8f8;border-radius:6px;line-height:1.6"></div>
     <div class="au-row">
       <div class="modal-lbl">Quantity (shares)</div>
       <input class="modal-input" type="number" id="eswQty" placeholder="e.g. 5" step="1" inputmode="decimal"/>
@@ -1712,10 +1716,13 @@ function enterSwingTrade(ticker){_eswOpen(_swCandByTicker[ticker]||{ticker});}
 
 function _eswOpen(candidate){
   _eswCandidate=candidate;
-  const ticker=(candidate.ticker||'').replace('.NS','');
+  const ticker=(candidate.ticker||'').replace('.NS','').replace('.BO','');
   document.getElementById('eswTitle').textContent='Enter '+ticker;
   document.getElementById('eswSub').textContent='Stop ₹'+(candidate.stop_loss||'—')+' · T1 ₹'+(candidate.target1||'—')+(candidate.target2?' · T2 ₹'+candidate.target2:'')+(candidate.rr_ratio?' · RR '+candidate.rr_ratio:'');
   document.getElementById('eswPrice').value=candidate.current_price||'';
+  document.getElementById('eswPriceNote').textContent='fetching live…';
+  document.getElementById('eswPriceNote').style.color='#888';
+  document.getElementById('eswEntryDetail').style.display='none';
   document.getElementById('eswQty').value='';
   const isInd=(candidate.ticker||'').endsWith('.NS')||(candidate.ticker||'').endsWith('.BO');
   document.getElementById('eswKiteRow').style.display=isInd?'block':'none';
@@ -1723,6 +1730,63 @@ function _eswOpen(candidate){
   document.getElementById('eswOrderTypeRow').style.display='none';
   document.getElementById('enterSwModal').classList.remove('hidden');
   setTimeout(()=>document.getElementById('eswQty').focus(),80);
+  if(isInd) _eswFetchLivePrice(candidate,ticker);
+}
+
+async function _eswFetchLivePrice(candidate,nseSymbol){
+  const noteEl=document.getElementById('eswPriceNote');
+  const detailEl=document.getElementById('eswEntryDetail');
+  try{
+    const r=await fetch(`${API}/kite/quote?symbol=${nseSymbol}`,{headers:{'Content-Type':'application/json'}});
+    if(!r.ok) throw new Error('HTTP '+r.status);
+    const data=await r.json();
+    const q=data[nseSymbol];
+    if(!q||!q.last_price) throw new Error('no price data');
+
+    const live=parseFloat(q.last_price);
+    const scanClose=parseFloat(candidate.current_price||0);
+    const limitPrice=parseFloat(candidate.limit_price||scanClose*1.02);
+    const stopLoss=parseFloat(candidate.stop_loss||0);
+    const pctVsScan=scanClose>0?((live-scanClose)/scanClose*100):0;
+
+    // Calculate suggested entry:
+    // - if live ≤ limit_price → enter at live (within acceptable zone)
+    // - if live > limit_price → gapped up, R/R broken; show scan close as reference
+    let suggestedEntry, entryLabel, entryColor;
+    if(live>limitPrice){
+      suggestedEntry=scanClose;
+      entryLabel='⚠️ Gapped up — R/R broken';
+      entryColor='#b45309';
+    } else if(live<stopLoss){
+      suggestedEntry=live;
+      entryLabel='🚫 Below stop-loss — setup invalid';
+      entryColor='#dc2626';
+    } else {
+      suggestedEntry=live;
+      entryLabel=pctVsScan<-1?'📉 Pullback — favorable entry':pctVsScan>1?'📈 Slightly above scan close':'✅ Within entry zone';
+      entryColor=pctVsScan<-1?'#16a34a':pctVsScan>1?'#b45309':'#166534';
+    }
+
+    document.getElementById('eswPrice').value=suggestedEntry.toFixed(2);
+    noteEl.textContent=entryLabel;
+    noteEl.style.color=entryColor;
+
+    const lines=[
+      `Live: ₹${live.toFixed(2)}  (${pctVsScan>=0?'+':''}${pctVsScan.toFixed(1)}% vs scan close ₹${scanClose.toFixed(2)})`,
+      `Limit gate: ₹${limitPrice.toFixed(2)} (scan +2%) — ${live<=limitPrice?'✅ within':'⚠️ exceeded'}`,
+      `Stop-loss: ₹${stopLoss.toFixed(2)}  ·  T1: ₹${candidate.target1||'—'}  ·  T2: ₹${candidate.target2||'—'}`,
+    ];
+    detailEl.innerHTML=lines.join('<br>');
+    detailEl.style.display='block';
+  }catch(e){
+    noteEl.textContent='live price unavailable';
+    noteEl.style.color='#888';
+  }
+}
+
+function _eswToggleKite(){
+  document.getElementById('eswOrderTypeRow').style.display=
+    document.getElementById('eswKiteOrder').checked?'block':'none';
 }
 
 function _eswToggleKite(){

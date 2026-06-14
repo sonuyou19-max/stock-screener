@@ -234,6 +234,44 @@ def get_orders():
 
 # ── GTT (Good Till Triggered) ─────────────────────────────────────────────────
 
+@app.route("/get-quote", methods=["GET"])
+def get_quote():
+    """
+    Fetch live last-traded price(s) from Zerodha.
+    Query param: symbol=RELIANCE  or  symbol=RELIANCE,TCS,INFY
+    Exchange defaults to NSE; prefix with BSE: to override.
+    Returns: { "RELIANCE": { "last_price": 1452.30, "exchange": "NSE" }, ... }
+    """
+    err = _check_auth()
+    if err:
+        return err
+    raw = request.args.get("symbol", "").strip().upper()
+    if not raw:
+        return jsonify({"error": "symbol query param required"}), 400
+    try:
+        kite = _get_kite()
+        symbols = [s.strip() for s in raw.split(",") if s.strip()]
+        # kite.ltp accepts "NSE:RELIANCE" format
+        keys = []
+        for s in symbols:
+            keys.append(s if ":" in s else f"NSE:{s}")
+        data = kite.ltp(keys)
+        result = {}
+        for key, val in data.items():
+            exchange, sym = key.split(":", 1)
+            result[sym] = {
+                "last_price": val.get("last_price"),
+                "exchange":   exchange,
+            }
+        return jsonify(result)
+    except KiteException as e:
+        log.error("Kite quote error: %s", e)
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        log.error("get_quote error: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/place-gtt", methods=["POST"])
 def place_gtt():
     """
