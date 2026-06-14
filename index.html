@@ -1610,6 +1610,7 @@ async function _asSubmit(){
           if(kiteData.order_id){alert('✅ Order placed on Zerodha!\nOrder ID: '+kiteData.order_id+'\nCheck Kite app for status.');}
           else{alert('⚠️ Portfolio updated but Zerodha order failed:\n'+(kiteData.error||'Unknown error'));}
         }catch(e){alert('⚠️ Portfolio updated but Zerodha order failed:\n'+e.message);}
+        _hideSpinner();
       }
       _iL=false;_indPicksData=null;await loadIndia();
     }else{
