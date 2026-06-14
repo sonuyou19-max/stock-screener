@@ -1682,7 +1682,7 @@ function _eswOpen(candidate){
   const ticker=(candidate.ticker||'').replace('.NS','').replace('.BO','');
   document.getElementById('eswTitle').textContent='Enter '+ticker;
   document.getElementById('eswSub').textContent='Stop ₹'+(candidate.stop_loss||'—')+' · T1 ₹'+(candidate.target1||'—')+(candidate.target2?' · T2 ₹'+candidate.target2:'')+(candidate.rr_ratio?' · RR '+candidate.rr_ratio:'');
-  document.getElementById('eswPrice').value=candidate.current_price||'';
+  document.getElementById('eswPrice').value=candidate.optimal_entry||candidate.current_price||'';
   document.getElementById('eswPriceNote').textContent='fetching live…';
   document.getElementById('eswPriceNote').style.color='#888';
   document.getElementById('eswEntryDetail').style.display='none';
@@ -1708,43 +1708,77 @@ async function _eswFetchLivePrice(candidate,nseSymbol){
 
     const live=parseFloat(q.last_price);
     const scanClose=parseFloat(candidate.current_price||0);
+    const optimalEntry=parseFloat(candidate.optimal_entry||scanClose);
     const limitPrice=parseFloat(candidate.limit_price||scanClose*1.02);
     const stopLoss=parseFloat(candidate.stop_loss||0);
-    const pctVsScan=scanClose>0?((live-scanClose)/scanClose*100):0;
+    const bbMid=parseFloat(candidate.bb_middle||0);
+    const entryBasis=candidate.entry_basis||'20-DMA';
+    const entryType=candidate.entry_type||'momentum-dip';
 
-    // Calculate suggested entry:
-    // - if live ≤ limit_price → enter at live (within acceptable zone)
-    // - if live > limit_price → gapped up, R/R broken; show scan close as reference
-    let suggestedEntry, entryLabel, entryColor;
-    if(live>limitPrice){
-      suggestedEntry=scanClose;
-      entryLabel='⚠️ Gapped up — R/R broken';
-      entryColor='#b45309';
-    } else if(live<stopLoss){
+    // Entry logic:
+    // 1. If price gapped above limit → don't enter, R/R is broken
+    // 2. If price pulled back to / below optimal_entry → even better, use live
+    // 3. If price is between optimal_entry and limit_price → place limit at optimal_entry
+    // 4. If price is below stop-loss → setup invalidated
+    let suggestedEntry, entryLabel, entryColor, entryMode;
+
+    if(live<stopLoss){
       suggestedEntry=live;
       entryLabel='🚫 Below stop-loss — setup invalid';
       entryColor='#dc2626';
-    } else {
+      entryMode='invalid';
+    } else if(live>limitPrice){
+      suggestedEntry=optimalEntry;
+      entryLabel='⚠️ Gapped above limit — wait for pullback to entry level';
+      entryColor='#b45309';
+      entryMode='wait';
+    } else if(live<=optimalEntry){
+      // Price already at or below our technical entry — buy at live price
       suggestedEntry=live;
-      entryLabel=pctVsScan<-1?'📉 Pullback — favorable entry':pctVsScan>1?'📈 Slightly above scan close':'✅ Within entry zone';
-      entryColor=pctVsScan<-1?'#16a34a':pctVsScan>1?'#b45309':'#166534';
+      entryLabel=live<optimalEntry*0.99?'📉 Better than optimal — favorable dip':'✅ At optimal entry level';
+      entryColor='#16a34a';
+      entryMode='buy-now';
+    } else {
+      // Price above optimal entry but within limit → place limit at optimal_entry
+      suggestedEntry=optimalEntry;
+      entryLabel='🎯 Limit order at '+_eswEntryTypeLabel(entryType);
+      entryColor='#1d4ed8';
+      entryMode='limit';
     }
 
     document.getElementById('eswPrice').value=suggestedEntry.toFixed(2);
     noteEl.textContent=entryLabel;
     noteEl.style.color=entryColor;
 
+    const pctVsLive=live>0?((suggestedEntry-live)/live*100):0;
     const lines=[
-      `Live: ₹${live.toFixed(2)}  (${pctVsScan>=0?'+':''}${pctVsScan.toFixed(1)}% vs scan close ₹${scanClose.toFixed(2)})`,
-      `Limit gate: ₹${limitPrice.toFixed(2)} (scan +2%) — ${live<=limitPrice?'✅ within':'⚠️ exceeded'}`,
-      `Stop-loss: ₹${stopLoss.toFixed(2)}  ·  T1: ₹${candidate.target1||'—'}  ·  T2: ₹${candidate.target2||'—'}`,
+      `<b>Live price:</b> ₹${live.toFixed(2)}  ·  Scan close: ₹${scanClose.toFixed(2)}`,
+      `<b>Optimal entry:</b> ₹${optimalEntry.toFixed(2)} — ${entryBasis}`,
+      entryMode==='limit'?`<b>Suggested:</b> Limit order at ₹${suggestedEntry.toFixed(2)} (${Math.abs(pctVsLive).toFixed(1)}% below live — wait for pullback)`
+        :entryMode==='wait'?`<b>Suggested:</b> Do not enter — wait for price to pull back to ₹${optimalEntry.toFixed(2)}`
+        :entryMode==='invalid'?`<b>Action:</b> Skip — structural level broken`
+        :`<b>Suggested:</b> Enter at live price ₹${suggestedEntry.toFixed(2)}`,
+      `Hard limit: ₹${limitPrice.toFixed(2)} · Stop: ₹${stopLoss.toFixed(2)} · T1: ₹${candidate.target1||'—'} · T2: ₹${candidate.target2||'—'}`,
     ];
     detailEl.innerHTML=lines.join('<br>');
     detailEl.style.display='block';
   }catch(e){
-    noteEl.textContent='live price unavailable';
+    noteEl.textContent='live price unavailable — using scan close';
     noteEl.style.color='#888';
+    const optEntry=candidate.optimal_entry;
+    if(optEntry){
+      document.getElementById('eswPrice').value=parseFloat(optEntry).toFixed(2);
+      document.getElementById('eswEntryDetail').innerHTML=
+        `Optimal entry: ₹${parseFloat(optEntry).toFixed(2)} (${candidate.entry_basis||''}) · Scan close: ₹${candidate.current_price||'—'}`;
+      document.getElementById('eswEntryDetail').style.display='block';
+    }
   }
+}
+
+function _eswEntryTypeLabel(t){
+  if(t==='breakout-pullback') return 'broken resistance (now support)';
+  if(t==='bb-cross') return '20-DMA support';
+  return 'momentum pullback level';
 }
 
 function _eswToggleKite(){

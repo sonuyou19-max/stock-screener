@@ -316,6 +316,7 @@ def calc_momentum_breakout(hist: pd.DataFrame) -> dict:
         "pct_from_52w": pct_from,
         "near_52w":     pct_from <= BREAKOUT_PCT * 100,
         "broke_20d_res":broke_20d,
+        "res_20d":      round(res_20d, 2),
         "signal":       pct_from <= BREAKOUT_PCT * 100 or broke_20d,
     }
 
@@ -686,6 +687,50 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
     # ── Conviction (based on tech_score, sentiment is modifier) ─
     conviction = "HIGH" if tech_score >= 6 else "MEDIUM" if tech_score >= 5 else "LOW"
 
+    # ── Optimal entry calculation ──────────────────────────────
+    # The scan close is the signal confirmation price, not the entry price.
+    # Entry should be placed at the technical level the signal is anchored to:
+    #
+    # Breakout trade (volume surge + broke 20d resistance):
+    #   The breakout happened FROM the 20d resistance. A pullback to that
+    #   level is the ideal entry — you're buying confirmed support, not the spike.
+    #
+    # BB-cross trade (price crossed 20-DMA from below):
+    #   The 20-DMA is the anchor. Enter just above it (0.3% buffer for slippage).
+    #
+    # Pure momentum (RSI/MACD only, no structural breakout):
+    #   No strong structural level nearby; use a small pullback from close.
+    #
+    # In all cases: optimal_entry is capped at the scan close (never above).
+    bb_mid  = bb["middle"]                    # 20-DMA = Bollinger middle band
+    r20d    = mom.get("res_20d", curr)        # 20-day resistance level
+    vol_fired = signals["volume"]["pass"]
+    mom_fired = signals["momentum"]["pass"]
+    bb_fired  = signals["bollinger"]["pass"]
+
+    if vol_fired and mom_fired:
+        # Breakout: ideal entry is the broken resistance (now support)
+        raw_entry = max(bb_mid, r20d * 1.001)
+    elif bb_fired:
+        # BB-cross: anchor is the 20-DMA just crossed
+        raw_entry = bb_mid * 1.003
+    else:
+        # RSI/MACD momentum: small pullback from close
+        raw_entry = curr * 0.985
+
+    optimal_entry = round(min(raw_entry, curr), 2)
+
+    # Entry type label for the UI
+    if vol_fired and mom_fired:
+        entry_type = "breakout-pullback"
+        entry_basis = f"broken 20d resistance ₹{r20d:.2f}"
+    elif bb_fired:
+        entry_type = "bb-cross"
+        entry_basis = f"20-DMA ₹{bb_mid:.2f}"
+    else:
+        entry_type = "momentum-dip"
+        entry_basis = "1.5% pullback from scan close"
+
     return {
         "ticker":        ticker,
         "name":          name,
@@ -705,14 +750,18 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
         "rsi":           rsi,
         "macd_hist":     macd["histogram"],
         "bb_pct_b":      bb["pct_b"],
+        "bb_middle":     round(bb_mid, 2),
         "vol_ratio":     vol["ratio"],
         "pct_from_52w":  mom["pct_from_52w"],
+        "res_20d":       round(r20d, 2),
         "fii_net_3d":    fii["net_3d_cr"],
-        # Entry discipline — the scan price is tonight's close; tomorrow's
-        # open can gap. Above limit_price the R/R is no longer what was
-        # scanned: skip the trade rather than chase.
+        # Entry levels
+        "optimal_entry": optimal_entry,
+        "entry_type":    entry_type,
+        "entry_basis":   entry_basis,
+        # Absolute maximum chase price (R/R breaks above this)
         "limit_price":   round(curr * (1 + MAX_CHASE_PCT), 2),
-        "entry_note":    f"Enter ≤ ₹{curr * (1 + MAX_CHASE_PCT):,.2f} (scan close +{MAX_CHASE_PCT*100:.0f}%). If it gaps above, skip.",
+        "entry_note":    f"Optimal entry ₹{optimal_entry:.2f} ({entry_basis}). Hard limit ₹{curr * (1 + MAX_CHASE_PCT):.2f}.",
         # Swing levels
         "stop_loss":     levels["stop_loss"],
         "stop_pct":      levels["stop_pct"],
