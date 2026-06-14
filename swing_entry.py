@@ -8,6 +8,8 @@ For each "queued" entry:
   - If live ≤ optimal_entry → MARKET order (already dipped to target)
   - Else between optimal and gate → LIMIT order at optimal_entry
   - POST /swing/queue/update with order_id and new status
+
+Set DRY_RUN=true in .env to simulate without placing real orders.
 """
 
 import os
@@ -22,6 +24,7 @@ VPS_URL         = os.environ.get("ORACLE_VPS_URL", "http://localhost:5001")
 EXECUTOR_SECRET = os.environ["EXECUTOR_SECRET"]
 TELEGRAM_BOT    = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT   = os.environ.get("TELEGRAM_CHAT_ID", "")
+DRY_RUN         = os.environ.get("DRY_RUN", "false").lower() in ("true", "1", "yes")
 
 RAILWAY_HEADERS = {
     "X-Upload-Token": UPLOAD_TOKEN,
@@ -90,7 +93,7 @@ def update_queue(updates: list):
 
 
 def main():
-    print("=== Swing Entry 9:00 AM ===")
+    print(f"=== Swing Entry 9:00 AM {'[DRY RUN]' if DRY_RUN else '[LIVE]'} ===")
     queue = get_queue()
     if not queue:
         print("No queued swing entries.")
@@ -98,7 +101,8 @@ def main():
         return
 
     placed, skipped, errors = [], [], []
-    msgs = [f"🔔 <b>Swing Entry 9:00 AM</b> ({len(queue)} queued)"]
+    dry_tag = " 🧪 <i>DRY RUN — no real orders</i>" if DRY_RUN else ""
+    msgs = [f"🔔 <b>Swing Entry 9:00 AM</b> ({len(queue)} queued){dry_tag}"]
 
     for entry in queue:
         ticker = entry.get("ticker", "")
@@ -139,25 +143,30 @@ def main():
             place_price = opt if opt > 0 else live
             print(f"  → LIMIT @ ₹{place_price:.2f}")
 
-        try:
-            result = place_order(symbol, qty, order_type, place_price)
-            order_id = result.get("order_id")
-            if not order_id:
-                raise ValueError(f"No order_id in response: {result}")
-            update_queue([{
-                "ticker":      ticker,
-                "status":      "order_placed",
-                "order_id":    str(order_id),
-                "placed_price": live,
-                "placed_at":   time.strftime("%Y-%m-%dT%H:%M:%S"),
-            }])
+        disp = f"₹{place_price:.0f}" if order_type == "LIMIT" else f"MARKET ~₹{live:.0f}"
+        if DRY_RUN:
+            print(f"  [DRY RUN] would place {order_type} {qty}sh @ {disp}")
             placed.append(symbol)
-            disp = f"₹{place_price:.0f}" if order_type == "LIMIT" else f"MARKET ~₹{live:.0f}"
-            msgs.append(f"✅ {symbol}: {order_type} {qty}sh @ {disp} (#{order_id})")
-        except Exception as e:
-            print(f"⚠️  Order failed for {symbol}: {e}")
-            errors.append(symbol)
-            msgs.append(f"❌ {symbol}: order failed — {e}")
+            msgs.append(f"🧪 {symbol}: would place {order_type} {qty}sh @ {disp}")
+        else:
+            try:
+                result = place_order(symbol, qty, order_type, place_price)
+                order_id = result.get("order_id")
+                if not order_id:
+                    raise ValueError(f"No order_id in response: {result}")
+                update_queue([{
+                    "ticker":       ticker,
+                    "status":       "order_placed",
+                    "order_id":     str(order_id),
+                    "placed_price": live,
+                    "placed_at":    time.strftime("%Y-%m-%dT%H:%M:%S"),
+                }])
+                placed.append(symbol)
+                msgs.append(f"✅ {symbol}: {order_type} {qty}sh @ {disp} (#{order_id})")
+            except Exception as e:
+                print(f"⚠️  Order failed for {symbol}: {e}")
+                errors.append(symbol)
+                msgs.append(f"❌ {symbol}: order failed — {e}")
 
         time.sleep(0.5)
 
