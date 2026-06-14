@@ -1764,6 +1764,13 @@ def kite_postback():
 
                 if entry and entry.get("status") in ("queued", "order_placed"):
                     stop_loss = entry.get("stop_loss")
+                    target1   = entry.get("target1")
+                    target2   = entry.get("target2")
+                    qty_t1    = fill_qty // 2
+                    qty_t2    = fill_qty - qty_t1
+
+                    gtt_id = gtt_t1_id = gtt_t2_id = None
+
                     if stop_loss:
                         gtt_payload = {
                             "symbol":        symbol,
@@ -1775,15 +1782,42 @@ def kite_postback():
                         }
                         gtt_result, _ = _vps_post("/place-gtt", gtt_payload)
                         gtt_id = gtt_result.get("gtt_id") or gtt_result.get("trigger_id")
-                        print(f"✅ Auto-GTT: {symbol} stop ₹{stop_loss} qty {fill_qty} → gtt_id={gtt_id}")
-                        if t_key:
-                            q[t_key].update({
-                                "status":     "filled",
-                                "fill_price": fill_price,
-                                "order_id":   order_id,
-                                "gtt_id":     gtt_id,
-                            })
-                            _write_queue(q)
+                        print(f"✅ Auto-GTT stop: {symbol} ₹{stop_loss} qty={fill_qty} → id={gtt_id}")
+
+                    if target1 and qty_t1 > 0:
+                        t1_result, _ = _vps_post("/place-gtt", {
+                            "symbol":        symbol,
+                            "trigger_price": float(target1),
+                            "quantity":      qty_t1,
+                            "side":          "SELL",
+                            "order_type":    "MARKET",
+                            "product":       "CNC",
+                        })
+                        gtt_t1_id = t1_result.get("gtt_id") or t1_result.get("trigger_id")
+                        print(f"✅ Auto-GTT T1: {symbol} ₹{target1} qty={qty_t1} → id={gtt_t1_id}")
+
+                    if target2 and qty_t2 > 0:
+                        t2_result, _ = _vps_post("/place-gtt", {
+                            "symbol":        symbol,
+                            "trigger_price": float(target2),
+                            "quantity":      qty_t2,
+                            "side":          "SELL",
+                            "order_type":    "MARKET",
+                            "product":       "CNC",
+                        })
+                        gtt_t2_id = t2_result.get("gtt_id") or t2_result.get("trigger_id")
+                        print(f"✅ Auto-GTT T2: {symbol} ₹{target2} qty={qty_t2} → id={gtt_t2_id}")
+
+                    if t_key:
+                        q[t_key].update({
+                            "status":     "filled",
+                            "fill_price": fill_price,
+                            "order_id":   order_id,
+                            "gtt_id":     gtt_id,
+                            "gtt_t1_id":  gtt_t1_id,
+                            "gtt_t2_id":  gtt_t2_id,
+                        })
+                        _write_queue(q)
 
                 # ── India monthly queue: auto-add to live portfolio ────
                 iq = _read_india_queue()
