@@ -506,6 +506,7 @@ Return ONLY a JSON object with exactly these 20 sector keys — no markdown, no 
         parsed = json.loads(raw.strip())
 
         VALID_SIGNALS = {"positive", "mild_positive", "neutral", "cautious", "negative"}
+        SIGNAL_SCORES = {"positive": 8.0, "mild_positive": 3.0, "neutral": 0.0, "cautious": -3.0, "negative": -8.0}
         result = {}
         for sector in SECTOR_KEYWORDS:
             entry  = parsed.get(sector, {})
@@ -513,7 +514,7 @@ Return ONLY a JSON object with exactly these 20 sector keys — no markdown, no 
             if signal not in VALID_SIGNALS:
                 signal = "neutral"
             result[sector] = {
-                "score":   0,
+                "score":   SIGNAL_SCORES[signal],
                 "signal":  signal,
                 "matches": len(sector_headlines.get(sector, [])),
                 "reason":  entry.get("reason", "LLM verdict."),
