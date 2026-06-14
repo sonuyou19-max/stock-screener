@@ -28,6 +28,7 @@ _UPLOAD_AUTH = {"X-Upload-Token": _os_tok.environ["UPLOAD_TOKEN"]} if _os_tok.ge
 
 import json
 import time
+import logging
 import warnings
 import requests
 import urllib.request as _urllib
@@ -142,6 +143,12 @@ def _load_prev_institutional() -> dict:
 
 warnings.filterwarnings("ignore")
 
+# Observability: surface pipeline dropouts on the Railway dashboard instead of
+# silently swallowing them. WARNING level keeps the 500-stock loop from flooding
+# logs while still flagging stocks that drop out due to data/parse failures.
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
+logger = logging.getLogger("screener")
+
 
 # ─────────────────────────────────────────────
 # ATR CALCULATOR
@@ -176,7 +183,8 @@ def calculate_atr(ticker: str, period: int = ATR_PERIOD) -> Optional[float]:
         atr = hist["true_range"].iloc[1:].mean()
         return round(float(atr), 2)
 
-    except Exception:
+    except Exception as e:
+        logger.warning(f"calculate_atr failed for {ticker}: {e}")
         return None
 
 
@@ -215,12 +223,15 @@ def compute_atr_stops(ticker: str, buy_price: float) -> dict:
 # DATA FETCHER
 # ─────────────────────────────────────────────
 
-def fetch_stock_data(ticker: str) -> Optional[dict]:
+def fetch_stock_data(stock: "yf.Ticker", ticker: str) -> Optional[dict]:
     """Fetch fundamentals + price data for a single NSE ticker.
     Returns None if stock fails liquidity filter.
+
+    Takes a pre-instantiated yf.Ticker so .info is fetched once and reused by
+    downstream checks on the same object (avoids a duplicate .info network call
+    in check_pledge_dilution).
     """
     try:
-        stock = yf.Ticker(ticker)
         info  = stock.info
 
         if not info or info.get("regularMarketPrice") is None:
@@ -360,7 +371,8 @@ def fetch_stock_data(ticker: str) -> Optional[dict]:
                                     if info.get("heldPercentInstitutions") is not None else None,
         }
 
-    except Exception:
+    except Exception as e:
+        logger.warning(f"fetch_stock_data failed for {ticker}: {e}")
         return None
 
 
@@ -931,10 +943,11 @@ SHORT_INTEREST_ELEVATED = 2.0
 FLOAT_RATIO_SUSPICIOUS  = 0.65
 DILUTION_THRESHOLD      = 5.0
 
-def check_pledge_dilution(ticker: str, data: dict) -> dict:
+def check_pledge_dilution(stock: "yf.Ticker", ticker: str, data: dict) -> dict:
     """
     Flag promoter pledge risk (proxy) and share dilution.
-    Makes one extra yfinance call per stock.
+    Reuses the shared yf.Ticker object so .info is read from cache (no extra
+    network call); only quarterly_balance_sheet is a genuinely new fetch.
     """
     result = {
         "pledge_risk":      "low",
@@ -949,7 +962,6 @@ def check_pledge_dilution(ticker: str, data: dict) -> dict:
     }
 
     try:
-        stock = yf.Ticker(ticker)
         info  = stock.info
 
         short_pct_float = info.get("shortPercentOfFloat")
@@ -1273,7 +1285,12 @@ def screen_all(
         print(f"\n  Screening {sector_name} ({len(tickers)} stocks) {semj} {sentiment}...")
 
         for ticker in tickers:
-            data = fetch_stock_data(ticker)
+            # Instantiate the yf.Ticker once per stock and thread it through the
+            # helpers that read .info — yfinance caches .info on the instance, so
+            # check_pledge_dilution reuses it instead of firing a 2nd .info call.
+            stock_obj = yf.Ticker(ticker)
+
+            data = fetch_stock_data(stock_obj, ticker)
             if data is None:
                 excluded_liq += 1
                 time.sleep(0.3)
@@ -1341,7 +1358,7 @@ def screen_all(
             data["circuit_penalty"] = circuit["circuit_penalty"]
             data["circuit_notes"]   = circuit["circuit_notes"]
 
-            pledge = check_pledge_dilution(ticker, data)
+            pledge = check_pledge_dilution(stock_obj, ticker, data)
             time.sleep(0.3)
             data["pledge_risk"]    = pledge["pledge_risk"]
             data["dilution_flag"]  = pledge["dilution_flag"]
@@ -1451,11 +1468,22 @@ def select_top_diversified(all_df: pd.DataFrame, n_picks: int, max_per_sector: i
     Walk down the ranked list, capping picks per NSE sector so one hot
     sector (sentiment boost + sector-wide rally) cannot fill the whole
     portfolio. Skipped stocks remain in all_df for the full ranking report.
+
+    Also skips stocks whose single-share price exceeds the per-stock budget
+    (BUDGET / TOP_PICKS) — otherwise floor-division allocation yields 0 shares
+    while still booking the cash (e.g. MRF, Page, Bosch > ₹14,285/share).
+    Skipping here promotes the next affordable runner-up automatically.
     """
     picked_idx   = []
     sector_count: dict[str, int] = {}
+    max_affordable = BUDGET / TOP_PICKS
 
     for idx, row in all_df.iterrows():
+        price = row.get("current_price", 0) or 0
+        if price > max_affordable:
+            print(f"  ⏭️  {row['ticker']} skipped — share price ₹{price:,.0f} exceeds "
+                  f"per-stock budget ₹{max_affordable:,.0f} (would buy 0 shares)")
+            continue
         sector = row.get("nse_sector", "Unknown")
         if sector_count.get(sector, 0) >= max_per_sector:
             print(f"  ⏭️  {row['ticker']} skipped for diversification — "
@@ -1755,12 +1783,23 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
             for stock in bucket.get("stocks", []):
                 tick = stock.get("ticker", "")
                 si   = all_scores.get(tick)
+                # Holding duration for the LTCG tax rule in the LLM prompt —
+                # computed here so it's present in BOTH the API-rebalancer and
+                # the lightweight-fallback paths (rebalance_holdings only sets it
+                # in the fallback).
+                buy_date = stock.get("buy_date", "")
+                try:
+                    days_held = (datetime.now() -
+                                 datetime.strptime(buy_date, "%Y-%m-%d")).days
+                except (ValueError, TypeError):
+                    days_held = None
                 live_holdings.append({
                     "ticker":    tick,
                     "name":      stock.get("name", ""),
                     "sector":    stock.get("nse_sector", stock.get("sector", "")),
                     "buy_price": stock.get("price", stock.get("buy_price", 0)),
-                    "buy_date":  stock.get("buy_date", ""),
+                    "buy_date":  buy_date,
+                    "days_held": days_held,
                     # screener rank (used as context only, not exit trigger)
                     "current_score": si["score"] if si else None,
                     "current_rank":  si["rank"]  if si else None,
@@ -1835,9 +1874,18 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
 
     # ── LLM path ────────────────────────────────────────────────────────────
     if api_key and live_holdings:
+        def _hold_tax(h):
+            d = h.get("days_held")
+            if d is None:
+                return "holding period unknown"
+            if d > 365:
+                return f"held {d}d — LTCG-eligible (10% tax)"
+            return f"held {d}d — STCG ({365 - d}d to LTCG, 15% tax)"
+
         live_str = "\n".join(
             f"  {i+1}. {h['ticker'].replace('.NS','')} ({h['name'][:28]}) "
             f"| bought ₹{(h.get('buy_price') or 0):,.0f} on {h.get('buy_date','?')} "
+            f"| {_hold_tax(h)} "
             f"| PnL {(h.get('pnl_pct') or 0):+.1f}% "
             f"| rebalancer verdict: {h.get('rebalancer_verdict','?')} "
             f"| reason: {str(h.get('rebalancer_reason',''))[:60]}"
