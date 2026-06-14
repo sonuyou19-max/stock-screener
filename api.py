@@ -1533,6 +1533,19 @@ def kite_quote():
     return jsonify(result), status
 
 
+@app.route("/kite/historical", methods=["GET", "OPTIONS"])
+def kite_historical():
+    """Proxy daily OHLCV from Zerodha. ?symbol=RELIANCE&days=400"""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    symbol = request.args.get("symbol", "").strip().upper()
+    days   = request.args.get("days", "400")
+    if not symbol:
+        return jsonify({"error": "symbol required"}), 400
+    result, status = _vps_get(f"/get-historical?symbol={symbol}&days={days}")
+    return jsonify(result), status
+
+
 @app.route("/kite/place-order", methods=["POST", "OPTIONS"])
 def kite_place_order():
     if request.method == "OPTIONS":
