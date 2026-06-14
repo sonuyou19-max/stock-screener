@@ -430,6 +430,104 @@ def fetch_all_feeds() -> list[dict]:
 # STAGE 1 — SECTOR STRUCTURAL SCORING
 # ─────────────────────────────────────────────
 
+def _get_sector_headlines(items: list[dict]) -> dict[str, list[str]]:
+    """Filter up to 15 relevant headlines per sector using keyword presence."""
+    result = {s: [] for s in SECTOR_KEYWORDS}
+    for item in items:
+        text = (item["title"] + " " + item.get("body", "")).lower()
+        for sector, kw in SECTOR_KEYWORDS.items():
+            if len(result[sector]) >= 15:
+                continue
+            all_kw = kw.get("positive", []) + kw.get("negative", [])
+            if any(k in text for k in all_kw):
+                result[sector].append(item["title"])
+    return result
+
+
+def llm_score_sectors(items: list[dict]) -> dict | None:
+    """
+    Call Claude Haiku with sector-relevant headlines to get structural verdicts.
+    Returns {sector: {signal, score, matches, reason}} matching aggregate_sector_sentiment
+    format, or None if unavailable/failed (caller falls back to keyword scoring).
+    """
+    sector_headlines = _get_sector_headlines(items)
+
+    sectors_block = []
+    for sector, headlines in sector_headlines.items():
+        bullets = "\n".join(f"  - {h[:100]}" for h in headlines) if headlines else "  (no relevant headlines found)"
+        sectors_block.append(f"{sector}:\n{bullets}")
+
+    sector_template = "\n".join(
+        f'  "{s}": {{"signal": "neutral", "reason": "..."}}'
+        for s in SECTOR_KEYWORDS
+    )
+
+    prompt = f"""You are a senior equity analyst for an Indian equity portfolio. Analyse the past 30 days of financial news and rate the structural outlook for each of the 20 NSE sectors.
+
+Signal options (pick exactly one per sector):
+- positive: multiple strong positive signals, clear sector tailwind
+- mild_positive: more good news than bad, moderate tailwind
+- neutral: mixed or insufficient signals
+- cautious: more bad news than good, sector headwinds
+- negative: multiple strong negative signals, clear sector risk
+
+HEADLINES BY SECTOR (past 30 days):
+{"=" * 60}
+{chr(10).join(sectors_block)}
+{"=" * 60}
+
+Return ONLY a JSON object with exactly these 20 sector keys — no markdown, no preamble:
+{{
+{sector_template}
+}}"""
+
+    try:
+        resp = requests.post(
+            ANTHROPIC_API,
+            headers={
+                "x-api-key":         ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type":      "application/json",
+            },
+            json={
+                "model":      LLM_MODEL,
+                "max_tokens": 1500,
+                "messages":   [{"role": "user", "content": prompt}],
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["content"][0]["text"].strip()
+
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-z]*\n?", "", raw)
+            raw = re.sub(r"\n?```$", "", raw)
+
+        parsed = json.loads(raw.strip())
+
+        VALID_SIGNALS = {"positive", "mild_positive", "neutral", "cautious", "negative"}
+        result = {}
+        for sector in SECTOR_KEYWORDS:
+            entry  = parsed.get(sector, {})
+            signal = entry.get("signal", "neutral")
+            if signal not in VALID_SIGNALS:
+                signal = "neutral"
+            result[sector] = {
+                "score":   0,
+                "signal":  signal,
+                "matches": len(sector_headlines.get(sector, [])),
+                "reason":  entry.get("reason", "LLM verdict."),
+            }
+
+        n_nonneut = sum(1 for v in result.values() if v["signal"] != "neutral")
+        print(f"  ✅ LLM scored 20 sectors ({n_nonneut} non-neutral)")
+        return result
+
+    except Exception as e:
+        print(f"  ⚠️  LLM sector scoring failed: {e} — falling back to keyword scoring")
+        return None
+
+
 def score_headline(title: str, body: str, sector: str) -> float:
     """Score a headline against a sector's keyword lists."""
     kw         = SECTOR_KEYWORDS.get(sector, {})
@@ -812,7 +910,14 @@ def run_scan(target_tickers: Optional[list[str]] = None, test_mode: bool = False
 
     # ── Stage 1: Sector structural scoring ───────────────────
     print(f"\n  Stage 1: Scoring {len(items)} headlines across 20 sectors...")
-    sector_signals = aggregate_sector_sentiment(items)
+    sector_signals = None
+    if LLM_ENABLED:
+        print(f"  🤖 LLM sector analysis (Claude {LLM_MODEL})...")
+        sector_signals = llm_score_sectors(items)
+    if sector_signals is None:
+        if LLM_ENABLED:
+            print(f"  ↩️  Falling back to keyword scoring...")
+        sector_signals = aggregate_sector_sentiment(items)
 
     print(f"\n  {'SECTOR':<35} {'SIGNAL':<14} {'SCORE':>6}  {'MATCHES':>7}")
     print(f"  {'─'*35} {'─'*14} {'─'*6}  {'─'*7}")

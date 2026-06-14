@@ -1542,24 +1542,6 @@ def swing_prices():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/trigger/llm-synth", methods=["POST", "OPTIONS"])
-def trigger_llm_synth():
-    """Run LLM macro synthesis from the web service (has outbound internet).
-    Protected by X-Upload-Token. Returns the verdict on success."""
-    if request.method == "OPTIONS":
-        return jsonify({}), 200
-    try:
-        import importlib, sys
-        # Force fresh import in case module was cached without env vars
-        if "llm_synthesiser" in sys.modules:
-            del sys.modules["llm_synthesiser"]
-        from llm_synthesiser import run_synthesis
-        verdict = run_synthesis()
-        if verdict is None:
-            return jsonify({"error": "Synthesis failed — check ANTHROPIC_API_KEY and network"}), 500
-        return jsonify({"status": "ok", "verdict": verdict})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 
 # ════════════════════════════════════════════════════════════════
