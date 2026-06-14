@@ -23,7 +23,7 @@ app = Flask(__name__)
 # matching X-Upload-Token header. Unset = open (backwards compatible).
 UPLOAD_TOKEN = os.getenv("UPLOAD_TOKEN", "")
 
-_WRITE_PATH_MARKERS = ("/upload", "/add", "/remove", "/trigger")
+_WRITE_PATH_MARKERS = ("/upload", "/add", "/remove", "/trigger", "/queue")
 
 @app.before_request
 def _enforce_upload_token():
@@ -89,6 +89,7 @@ _rebalance_cache: dict = {}
 SWING_CANDIDATES_FILE = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_candidates.json")
 SWING_LIVE_FILE       = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_live.json")
 SWING_HISTORY_FILE    = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_history.json")
+SWING_QUEUE_FILE      = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_queue.json")
 
 
 def _load_json(path: str):
@@ -1404,6 +1405,95 @@ def swing_history_upload():
         return jsonify({"error": str(e)}), 500
 
 
+# ── SWING QUEUE — automated 9AM entry ───────────────────────────
+
+_swing_queue: dict = {}  # keyed by ticker, e.g. "RELIANCE.NS"
+
+
+def _read_queue() -> dict:
+    global _swing_queue
+    data = _load_json(SWING_QUEUE_FILE)
+    _swing_queue = data if isinstance(data, dict) else {}
+    return _swing_queue
+
+
+def _write_queue(q: dict):
+    global _swing_queue
+    _swing_queue = q
+    _save_json(SWING_QUEUE_FILE, q)
+
+
+@app.route("/swing/queue", methods=["GET", "OPTIONS"])
+def swing_queue_get():
+    """Return current queue. Optional ?status= filter."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    q = _read_queue()
+    status_filter = request.args.get("status", "")
+    if status_filter:
+        q = {k: v for k, v in q.items() if v.get("status") == status_filter}
+    return jsonify({"queue": list(q.values()), "count": len(q)})
+
+
+@app.route("/swing/queue", methods=["POST"])
+def swing_queue_add():
+    """Add or replace a ticker in the queue."""
+    try:
+        entry = request.get_json(force=True) or {}
+        ticker = entry.get("ticker")
+        if not ticker:
+            return jsonify({"error": "ticker required"}), 400
+        from datetime import datetime as _dt
+        q = _read_queue()
+        entry.setdefault("queued_at", _dt.now().isoformat())
+        entry.setdefault("status", "queued")
+        q[ticker] = entry
+        _write_queue(q)
+        print(f"✅ Swing queue: added {ticker} (qty={entry.get('quantity')})")
+        return jsonify({"status": "ok", "ticker": ticker, "count": len(q)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/swing/queue/remove", methods=["POST", "OPTIONS"])
+def swing_queue_remove():
+    """Remove a ticker from the queue."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        ticker = (request.get_json(force=True) or {}).get("ticker")
+        if not ticker:
+            return jsonify({"error": "ticker required"}), 400
+        q = _read_queue()
+        removed = ticker in q
+        q.pop(ticker, None)
+        _write_queue(q)
+        print(f"✅ Swing queue: removed {ticker}")
+        return jsonify({"status": "ok", "removed": removed, "count": len(q)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/swing/queue/update", methods=["POST", "OPTIONS"])
+def swing_queue_update():
+    """Patch one or more queue entries. Body: [{ticker, ...fields}] or {ticker, ...fields}."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        payload = request.get_json(force=True)
+        updates = payload if isinstance(payload, list) else [payload]
+        q = _read_queue()
+        for upd in updates:
+            ticker = upd.get("ticker")
+            if ticker and ticker in q:
+                q[ticker].update({k: v for k, v in upd.items() if k != "ticker"})
+                print(f"✅ Swing queue: updated {ticker} → {upd.get('status', '?')}")
+        _write_queue(q)
+        return jsonify({"status": "ok", "updated": len(updates)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ── GET /swing/prices ────────────────────────────────────────────
 @app.route("/swing/prices", methods=["GET", "OPTIONS"])
 def swing_prices():
@@ -1572,64 +1662,6 @@ def kite_get_pnl():
     return jsonify(result), status
 
 
-def _vps_post(endpoint: str, payload: dict):
-    """POST to Oracle VPS executor with auth header. Returns (data, status_code)."""
-    import urllib.request, urllib.error, json as _json
-    if not ORACLE_VPS_URL:
-        return {"error": "Oracle VPS not configured (ORACLE_VPS_URL missing)"}, 503
-    body = _json.dumps(payload).encode()
-    req = urllib.request.Request(
-        f"{ORACLE_VPS_URL}{endpoint}",
-        data=body,
-        headers={"Content-Type": "application/json", "X-Executor-Secret": EXECUTOR_SECRET},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return _json.loads(resp.read()), resp.status
-    except urllib.error.HTTPError as e:
-        return _json.loads(e.read()), e.code
-    except Exception as e:
-        return {"error": str(e)}, 502
-
-
-@app.route("/kite/place-order", methods=["POST", "OPTIONS"])
-def kite_place_order():
-    """Proxy: dashboard → Railway → Oracle VPS → Zerodha."""
-    if request.method == "OPTIONS":
-        return jsonify({}), 200
-    data = request.get_json(force=True) or {}
-    result, status = _vps_post("/place-order", data)
-    return jsonify(result), status
-
-
-@app.route("/kite/cancel-order", methods=["POST", "OPTIONS"])
-def kite_cancel_order():
-    if request.method == "OPTIONS":
-        return jsonify({}), 200
-    data = request.get_json(force=True) or {}
-    result, status = _vps_post("/cancel-order", data)
-    return jsonify(result), status
-
-
-@app.route("/kite/get-pnl", methods=["GET", "OPTIONS"])
-def kite_get_pnl():
-    if request.method == "OPTIONS":
-        return jsonify({}), 200
-    import urllib.request, json as _json
-    if not ORACLE_VPS_URL:
-        return jsonify({"error": "Oracle VPS not configured"}), 503
-    try:
-        req = urllib.request.Request(
-            f"{ORACLE_VPS_URL}/get-pnl",
-            headers={"X-Executor-Secret": EXECUTOR_SECRET},
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return jsonify(_json.loads(resp.read()))
-    except Exception as e:
-        return jsonify({"error": str(e)}), 502
-
-
 @app.route("/kite/callback", methods=["GET", "OPTIONS"])
 def kite_callback():
     """
@@ -1697,14 +1729,14 @@ def kite_callback():
 def kite_postback():
     """
     Zerodha POSTs order status updates here (fills, rejections, cancellations).
-    Logs each event; future: reconcile with portfolio.
+    On a BUY fill for a queued swing trade: auto-place GTT stop-loss.
     """
     if request.method == "OPTIONS":
         return jsonify({}), 200
 
     try:
-        data = request.get_json(silent=True) or request.form.to_dict()
-        order_id  = data.get("order_id", "?")
+        data      = request.get_json(silent=True) or request.form.to_dict()
+        order_id  = str(data.get("order_id", "?"))
         status    = data.get("status", "?")
         symbol    = data.get("tradingsymbol", "?")
         side      = data.get("transaction_type", "?")
@@ -1713,10 +1745,46 @@ def kite_postback():
 
         print(f"📬 Kite postback: {side} {qty}x{symbol} @ ₹{avg_price} "
               f"→ {status} (order_id={order_id})")
-    except Exception as e:
-        print(f"⚠️  Kite postback parse error: {e}")
 
-    # Zerodha expects 200 OK — always return it
+        # Auto GTT stop-loss when a queued swing BUY fills
+        if status == "COMPLETE" and side == "BUY" and avg_price:
+            try:
+                fill_price = float(avg_price)
+                fill_qty   = int(data.get("filled_quantity") or qty or 0)
+            except (TypeError, ValueError):
+                fill_price, fill_qty = 0, 0
+
+            if fill_price > 0 and fill_qty > 0:
+                q = _read_queue()
+                ticker_ns = f"{symbol}.NS"
+                entry = q.get(ticker_ns) or q.get(symbol)
+                t_key = ticker_ns if ticker_ns in q else (symbol if symbol in q else None)
+
+                if entry and entry.get("status") in ("queued", "order_placed"):
+                    stop_loss = entry.get("stop_loss")
+                    if stop_loss:
+                        gtt_payload = {
+                            "symbol":        symbol,
+                            "trigger_price": float(stop_loss),
+                            "quantity":      fill_qty,
+                            "side":          "SELL",
+                            "order_type":    "MARKET",
+                            "product":       "CNC",
+                        }
+                        gtt_result, _ = _vps_post("/place-gtt", gtt_payload)
+                        gtt_id = gtt_result.get("gtt_id") or gtt_result.get("trigger_id")
+                        print(f"✅ Auto-GTT: {symbol} stop ₹{stop_loss} qty {fill_qty} → gtt_id={gtt_id}")
+                        if t_key:
+                            q[t_key].update({
+                                "status":     "filled",
+                                "fill_price": fill_price,
+                                "order_id":   order_id,
+                                "gtt_id":     gtt_id,
+                            })
+                            _write_queue(q)
+    except Exception as e:
+        print(f"⚠️  Kite postback error: {e}")
+
     return jsonify({"status": "ok"}), 200
 
 

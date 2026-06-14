@@ -510,6 +510,22 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
   </div>
 </div>
 
+<!-- QUEUE SWING MODAL -->
+<div class="modal-overlay hidden" id="queueSwModal">
+  <div class="modal-sheet">
+    <div class="modal-title" id="qswTitle">Queue for 9:00 AM Entry</div>
+    <div class="modal-sub" id="qswSub"></div>
+    <div style="background:#f0fdf4;border:1px solid #86efac;border-radius:10px;padding:12px 14px;margin-bottom:16px;font-size:12px;line-height:1.8;color:#166534" id="qswEntryInfo"></div>
+    <div class="modal-lbl">Quantity (shares)</div>
+    <input class="modal-input" type="number" id="qswQty" placeholder="e.g. 5" step="1" inputmode="decimal" oninput="_qswCalcValue()"/>
+    <div style="font-size:11px;color:var(--text3);margin-top:6px;min-height:16px" id="qswValueNote"></div>
+    <div class="modal-acts" style="margin-top:22px">
+      <button class="modal-cancel" onclick="_qswClose()">Cancel</button>
+      <button class="modal-confirm" style="background:#16a34a" onclick="_qswSubmit()">Queue for 9AM</button>
+    </div>
+  </div>
+</div>
+
 <!-- SELL MODAL -->
 <div class="modal-overlay hidden" id="sellModal">
   <div class="modal-sheet">
@@ -1711,6 +1727,7 @@ async function _exSubmit(){
 /* ── Swing entry modal ────────────────────────────────── */
 let _eswCandidate=null;
 let _swCandByTicker={};
+let _swQueue={};
 
 function enterSwingTrade(ticker){_eswOpen(_swCandByTicker[ticker]||{ticker});}
 
@@ -1823,9 +1840,86 @@ function _eswToggleKite(){
     document.getElementById('eswKiteOrder').checked?'block':'none';
 }
 
-function _eswToggleKite(){
-  document.getElementById('eswOrderTypeRow').style.display=
-    document.getElementById('eswKiteOrder').checked?'block':'none';
+/* ── Swing queue functions ────────────────────────────── */
+let _qswCandidate=null;
+
+function queueSwingTrade(ticker){
+  const c=_swCandByTicker[ticker]||{ticker};
+  _qswCandidate=c;
+  const sym=(c.ticker||'').replace('.NS','').replace('.BO','');
+  document.getElementById('qswTitle').textContent='Queue '+sym+' for 9:00 AM';
+  document.getElementById('qswSub').textContent=
+    'Stop ₹'+(c.stop_loss||'—')+' · T1 ₹'+(c.target1||'—')+(c.rr_ratio?' · RR '+(c.rr_ratio||'').toFixed?.(1):'');
+  const entryType=c.entry_type||'momentum-dip';
+  const basisLabel={'breakout-pullback':'Broken resistance (now support)','bb-cross':'20-DMA support zone','momentum-dip':'Pullback from scan close'}[entryType]||entryType;
+  const opt=c.optimal_entry||c.current_price||0;
+  const gate=c.limit_price||(opt*1.02);
+  document.getElementById('qswEntryInfo').innerHTML=
+    `<strong>Optimal entry:</strong> ₹${parseFloat(opt).toFixed(2)}<br>`+
+    `<strong>Entry basis:</strong> ${basisLabel}<br>`+
+    `<strong>Max entry gate:</strong> ₹${parseFloat(gate).toFixed(2)} (skip if gap above)<br>`+
+    `<strong>Auto stop-loss GTT:</strong> ₹${(c.stop_loss||0).toFixed?.(2)||(c.stop_loss||'—')} on fill`;
+  document.getElementById('qswQty').value='';
+  document.getElementById('qswValueNote').textContent='';
+  document.getElementById('queueSwModal').classList.remove('hidden');
+  setTimeout(()=>document.getElementById('qswQty').focus(),80);
+}
+
+function _qswCalcValue(){
+  const qty=parseFloat(document.getElementById('qswQty').value);
+  const c=_qswCandidate;
+  if(!qty||!c)return;
+  const val=qty*(c.optimal_entry||c.current_price||0);
+  document.getElementById('qswValueNote').textContent=
+    'Est. investment: ₹'+val.toLocaleString('en-IN',{maximumFractionDigits:0});
+}
+
+function _qswClose(){document.getElementById('queueSwModal').classList.add('hidden');_qswCandidate=null;}
+
+async function _qswSubmit(){
+  const qty=parseFloat(document.getElementById('qswQty').value);
+  if(!qty||isNaN(qty)||qty<=0){alert('Enter a valid quantity.');return;}
+  const c=_qswCandidate;
+  _qswClose();
+  _showSpinner('Queuing '+((c.ticker||'').replace('.NS',''))+'…');
+  try{
+    const scanD=(_swCandidates?.scan_date||_swCandidates?.generated_at||'').split('T')[0];
+    const entry={
+      ticker:c.ticker,
+      nse_symbol:(c.ticker||'').replace(/\.NS$/i,'').replace(/\.BO$/i,''),
+      name:c.name||(c.ticker||'').replace('.NS',''),
+      quantity:Math.round(qty),
+      optimal_entry:c.optimal_entry||c.current_price,
+      limit_price:c.limit_price||((c.current_price||0)*1.02),
+      stop_loss:c.stop_loss,
+      target1:c.target1,
+      target2:c.target2,
+      entry_type:c.entry_type,
+      entry_basis:c.entry_basis,
+      scan_date:scanD,
+      status:'queued',
+    };
+    const r=await fetch(`${API}/swing/queue`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});
+    const res=await r.json();
+    _hideSpinner();
+    if(res.status==='ok'){
+      _swQueue[c.ticker]=entry;
+      renderSwingCandidates();
+      alert('✅ '+(c.ticker||'').replace('.NS','')+' queued for 9:00 AM entry.\nQuantity: '+Math.round(qty)+' shares\n\nThe cron will place the order tomorrow morning.');
+    }else{alert('Error: '+JSON.stringify(res));}
+  }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
+}
+
+async function dequeueSwingTrade(ticker){
+  if(!confirm('Remove '+(ticker||'').replace('.NS','')+' from queue?'))return;
+  _showSpinner('Removing from queue…');
+  try{
+    const r=await fetch(`${API}/swing/queue/remove`,{method:'POST',headers:_postHeaders(),body:JSON.stringify({ticker})});
+    const res=await r.json();
+    _hideSpinner();
+    if(res.status==='ok'){delete _swQueue[ticker];renderSwingCandidates();}
+    else{alert('Error: '+JSON.stringify(res));}
+  }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
 }
 
 function _eswClose(){document.getElementById('enterSwModal').classList.add('hidden');_eswCandidate=null;}
@@ -2337,14 +2431,17 @@ function showSwing(){
 
 /* ═══ SWING DATA LOADER ═══ */
 async function loadSwing(){
-  const[live, cands, hist] = await Promise.all([
+  const[live, cands, hist, qData] = await Promise.all([
     fd('/swing/live'),
     fd('/swing/candidates'),
     fd('/swing/history'),
+    fd('/swing/queue'),
   ]);
   _swLive    = Array.isArray(live) ? live : [];
   _swCandidates = cands;
   _swHistory = hist;
+  _swQueue = {};
+  (qData?.queue || []).forEach(e => { _swQueue[e.ticker] = e; });
   renderSwingStats();
   renderSwingOpen();
   renderSwingCandidates();
@@ -2576,7 +2673,11 @@ function renderSwingCandidates(){
       </div>
 
       <div class="sc-actions">
-        <button class="sc-act-btn sc-act-enter" onclick="enterSwingTrade('${c.ticker}')">Enter Trade</button>
+        ${_swQueue[c.ticker]
+          ? `<span style="font-size:11px;font-weight:600;color:var(--green);padding:0 4px">✓ ${_swQueue[c.ticker].quantity}sh queued</span><button class="sc-act-btn" style="background:#fee2e2;color:#991b1b;border-color:#fca5a5;font-size:11px" onclick="dequeueSwingTrade('${c.ticker}')">Remove</button>`
+          : `<button class="sc-act-btn" style="background:transparent;border:1.5px solid var(--green);color:var(--green)" onclick="queueSwingTrade('${c.ticker}')">Queue 9AM</button>`
+        }
+        <button class="sc-act-btn sc-act-enter" onclick="enterSwingTrade('${c.ticker}')">Enter Now</button>
       </div>
     </div>`;
   }).join('')}</div>`;
