@@ -473,6 +473,18 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
       <div class="modal-lbl">Quantity (shares)</div>
       <input class="modal-input" type="number" id="eswQty" placeholder="e.g. 5" step="1" inputmode="decimal"/>
     </div>
+    <div id="eswKiteRow" style="display:none;margin-top:14px;padding:12px 14px;background:#f0fdf4;border-radius:10px;border:1px solid #86efac">
+      <label style="display:flex;align-items:center;gap:10px;cursor:pointer">
+        <input type="checkbox" id="eswKiteOrder" onchange="_eswToggleKite()" style="width:17px;height:17px;accent-color:#16a34a">
+        <span style="font-weight:600;color:#166534;font-size:14px">Also place order on Zerodha</span>
+      </label>
+      <div id="eswOrderTypeRow" style="display:none;margin-top:10px">
+        <select id="eswOrderType" style="width:100%;padding:8px 10px;border-radius:8px;border:1px solid #86efac;font-size:13px;background:#fff">
+          <option value="LIMIT">Limit — at scanner entry price</option>
+          <option value="MARKET">Market — at current price</option>
+        </select>
+      </div>
+    </div>
     <div class="modal-acts" style="margin-top:22px">
       <button class="modal-cancel" onclick="_eswClose()">Cancel</button>
       <button class="modal-confirm" onclick="_eswSubmit()">Enter Trade</button>
@@ -1668,8 +1680,17 @@ function _eswOpen(candidate){
   document.getElementById('eswSub').textContent='Stop ₹'+(candidate.stop_loss||'—')+' · T1 ₹'+(candidate.target1||'—')+(candidate.target2?' · T2 ₹'+candidate.target2:'')+(candidate.rr_ratio?' · RR '+candidate.rr_ratio:'');
   document.getElementById('eswPrice').value=candidate.current_price||'';
   document.getElementById('eswQty').value='';
+  const isInd=(candidate.ticker||'').endsWith('.NS')||(candidate.ticker||'').endsWith('.BO');
+  document.getElementById('eswKiteRow').style.display=isInd?'block':'none';
+  document.getElementById('eswKiteOrder').checked=false;
+  document.getElementById('eswOrderTypeRow').style.display='none';
   document.getElementById('enterSwModal').classList.remove('hidden');
   setTimeout(()=>document.getElementById('eswQty').focus(),80);
+}
+
+function _eswToggleKite(){
+  document.getElementById('eswOrderTypeRow').style.display=
+    document.getElementById('eswKiteOrder').checked?'block':'none';
 }
 
 function _eswClose(){document.getElementById('enterSwModal').classList.add('hidden');_eswCandidate=null;}
@@ -1678,6 +1699,8 @@ async function _eswSubmit(){
   const qty=parseFloat(document.getElementById('eswQty').value);
   if(!qty||isNaN(qty)||qty<=0){alert('Enter a valid quantity.');return;}
   const c=_eswCandidate;
+  const placeKite=document.getElementById('eswKiteOrder').checked;
+  const orderType=document.getElementById('eswOrderType').value;
   _eswClose();
   _showSpinner('Opening swing position…');
   try{
@@ -1693,8 +1716,21 @@ async function _eswSubmit(){
     };
     const r=await fetch(`${API}/swing/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(position)});
     const res=await r.json();
-    if(res.status==='ok'||res.positions>=0){_swL=false;await loadSwing();_hideSpinner();}
-    else{_hideSpinner();alert('Error: '+JSON.stringify(res));}
+    if(res.status==='ok'||res.positions>=0){
+      _swL=false;await loadSwing();
+      if(placeKite){
+        const nseSymbol=(c.ticker||'').replace(/\.NS$/i,'').replace(/\.BO$/i,'');
+        const kiteRes=await fetch(`${API}/kite/place-order`,{method:'POST',headers:_postHeaders(),body:JSON.stringify({
+          symbol:nseSymbol,side:'BUY',quantity:Math.round(qty),
+          order_type:orderType,price:orderType==='LIMIT'?parseFloat(c.current_price):undefined,
+          product:'CNC',tag:'sw-advisor'
+        })});
+        const kiteData=await kiteRes.json();
+        _hideSpinner();
+        if(kiteData.order_id){alert('✅ Swing position added & Zerodha order placed!\nOrder ID: '+kiteData.order_id);}
+        else{alert('Swing position added.\n⚠️ Zerodha order failed: '+(kiteData.error||JSON.stringify(kiteData)));}
+      }else{_hideSpinner();}
+    }else{_hideSpinner();alert('Error: '+JSON.stringify(res));}
   }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
 }
 
