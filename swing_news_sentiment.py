@@ -50,6 +50,11 @@ DATA_DIR                 = os.getenv("DATA_DIR", "/data")
 API_URL                  = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
 SWING_SENTIMENT_FILE     = os.path.join(DATA_DIR, "swing_news_sentiment.json")
 
+ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+LLM_MODEL     = "claude-haiku-4-5-20251001"
+LLM_ENABLED   = bool(ANTHROPIC_KEY)
+
 SCAN_DAYS   = 7     # last 7 days — wider window to catch more headlines
 MIN_MATCHES = 2     # minimum headline hits before applying signal
 MAX_ITEMS   = 60    # per feed
@@ -727,7 +732,109 @@ def fetch_all_feeds() -> list:
 
 
 # ─────────────────────────────────────────────
-# SCORER
+# LLM SECTOR SCORER
+# ─────────────────────────────────────────────
+
+def _get_sector_headlines(items: list) -> dict:
+    """Filter up to 15 relevant headlines per sector using keyword presence."""
+    result = {s: [] for s in SECTOR_KEYWORDS}
+    for item in items:
+        text = (item["title"] + " " + item.get("body", "")).lower()
+        for sector, kw in SECTOR_KEYWORDS.items():
+            if len(result[sector]) >= 15:
+                continue
+            all_kw = kw.get("positive", []) + kw.get("negative", [])
+            if any(k in text for k in all_kw):
+                result[sector].append(item["title"])
+    return result
+
+
+def llm_score_sectors(items: list) -> dict | None:
+    """
+    Call Claude Haiku with sector-relevant headlines to get near-term verdicts.
+    Returns {sector: {signal, score, matches, reason}} matching aggregate_sentiment
+    format, or None if unavailable/failed (caller falls back to keyword scoring).
+    """
+    sector_headlines = _get_sector_headlines(items)
+
+    sectors_block = []
+    for sector, headlines in sector_headlines.items():
+        bullets = "\n".join(f"  - {h[:100]}" for h in headlines) if headlines else "  (no relevant headlines found)"
+        sectors_block.append(f"{sector}:\n{bullets}")
+
+    sector_template = "\n".join(
+        f'  "{s}": {{"signal": "neutral", "reason": "..."}}'
+        for s in SECTOR_KEYWORDS
+    )
+
+    prompt = f"""You are a senior equity analyst for an Indian equity portfolio. Analyse the past 7 days of financial news headlines and rate the near-term outlook for each of the 20 NSE sectors for swing trading (1–4 week horizon).
+
+Signal options (pick exactly one per sector):
+- positive: multiple strong positive signals, clear near-term tailwind
+- mild_positive: more good news than bad, moderate tailwind
+- neutral: mixed or insufficient signals
+- cautious: more bad news than good, sector headwinds
+- negative: multiple strong negative signals, avoid for swing trades
+
+HEADLINES BY SECTOR (past 7 days):
+{"=" * 60}
+{chr(10).join(sectors_block)}
+{"=" * 60}
+
+Return ONLY a JSON object with exactly these 20 sector keys — no markdown, no preamble:
+{{
+{sector_template}
+}}"""
+
+    try:
+        resp = requests.post(
+            ANTHROPIC_API,
+            headers={
+                "x-api-key":         ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type":      "application/json",
+            },
+            json={
+                "model":      LLM_MODEL,
+                "max_tokens": 1500,
+                "messages":   [{"role": "user", "content": prompt}],
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["content"][0]["text"].strip()
+
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-z]*\n?", "", raw)
+            raw = re.sub(r"\n?```$", "", raw)
+
+        parsed = json.loads(raw.strip())
+
+        VALID_SIGNALS = {"positive", "mild_positive", "neutral", "cautious", "negative"}
+        result = {}
+        for sector in SECTOR_KEYWORDS:
+            entry  = parsed.get(sector, {})
+            signal = entry.get("signal", "neutral")
+            if signal not in VALID_SIGNALS:
+                signal = "neutral"
+            result[sector] = {
+                "score":   0,
+                "signal":  signal,
+                "matches": len(sector_headlines.get(sector, [])),
+                "reason":  entry.get("reason", "LLM verdict."),
+            }
+
+        n_nonneut = sum(1 for v in result.values() if v["signal"] != "neutral")
+        print(f"  ✅ LLM scored 20 sectors ({n_nonneut} non-neutral)")
+        return result
+
+    except Exception as e:
+        print(f"  ⚠️  LLM sector scoring failed: {e} — falling back to keyword scoring")
+        return None
+
+
+# ─────────────────────────────────────────────
+# KEYWORD SCORER (fallback)
 # ─────────────────────────────────────────────
 
 def score_headline(title: str, body: str, sector: str) -> float:
@@ -868,7 +975,7 @@ def run_scan(test_mode: bool = False):
     print(f"\n{'='*60}")
     print(f"  📰 SWING NEWS SENTIMENT — 20 NSE SECTORS")
     print(f"  {datetime.now(IST).strftime('%d %B %Y, %I:%M %p IST')}")
-    print(f"  Window: {SCAN_DAYS} days | Min matches: {MIN_MATCHES}")
+    print(f"  Window: {SCAN_DAYS} days | Min matches: {MIN_MATCHES} | LLM: {'enabled' if LLM_ENABLED else 'disabled'}")
     print(f"{'='*60}\n")
 
     print("  Fetching RSS feeds...\n")
@@ -880,7 +987,14 @@ def run_scan(test_mode: bool = False):
         return None
 
     print(f"\n  Scoring {len(items)} headlines across 20 sectors...\n")
-    signals = aggregate_sentiment(items)
+    signals = None
+    if LLM_ENABLED:
+        print(f"  🤖 LLM sector analysis (Claude {LLM_MODEL})...")
+        signals = llm_score_sectors(items)
+    if signals is None:
+        if LLM_ENABLED:
+            print(f"  ↩️  Falling back to keyword scoring...")
+        signals = aggregate_sentiment(items)
 
     # Print results
     print(f"\n  {'SECTOR':<35} {'SIGNAL':<14} {'SCORE':>6}  {'MATCHES':>7}")
