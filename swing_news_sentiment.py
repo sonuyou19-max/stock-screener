@@ -16,7 +16,7 @@ Sentiment scale:
   cautious      → −1 penalty
   negative      → HARD EXCLUDE (stock removed regardless of technicals)
 
-Schedule: 30 13 * * 1-5  (7:00 PM IST = 13:30 UTC, runs 30 min before swing-scanner at 14:00 UTC)
+Schedule: 0 17 * * 0-6  (10:30 PM IST = 17:00 UTC, captures full business day; swing-scanner runs 30 min later at 17:30 UTC)
 
 Usage:
   python swing_news_sentiment.py           # run scan
@@ -56,10 +56,13 @@ ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 LLM_MODEL     = "claude-haiku-4-5-20251001"
 LLM_ENABLED   = bool(ANTHROPIC_KEY)
 
-SCAN_DAYS        = 7   # last 7 days — wider window to catch more headlines
-MIN_MATCHES      = 2   # minimum headline hits before applying signal
-MAX_ITEMS        = 60  # per feed
-HISTORY_MAX_DAYS = 30  # rolling window kept in history file
+SCAN_DAYS           = 1   # only today's headlines — blending with history avoids duplicate scanning
+MIN_MATCHES         = 1   # 1-day window yields fewer items so lower threshold
+MAX_ITEMS           = 60  # per feed
+HISTORY_MAX_DAYS    = 30  # rolling window kept in history file
+HISTORY_BLEND_DAYS  = 7   # how many past days to blend with today's raw signal
+HISTORY_BLEND_TODAY = 0.40  # weight given to today's raw signal
+HISTORY_BLEND_PAST  = 0.60  # weight given to rolling history average
 
 HEADERS = {
     "User-Agent": (
@@ -769,7 +772,7 @@ def llm_score_sectors(items: list) -> dict | None:
         for s in SECTOR_KEYWORDS
     )
 
-    prompt = f"""You are a senior equity analyst for an Indian equity portfolio. Analyse the past 7 days of financial news headlines and rate the near-term outlook for each of the 20 NSE sectors for swing trading (1–4 week horizon).
+    prompt = f"""You are a senior equity analyst for an Indian equity portfolio. Analyse today's financial news headlines and rate the near-term outlook for each of the 20 NSE sectors for swing trading (1–4 week horizon).
 
 Signal options (pick exactly one per sector):
 - positive: multiple strong positive signals, clear near-term tailwind
@@ -778,7 +781,7 @@ Signal options (pick exactly one per sector):
 - cautious: more bad news than good, sector headwinds
 - negative: multiple strong negative signals, avoid for swing trades
 
-HEADLINES BY SECTOR (past 7 days):
+HEADLINES BY SECTOR (today):
 {"=" * 60}
 {chr(10).join(sectors_block)}
 {"=" * 60}
@@ -834,6 +837,75 @@ Return ONLY a JSON object with exactly these 20 sector keys — no markdown, no 
     except Exception as e:
         print(f"  ⚠️  LLM sector scoring failed: {e} — falling back to keyword scoring")
         return None
+
+
+# ─────────────────────────────────────────────
+# HISTORY BLENDING
+# ─────────────────────────────────────────────
+
+_SIGNAL_TO_INT = {"positive": 2, "mild_positive": 1, "neutral": 0, "cautious": -1, "negative": -2}
+_SIGNAL_SCORES = {"positive": 5.0, "mild_positive": 2.0, "neutral": 0.0, "cautious": -2.0, "negative": -5.0}
+
+
+def _int_to_signal(avg: float) -> str:
+    if avg >= 1.5:   return "positive"
+    if avg >= 0.5:   return "mild_positive"
+    if avg <= -1.5:  return "negative"
+    if avg <= -0.5:  return "cautious"
+    return "neutral"
+
+
+def blend_with_history(raw_signals: dict) -> dict:
+    """
+    Blend today's raw signals (40%) with the rolling history average (60%).
+    If no history exists, returns raw_signals unchanged.
+    History entries saved before today are used (today not yet appended).
+    """
+    history = []
+    if os.path.exists(SWING_HISTORY_FILE):
+        try:
+            with open(SWING_HISTORY_FILE) as f:
+                history = json.load(f)
+        except Exception:
+            pass
+
+    today_str = str(date.today())
+    past = [h for h in history if h.get("date") != today_str][-HISTORY_BLEND_DAYS:]
+
+    if not past:
+        print(f"  ℹ️  No history yet — using today's raw signals as-is")
+        return raw_signals
+
+    blended = {}
+    for sector in SECTOR_KEYWORDS:
+        today_int = _SIGNAL_TO_INT.get(raw_signals.get(sector, {}).get("signal", "neutral"), 0)
+        hist_ints = [
+            _SIGNAL_TO_INT.get(h.get("signals", {}).get(sector, {}).get("signal", "neutral"), 0)
+            for h in past
+        ]
+        hist_avg = sum(hist_ints) / len(hist_ints)
+        blended_val = HISTORY_BLEND_TODAY * today_int + HISTORY_BLEND_PAST * hist_avg
+        signal = _int_to_signal(blended_val)
+        raw = raw_signals.get(sector, {})
+        blended[sector] = {
+            "score":   _SIGNAL_SCORES[signal],
+            "signal":  signal,
+            "matches": raw.get("matches", 0),
+            "reason":  (
+                f"Blended: today={raw.get('signal','neutral')} "
+                f"({HISTORY_BLEND_TODAY:.0%}), "
+                f"{len(past)}-day hist avg={hist_avg:+.2f} "
+                f"({HISTORY_BLEND_PAST:.0%}) → {signal}. "
+                + raw.get("reason", "")
+            )[:200],
+        }
+
+    n_changed = sum(
+        1 for s in SECTOR_KEYWORDS
+        if blended[s]["signal"] != raw_signals.get(s, {}).get("signal")
+    )
+    print(f"  🔀 Blended with {len(past)}-day history — {n_changed} sector(s) changed signal")
+    return blended
 
 
 # ─────────────────────────────────────────────
@@ -943,23 +1015,6 @@ def save_signals(signals: dict, items: list):
         json.dump(output, f, indent=2)
     print(f"\n  ✅ Signals saved: {SWING_SENTIMENT_FILE}")
 
-    # Append to rolling history so monthly screener can aggregate instead of re-scanning
-    try:
-        history = []
-        if os.path.exists(SWING_HISTORY_FILE):
-            with open(SWING_HISTORY_FILE) as f:
-                history = json.load(f)
-        # Remove any existing entry for today (idempotent re-runs)
-        today_str = str(date.today())
-        history = [h for h in history if h.get("date") != today_str]
-        history.append({"date": today_str, "signals": signals})
-        history = history[-HISTORY_MAX_DAYS:]
-        with open(SWING_HISTORY_FILE, "w") as f:
-            json.dump(history, f, indent=2)
-        print(f"  ✅ History updated: {len(history)} days in rolling window")
-    except Exception as e:
-        print(f"  ⚠️  History append failed (non-fatal): {e}")
-
     # POST to API
     try:
         payload = json.dumps(
@@ -1007,16 +1062,38 @@ def run_scan(test_mode: bool = False):
         return None
 
     print(f"\n  Scoring {len(items)} headlines across 20 sectors...\n")
-    signals = None
+    raw_signals = None
     if LLM_ENABLED:
         print(f"  🤖 LLM sector analysis (Claude {LLM_MODEL})...")
-        signals = llm_score_sectors(items)
-    if signals is None:
+        raw_signals = llm_score_sectors(items)
+    if raw_signals is None:
         if LLM_ENABLED:
             print(f"  ↩️  Falling back to keyword scoring...")
-        signals = aggregate_sentiment(items)
+        raw_signals = aggregate_sentiment(items)
 
-    # Print results
+    # Append RAW signals to rolling history (before blending)
+    if not test_mode:
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            history = []
+            if os.path.exists(SWING_HISTORY_FILE):
+                with open(SWING_HISTORY_FILE) as f:
+                    history = json.load(f)
+            today_str = str(date.today())
+            history = [h for h in history if h.get("date") != today_str]
+            history.append({"date": today_str, "signals": raw_signals})
+            history = history[-HISTORY_MAX_DAYS:]
+            with open(SWING_HISTORY_FILE, "w") as f:
+                json.dump(history, f, indent=2)
+            print(f"  ✅ Raw signals saved to history: {len(history)} days in rolling window")
+        except Exception as e:
+            print(f"  ⚠️  History append failed (non-fatal): {e}")
+
+    # Blend today's raw with rolling history for stability
+    print(f"\n  Blending today's signals with {HISTORY_BLEND_DAYS}-day history...")
+    signals = blend_with_history(raw_signals)
+
+    # Print results (blended)
     print(f"\n  {'SECTOR':<35} {'SIGNAL':<14} {'SCORE':>6}  {'MATCHES':>7}")
     print(f"  {'─'*35} {'─'*14} {'─'*6}  {'─'*7}")
     for sector, sig in sorted(signals.items()):
