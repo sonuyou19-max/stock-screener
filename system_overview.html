@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Equity Advisor — How It Works</title>
+<style>
+:root {
+  --bg:#0a0a0f;--surface:#16161d;--surface2:#1e1e28;--surface3:#252532;
+  --text:#e8e8f0;--text2:#9b9bb0;--text3:#5a5a70;
+  --gold:#d4a753;--green:#30d158;--red:#ff6259;--blue:#6ea8fe;
+  --purple:#bf5af2;--orange:#ff9f0a;--teal:#5ac8fa;
+}
+*{box-sizing:border-box;margin:0;padding:0;}
+body{background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;min-height:100vh;}
+
+/* ── HEADER ── */
+.hdr{background:var(--surface);border-bottom:1px solid rgba(255,255,255,.07);padding:18px 20px;display:flex;align-items:center;gap:12px;}
+.hdr-logo{width:38px;height:38px;background:linear-gradient(135deg,#d4a753,#b8872e);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;}
+.hdr-t{font-size:17px;font-weight:700;}
+.hdr-s{font-size:11px;color:var(--text3);margin-top:2px;}
+
+/* ── TABS ── */
+.tabs{display:flex;background:var(--surface);border-bottom:1px solid rgba(255,255,255,.06);padding:0 16px;overflow-x:auto;-webkit-overflow-scrolling:touch;}
+.tab{padding:13px 18px;font-size:13px;font-weight:600;color:var(--text3);cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;transition:all .2s;user-select:none;}
+.tab.active{color:var(--gold);border-bottom-color:var(--gold);}
+.tab:hover:not(.active){color:var(--text2);}
+
+/* ── CONTENT ── */
+.pg{display:none;padding:20px 16px 40px;max-width:860px;margin:0 auto;}
+.pg.active{display:block;}
+
+/* ── INTRO CARD ── */
+.intro{background:var(--surface);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:16px 18px;font-size:13px;color:var(--text2);line-height:1.65;margin-bottom:22px;}
+.intro b{color:var(--text);}
+
+/* ── INFRA BADGES ── */
+.badge{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;text-transform:uppercase;letter-spacing:.5px;vertical-align:middle;}
+.b-rail{background:rgba(124,58,237,.2);color:#a78bfa;border:1px solid rgba(124,58,237,.3);}
+.b-vps{background:rgba(14,165,233,.15);color:#38bdf8;border:1px solid rgba(14,165,233,.25);}
+.b-net{background:rgba(0,200,160,.15);color:#34d399;border:1px solid rgba(0,200,160,.25);}
+.b-zrd{background:rgba(212,168,83,.15);color:var(--gold);border:1px solid rgba(212,168,83,.25);}
+.b-cron{background:rgba(255,159,10,.15);color:#ffb340;border:1px solid rgba(255,159,10,.25);}
+
+/* ── FLOW ── */
+.flow{display:flex;flex-direction:column;}
+.fstep{display:flex;gap:14px;position:relative;}
+.ftl{display:flex;flex-direction:column;align-items:center;width:36px;flex-shrink:0;}
+.fdot{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:15px;flex-shrink:0;position:relative;z-index:1;}
+.fline{width:2px;flex:1;min-height:20px;margin:3px 0;}
+.fbody{flex:1;padding-bottom:18px;}
+
+/* ── STEP CARD ── */
+.scard{background:var(--surface);border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:14px 16px;cursor:pointer;transition:all .2s;}
+.scard:hover{border-color:rgba(255,255,255,.13);background:var(--surface2);}
+.scard.open{border-color:rgba(212,168,83,.3);background:var(--surface2);}
+.sc-top{display:flex;align-items:center;gap:10px;}
+.sc-title{font-size:13px;font-weight:700;flex:1;}
+.sc-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;}
+.sc-caret{font-size:10px;color:var(--text3);transition:transform .25s;margin-left:4px;}
+.scard.open .sc-caret{transform:rotate(90deg);}
+.sc-detail{display:none;margin-top:12px;padding-top:12px;border-top:1px solid rgba(255,255,255,.06);}
+.scard.open .sc-detail{display:block;}
+
+.drow{display:flex;align-items:flex-start;gap:8px;padding:4px 0;font-size:12px;color:var(--text2);line-height:1.5;}
+.dic{font-size:13px;flex-shrink:0;margin-top:1px;}
+
+/* ── CODE ── */
+.code{background:var(--surface3);border-radius:8px;padding:8px 12px;font-family:monospace;font-size:11px;color:#a8d8a8;margin-top:8px;line-height:1.6;}
+
+/* ── HIGHLIGHT ── */
+.hl{background:rgba(212,168,83,.07);border:1px solid rgba(212,168,83,.18);border-radius:10px;padding:10px 13px;font-size:12px;color:var(--text2);margin-top:10px;line-height:1.6;}
+.hl b{color:var(--gold);}
+
+/* ── STAT ROW ── */
+.stats{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 0;}
+.stat{background:var(--surface3);border-radius:10px;padding:9px 13px;flex:1;min-width:80px;}
+.sl{font-size:10px;color:var(--text3);text-transform:uppercase;letter-spacing:.4px;margin-bottom:3px;}
+.sv{font-size:15px;font-weight:700;}
+
+/* ── STATUS PILLS ── */
+.pill{display:inline-flex;align-items:center;gap:4px;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;}
+.p-q{background:rgba(110,168,254,.15);color:var(--blue);}
+.p-p{background:rgba(212,168,83,.15);color:var(--gold);}
+.p-f{background:rgba(48,209,88,.15);color:var(--green);}
+.p-c{background:rgba(255,98,89,.15);color:var(--red);}
+
+/* ── TIMELINE ── */
+.timeline{display:flex;flex-direction:column;gap:6px;margin-top:10px;}
+.tl-row{display:flex;align-items:center;gap:10px;font-size:12px;}
+.tl-time{font-family:monospace;font-size:11px;font-weight:700;color:var(--text3);width:60px;flex-shrink:0;}
+.tl-bar{flex:1;height:28px;border-radius:6px;display:flex;align-items:center;padding:0 10px;font-weight:600;font-size:11px;gap:6px;}
+
+/* ── ARCHITECTURE MAP ── */
+.arch{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:22px;}
+.arch-box{background:var(--surface);border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:14px;text-align:center;}
+.arch-icon{font-size:24px;margin-bottom:6px;}
+.arch-name{font-size:12px;font-weight:700;margin-bottom:4px;}
+.arch-desc{font-size:10px;color:var(--text3);line-height:1.5;}
+
+/* ── ANIMATE DOT ── */
+@keyframes pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+.live-dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);animation:pulse 2s infinite;vertical-align:middle;margin-right:3px;}
+
+/* ── SECTION HEADER ── */
+.sec-hdr{display:flex;align-items:center;gap:10px;margin-bottom:16px;}
+.sec-icon{width:40px;height:40px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0;}
+.sec-title{font-size:18px;font-weight:700;}
+.sec-sub{font-size:12px;color:var(--text3);margin-top:2px;}
+
+/* Mobile */
+@media(max-width:480px){
+  .arch{grid-template-columns:1fr;gap:8px;}
+  .pg{padding:16px 12px 40px;}
+}
+</style>
+</head>
+<body>
+
+<div class="hdr">
+  <div class="hdr-logo">📈</div>
+  <div>
+    <div class="hdr-t">Equity Advisor</div>
+    <div class="hdr-s">How the system works — interactive overview</div>
+  </div>
+</div>
+
+<div class="tabs">
+  <div class="tab active" onclick="showTab('ind')">🇮🇳 India Monthly</div>
+  <div class="tab" onclick="showTab('swing')">⚡ Swing Trading</div>
+  <div class="tab" onclick="showTab('intel')">🧠 Intelligence Layer</div>
+</div>
+
+<!-- ════════════════════════════════════ INDIA MONTHLY ════════════════════════════════════ -->
+<div class="pg active" id="pg-ind">
+
+  <div class="sec-hdr">
+    <div class="sec-icon" style="background:rgba(212,168,83,.15);">🏦</div>
+    <div>
+      <div class="sec-title">India Monthly Portfolio</div>
+      <div class="sec-sub">Long-term investing — Nifty 500 screener, AI advisory, automated queue execution</div>
+    </div>
+  </div>
+
+  <div class="intro">
+    <b>Goal:</b> Pick the top 10 Indian stocks monthly from Nifty 500 using fundamentals + sentiment + momentum.
+    You review the AI advisory, decide which to buy, queue them — and the system executes at 9:15 AM, places a trailing stop-loss GTT on fill, and updates stops daily at 2:30 PM.
+  </div>
+
+  <div class="arch">
+    <div class="arch-box">
+      <div class="arch-icon">🚂</div>
+      <div class="arch-name">Railway</div>
+      <div class="arch-desc">API server, screener, sentiment services. Always-on cloud.</div>
+    </div>
+    <div class="arch-box">
+      <div class="arch-icon">🖥️</div>
+      <div class="arch-name">Oracle VPS</div>
+      <div class="arch-desc">Zerodha order execution. Static IP required by SEBI.</div>
+    </div>
+    <div class="arch-box">
+      <div class="arch-icon">📱</div>
+      <div class="arch-name">Dashboard</div>
+      <div class="arch-desc">Netlify-hosted. Your control panel on mobile.</div>
+    </div>
+  </div>
+
+  <div class="flow">
+
+    <!-- STEP 1 -->
+    <div class="fstep">
+      <div class="ftl">
+        <div class="fdot" style="background:rgba(212,168,83,.2);border:2px solid var(--gold);">🔍</div>
+        <div class="fline" style="background:rgba(212,168,83,.25);"></div>
+      </div>
+      <div class="fbody">
+        <div class="scard" onclick="toggle(this)">
+          <div class="sc-top">
+            <div class="sc-title">Monthly Screener runs</div>
+            <div class="sc-meta">
+              <span class="badge b-rail">Railway</span>
+              <span class="badge b-cron">Monthly · Manual</span>
+            </div>
+            <span class="sc-caret">▶</span>
+          </div>
+          <div class="sc-detail">
+            <div class="drow"><span class="dic">📊</span><span>Screens entire <b>Nifty 500</b> universe — ~500 stocks ranked by composite score</span></div>
+            <div class="drow"><span class="dic">⚙️</span><span>Score = fundamentals (ROE, PE, PEG, revenue growth, D/E) + momentum (1M, 3M, 6M) + sector sentiment bonus/penalty</span></div>
+            <div class="drow"><span class="dic">📐</span><span>ATR-based stop-loss computed per stock using 14-day historical data from yfinance</span></div>
+            <div class="drow"><span class="dic">🤖</span><span>Claude LLM generates monthly advisory: action (HOLD / ADD / EXIT), holdings health, top picks with rationale</span></div>
+            <div class="drow"><span class="dic">📤</span><span>Results posted to: <code>/portfolio/picks/upload</code> · <code>/portfolio/advisory/upload</code></span></div>
+            <div class="code">screener.py → /portfolio/advisory (advisory + top_picks list)
+screener.py → /portfolio/picks  (full bucket with ATR data)</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 2 -->
+    <div class="fstep">
+      <div class="ftl">
+        <div class="fdot" style="background:rgba(212,168,83,.2);border:2px solid var(--gold);">📱</div>
+        <div class="fline" style="background:rgba(212,168,83,.25);"></div>
+      </div>
+      <div class="fbody">
+        <div class="scard" onclick="toggle(this)">
+          <div class="sc-top">
+            <div class="sc-title">You review Advisory on dashboard</div>
+            <div class="sc-meta">
+              <span class="badge b-net">Netlify</span>
+            </div>
+            <span class="sc-caret">▶</span>
+          </div>
+          <div class="sc-detail">
+            <div class="drow"><span class="dic">📋</span><span><b>Monthly Advisory section</b> shows: AI action recommendation, holdings health (HOLD/TRIM/EXIT verdict per stock), top picks ranked by score</span></div>
+            <div class="drow"><span class="dic">🎯</span><span>Per-pick entry info fetched live from Zerodha: 20-DMA, 50-DMA, optimal entry, 14-day ATR trailing stop</span></div>
+            <div class="drow"><span class="dic">📦</span><span>Per-pick actions: <b>Q</b> = queue for 9:15 AM · <b>+</b> = add to portfolio immediately · <b>ORDER</b> = send to Zerodha now</span></div>
+            <div class="hl"><b>Stock Picks section</b> (top of India tab) shows only your <b>actual live holdings</b>. Advisory section shows screener recommendations — separate until you consciously move them.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 3 -->
+    <div class="fstep">
+      <div class="ftl">
+        <div class="fdot" style="background:rgba(212,168,83,.2);border:2px solid var(--gold);">🕘</div>
+        <div class="fline" style="background:rgba(212,168,83,.25);"></div>
+      </div>
+      <div class="fbody">
+        <div class="scard" onclick="toggle(this)">
+          <div class="sc-top">
+            <div class="sc-title">9:15 AM — Orders placed automatically</div>
+            <div class="sc-meta">
+              <span class="badge b-vps">Oracle VPS</span>
+              <span class="badge b-cron">Cron 9:15 AM IST</span>
+            </div>
+            <span class="sc-caret">▶</span>
+          </div>
+          <div class="sc-detail">
+            <div class="drow"><span class="dic">📂</span><span><code>india_entry.py</code> fetches all <span class="pill p-q">queued</span> BUY entries from Railway</span></div>
+            <div class="drow"><span class="dic">💹</span><span>Gets live open price from Zerodha (kite_executor.py on VPS port 5001)</span></div>
+            <div class="drow"><span class="dic">⚖️</span><span>Decision logic:</span></div>
+            <div class="code">live > max gate (+3%)  → ⏭ SKIP  (gap-up, R/R broken)
+live ≤ 20-DMA entry   → MARKET order at open
+live between entry    → LIMIT order at 20-DMA
+  and gate</div>
+            <div class="drow" style="margin-top:8px"><span class="dic">📲</span><span>Telegram notification sent with order summary</span></div>
+            <div class="drow"><span class="dic">🔄</span><span>Status updated: <span class="pill p-q">queued</span> → <span class="pill p-p">order_placed</span></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 4 -->
+    <div class="fstep">
+      <div class="ftl">
+        <div class="fdot" style="background:rgba(48,209,88,.2);border:2px solid var(--green);">✅</div>
+        <div class="fline" style="background:rgba(48,209,88,.2);"></div>
+      </div>
+      <div class="fbody">
+        <div class="scard" onclick="toggle(this)">
+          <div class="sc-top">
+            <div class="sc-title">Fill detected → GTT stop-loss placed</div>
+            <div class="sc-meta">
+              <span class="badge b-rail">Railway</span>
+              <span class="badge b-zrd">Zerodha Webhook</span>
+            </div>
+            <span class="sc-caret">▶</span>
+          </div>
+          <div class="sc-detail">
+            <div class="drow"><span class="dic">📡</span><span>Zerodha sends a <b>postback webhook</b> to Railway <code>/kite/postback</code> instantly when order fills</span></div>
+            <div class="drow"><span class="dic">🏦</span><span>Stock auto-added to your <b>live portfolio</b> (portfolio_live.json) — appears in Stock Picks section on dashboard</span></div>
+            <div class="drow"><span class="dic">🛡️</span><span>Trailing stop-loss <b>GTT placed automatically</b> at: <code>fill_price − 1.5×ATR</code></span></div>
+            <div class="drow"><span class="dic">🔄</span><span>Status: <span class="pill p-p">order_placed</span> → <span class="pill p-f">filled</span> · GTT ID stored in queue</span></div>
+            <div class="hl"><b>If limit order doesn't fill by 3:15 PM:</b> india_cancel.py cancels it on Zerodha and resets status back to <span class="pill p-q">queued</span> — retries automatically tomorrow at 9:15 AM until price pulls back to 20-DMA.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 5 -->
+    <div class="fstep">
+      <div class="ftl">
+        <div class="fdot" style="background:rgba(91,200,250,.2);border:2px solid var(--teal);">🔁</div>
+        <div class="fline" style="background:rgba(91,200,250,.15);"></div>
+      </div>
+      <div class="fbody">
+        <div class="scard" onclick="toggle(this)">
+          <div class="sc-top">
+            <div class="sc-title">2:30 PM daily — Trailing stop ratcheted up</div>
+            <div class="sc-meta">
+              <span class="badge b-vps">Oracle VPS</span>
+              <span class="badge b-cron">Cron 2:30 PM IST</span>
+            </div>
+            <span class="sc-caret">▶</span>
+          </div>
+          <div class="sc-detail">
+            <div class="drow"><span class="dic">📈</span><span><code>trailing_stop.py</code> fetches all <span class="pill p-f">filled</span> India entries from Railway</span></div>
+            <div class="drow"><span class="dic">💹</span><span>Gets today's high from Zerodha for each position</span></div>
+            <div class="drow"><span class="dic">📐</span><span>New stop = <code>today's high − 1.5×ATR</code></span></div>
+            <div class="drow"><span class="dic">☝️</span><span>Stop is <b>only ever moved up</b> — never lowered. If new stop ≤ current stop, no change.</span></div>
+            <div class="drow"><span class="dic">🔔</span><span>Updates GTT on Zerodha + sends Telegram if stop moved</span></div>
+            <div class="hl"><b>Exit:</b> When price hits your GTT stop, Zerodha auto-sells. The postback fires → stock removed from live portfolio → trade logged to closed positions.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- STEP 6 -->
+    <div class="fstep">
+      <div class="ftl">
+        <div class="fdot" style="background:rgba(255,98,89,.2);border:2px solid var(--red);">📊</div>
+        <div class="fline" style="opacity:0;"></div>
+      </div>
+      <div class="fbody">
+        <div class="scard" onclick="toggle(this)">
+          <div class="sc-top">
+            <div class="sc-title">Performance tracked vs Nifty 50 & 500</div>
+            <div class="sc-meta">
+              <span class="badge b-rail">Railway</span>
+            </div>
+            <span class="sc-caret">▶</span>
+          </div>
+          <div class="sc-detail">
+            <div class="drow"><span class="dic">📸</span><span>Daily P&L snapshots saved to performance_history.json</span></div>
+            <div class="drow"><span class="dic">📉</span><span>Dashboard chart shows portfolio cumulative return vs Nifty 50 and Nifty 500 benchmarks (1W / 1M / 3M / 1Y)</span></div>
+            <div class="drow"><span class="dic">💰</span><span>Closed positions tracked with realised P&L, win rate, and date range</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /flow -->
+
+  <!-- Daily schedule -->
+  <div style="margin-top:8px;background:var(--surface);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:16px;">
+    <div style="font-size:13px;font-weight:700;margin-bottom:12px;">📅 Daily Schedule (IST)</div>
+    <div class="timeline">
+      <div class="tl-row">
+        <div class="tl-time">9:15 AM</div>
+        <div class="tl-bar" style="background:rgba(212,168,83,.12);color:var(--gold);">📥 india_entry.py — Place buy orders for queued stocks</div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-time">3:15 PM</div>
+        <div class="tl-bar" style="background:rgba(255,98,89,.1);color:var(--red);">⏸ india_cancel.py — Cancel unfilled LIMITs, re-queue for tomorrow</div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-time">2:30 PM</div>
+        <div class="tl-bar" style="background:rgba(91,200,250,.1);color:var(--teal);">📐 trailing_stop.py — Ratchet up GTT stops using day's high</div>
+      </div>
+      <div class="tl-row">
+        <div class="tl-time">Any time</div>
+        <div class="tl-bar" style="background:rgba(48,209,88,.1);color:var(--green);">⚡ /kite/postback — Fill detected, GTT placed, portfolio updated</div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /pg-ind -->
+
+
+<!-- ════════════════════════════════════ SWING ════════════════════════════════════ -->
+<div class="pg" id="pg-swing">
+
+  <div class="sec-hdr">
+    <div class="sec-icon" style="background:rgba(191,90,242,.15);">⚡</div>
+    <div>
+      <div class="sec-title">Swing Trading</div>
+      <div class="sec-sub">Short-term trades — daily scanner, news sentiment, R/R-based entries with auto GTT targets</div>
+    </div>
+  </div>
+
+  <div class="intro">
+    <b>Goal:</b> Identify 5–10 day momentum setups daily from Nifty 500. The scanner runs overnight, scores stocks on technical + sentiment signals, and presents candidates. You review and queue — orders execute at 9:15 AM with automated stop-loss and two take-profit GTTs placed on fill.
+  </div>
+
+  <div class="flow">
+
+    <!-- S1 -->
+    <div class="fstep">
+      <div class="ftl">
+        <div class="fdot" style="background:rgba(191,90,242,.2);border:2px solid var(--purple);">🌙</div>
+        <div class="fline" style="background:rgba(191,90,242,.25);"></div>
+      </div>
+      <div class="fbody">
+        <div class="scard" onclick="toggle(this)">
+          <div class="sc-top">
+            <div class="sc-title">Nightly scan — candidates identified</div>
+            <div class="sc-meta">
+              <span class="badge b-rail">Railway</span>
+              <span class="badge b-cron">10:30 PM IST daily</span>
+            </div>
+            <span class="sc-caret">▶</span>
+          </div>
+          <div class="sc-detail">
+            <div class="drow"><span class="dic">📡</span><span><code>swing_news_sentiment.py</code> fetches today's news headlines for each Nifty 500 sector</span></div>
+            <div class="drow"><span class="dic">🤖</span><span>Claude LLM scores each sector: <b>positive / mild_positive / neutral / cautious / negative</b></span></div>
+            <div class="drow"><span class="dic">📊</span><span>Technical scan scores stocks on: RSI, MACD, Bollinger, volume surge, 20-DMA position, momentum</span></div>
+            <div class="drow"><span class="dic">🎯</span><span>Combines tech score + sentiment score → top candidates with entry, stop, T1 (1.5×R), T2 (2.5×R), R/R ratio</span></div>
+            <div class="drow"><span class="dic">🔀</span><span>History blending: 40% today's signal + 60% 7-day rolling average → smooths out single-day noise</span></div>
+            <div class="drow"><span class="dic">📤</span><span>Results posted to Railway: <code>/signals/upload</code> (swing_news_sentiment) + <code>/swing/candidates/upload</code></span></div>
+            <div class="code">SCAN_DAYS = 1   (today's news only, blended with history)
+ATR_MULT  = 2.0 (stop = entry − 2×ATR)
+T1 = entry + 1.5 × risk
+T2 = entry + 2.5 × risk</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- S2 -->
+    <div class="fstep">
+      <div class="ftl">
+        <div class="fdot" style="background:rgba(191,90,242,.2);border:2px solid var(--purple);">👁️</div>
+        <div class="fline" style="background:rgba(191,90,242,.25);"></div>
+      </div>
+      <div class="fbody">
+        <div class="scard" onclick="toggle(this)">
+          <div class="sc-top">
+            <div class="sc-title">You review swing candidates on dashboard</div>
+            <div class="sc-meta">
+              <span class="badge b-net">Netlify</span>
+            </div>
+            <span class="sc-caret">▶</span>
+          </div>
+          <div class="sc-detail">
+            <div class="drow"><span class="dic">🃏</span><span><b>Swing tab</b> shows candidate cards sorted by score — entry price, stop-loss, T1, T2, conviction level, R/R ratio</span></div>
+            <div class="drow"><span class="dic">🏷️</span><span>Signal badges on each card: RSI oversold, MACD cross, BB squeeze, volume surge, gap-up, etc.</span></div>
+            <div class="drow"><span class="dic">🌐</span><span><b>Category Sentiment</b> section shows LLM's sector verdict (positive/cautious) — feeds into candidate scoring</span></div>
+            <div class="drow"><span class="dic">📦</span><span>Per-candidate actions: <b>Q</b> = queue for tomorrow's open · <b>Buy Now</b> = enter immediately at LTP</span></div>
+            <div class="hl">Queuing opens a modal with live Zerodha price, entry basis, ATR computed from 200-day OHLCV, suggested quantity for your risk budget.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- S3 -->
+    <div class="fstep">
+      <div class="ftl">
+        <div class="fdot" style="background:rgba(191,90,242,.2);border:2px solid var(--purple);">🕘</div>
+        <div class="fline" style="background:rgba(191,90,242,.25);"></div>
+      </div>
+      <div class="fbody">
+        <div class="scard" onclick="toggle(this)">
+          <div class="sc-top">
+            <div class="sc-title">9:15 AM — Swing entry orders placed</div>
+            <div class="sc-meta">
+              <span class="badge b-vps">Oracle VPS</span>
+              <span class="badge b-cron">Cron 9:15 AM IST</span>
+            </div>
+            <span class="sc-caret">▶</span>
+          </div>
+          <div class="sc-detail">
+            <div class="drow"><span class="dic">📂</span><span><code>swing_entry.py</code> fetches all <span class="pill p-q">queued</span> swing entries from Railway</span></div>
+            <div class="drow"><span class="dic">💹</span><span>Checks live open price vs optimal_entry and limit_price gate</span></div>
+            <div class="drow"><span class="dic">⚖️</span><span>Same logic as India: gap-up → skip, at/below entry → MARKET, between entry and gate → LIMIT</span></div>
+            <div class="drow"><span class="dic">📲</span><span>Telegram alert with entry summary for each stock</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- S4 -->
+    <div class="fstep">
+      <div class="ftl">
+        <div class="fdot" style="background:rgba(48,209,88,.2);border:2px solid var(--green);">🎯</div>
+        <div class="fline" style="background:rgba(48,209,88,.2);"></div>
+      </div>
+      <div class="fbody">
+        <div class="scard" onclick="toggle(this)">
+          <div class="sc-top">
+            <div class="sc-title">Fill detected → Stop + T1 + T2 GTTs placed</div>
+            <div class="sc-meta">
+              <span class="badge b-rail">Railway</span>
+              <span class="badge b-zrd">Zerodha Webhook</span>
+            </div>
+            <span class="sc-caret">▶</span>
+          </div>
+          <div class="sc-detail">
+            <div class="drow"><span class="dic">📡</span><span>Zerodha postback fires at <code>/kite/postback</code> instantly on fill</span></div>
+            <div class="drow"><span class="dic">📦</span><span>Stock added to <b>Swing Live Positions</b> panel on dashboard</span></div>
+            <div class="drow"><span class="dic">🛡️</span><span><b>Stop-loss GTT</b> placed at scan's computed stop price (ATR-based)</span></div>
+            <div class="drow"><span class="dic">🏆</span><span><b>Target 1 GTT</b> placed automatically: <code>entry + 1.5 × risk</code> (50% of position)</span></div>
+            <div class="drow"><span class="dic">🏆</span><span><b>Target 2 GTT</b> placed automatically: <code>entry + 2.5 × risk</code> (remaining 50%)</span></div>
+            <div class="code">GTT 1 (stop):  sell ALL @ stop_loss   (protective)
+GTT 2 (T1):   sell 50% @ target1    (partial profit)
+GTT 3 (T2):   sell 50% @ target2    (full exit)
+
+All three placed atomically on fill — no manual action needed.</div>
+            <div class="hl"><b>Note:</b> GTTs are mutually exclusive in intent but Zerodha doesn't link them — once T1 fires and sells 50%, you should manually cancel/update the stop GTT to cover only the remaining 50%.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- S5 -->
+    <div class="fstep">
+      <div class="ftl">
+        <div class="fdot" style="background:rgba(91,200,250,.2);border:2px solid var(--teal);">📐</div>
+        <div class="fline" style="opacity:0;"></div>
+      </div>
+      <div class="fbody">
+        <div class="scard" onclick="toggle(this)">
+          <div class="sc-top">
+            <div class="sc-title">2:30 PM daily — Trailing stop updated</div>
+            <div class="sc-meta">
+              <span class="badge b-vps">Oracle VPS</span>
+              <span class="badge b-cron">Cron 2:30 PM IST</span>
+            </div>
+            <span class="sc-caret">▶</span>
+          </div>
+          <div class="sc-detail">
+            <div class="drow"><span class="dic">📈</span><span>Same <code>trailing_stop.py</code> handles swing positions alongside India monthly</span></div>
+            <div class="drow"><span class="dic">💹</span><span>Fetches today's high for each open swing position</span></div>
+            <div class="drow"><span class="dic">☝️</span><span>If <code>today's high − 1.5×ATR > current stop</code> → update the stop GTT upward</span></div>
+            <div class="drow"><span class="dic">📆</span><span>Max hold period tracked — alerts if position has been open longer than scan's <code>max_days</code></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /flow -->
+
+  <div style="margin-top:16px;background:var(--surface);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:16px;">
+    <div style="font-size:13px;font-weight:700;margin-bottom:12px;">🎯 Risk/Reward Structure</div>
+    <div class="stats">
+      <div class="stat"><div class="sl">Stop</div><div class="sv" style="color:var(--red);">2×ATR</div></div>
+      <div class="stat"><div class="sl">Target 1</div><div class="sv" style="color:var(--gold);">1.5×R</div></div>
+      <div class="stat"><div class="sl">Target 2</div><div class="sv" style="color:var(--green);">2.5×R</div></div>
+      <div class="stat"><div class="sl">Min R/R</div><div class="sv" style="color:var(--blue);">1.5×</div></div>
+      <div class="stat"><div class="sl">Max Hold</div><div class="sv" style="color:var(--text2);">10 days</div></div>
+    </div>
+  </div>
+
+</div><!-- /pg-swing -->
+
+
+<!-- ════════════════════════════════════ INTELLIGENCE ════════════════════════════════════ -->
+<div class="pg" id="pg-intel">
+
+  <div class="sec-hdr">
+    <div class="sec-icon" style="background:rgba(110,168,254,.15);">🧠</div>
+    <div>
+      <div class="sec-title">Intelligence Layer</div>
+      <div class="sec-sub">News sentiment, earnings signals, LLM analysis — feeds both India Monthly and Swing services</div>
+    </div>
+  </div>
+
+  <div class="intro">
+    <b>Goal:</b> Provide context-aware market intelligence that adjusts stock scores and surfaces macro themes. Three pipelines run on Railway and feed their outputs into a shared signal store — the screener and swing scanner consume these signals when making decisions.
+  </div>
+
+  <div class="flow">
+
+    <!-- I1 -->
+    <div class="fstep">
+      <div class="ftl">
+        <div class="fdot" style="background:rgba(110,168,254,.2);border:2px solid var(--blue);">📰</div>
+        <div class="fline" style="background:rgba(110,168,254,.2);"></div>
+      </div>
+      <div class="fbody">
+        <div class="scard" onclick="toggle(this)">
+          <div class="sc-top">
+            <div class="sc-title">Swing News Sentiment — daily sector analysis</div>
+            <div class="sc-meta">
+              <span class="badge b-rail">Railway Service</span>
+              <span class="badge b-cron">10:30 PM IST daily</span>
+            </div>
+            <span class="sc-caret">▶</span>
+          </div>
+          <div class="sc-detail">
+            <div class="drow"><span class="dic">🌐</span><span>Scrapes today's financial news headlines from NSE/BSE sectors</span></div>
+            <div class="drow"><span class="dic">🤖</span><span>Claude LLM classifies each sector's news sentiment:
+              <br><b style="color:var(--green)">positive</b> / <b style="color:#86efac">mild_positive</b> / <b style="color:var(--text2)">neutral</b> / <b style="color:#fca5a5">cautious</b> / <b style="color:var(--red)">negative</b></span></div>
+            <div class="drow"><span class="dic">🔀</span><span><b>History blending:</b> raw signal weighted 40% today + 60% 7-day rolling average</span></div>
+            <div class="drow"><span class="dic">📤</span><span>Posts to Railway: <code>swing_news_sentiment</code> + <code>swing_sentiment_history</code></span></div>
+            <div class="drow"><span class="dic">📊</span><span><b>Dashboard:</b> "Category Sentiment (LLM Analysed)" section shows per-sector verdict with reasoning</span></div>
+            <div class="drow"><span class="dic">⚙️</span><span><b>Consumed by:</b> Swing scanner (sector bonus/penalty) + Monthly screener (sentiment_adj score)</span></div>
+            <div class="code">Score adj: positive → +5  mild_positive → +2
+           neutral  →  0  cautious     → −2  negative → −5</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- I2 -->
+    <div class="fstep">
+      <div class="ftl">
+        <div class="fdot" style="background:rgba(110,168,254,.2);border:2px solid var(--blue);">📈</div>
+        <div class="fline" style="background:rgba(110,168,254,.2);"></div>
+      </div>
+      <div class="fbody">
+        <div class="scard" onclick="toggle(this)">
+          <div class="sc-top">
+            <div class="sc-title">Monthly Earnings Sentiment — macro + earnings analysis</div>
+            <div class="sc-meta">
+              <span class="badge b-rail">Railway Service</span>
+              <span class="badge b-cron">Monthly · before screener</span>
+            </div>
+            <span class="sc-caret">▶</span>
+          </div>
+          <div class="sc-detail">
+            <div class="drow"><span class="dic">📋</span><span>Analyses recent earnings seasons: beat/miss rates per sector, guidance tone, revenue trends</span></div>
+            <div class="drow"><span class="dic">🏛️</span><span>Reads RBI/SEBI/PIB policy signals — rate decisions, liquidity, sector-specific regulations</span></div>
+            <div class="drow"><span class="dic">🤖</span><span>Claude LLM synthesises into per-sector earnings signal: <b>positive / neutral / cautious / negative</b></span></div>
+            <div class="drow"><span class="dic">🔗</span><span>First tries to load <b>swing_sentiment_history</b> from Railway — if available, blends with earnings data for richer context</span></div>
+            <div class="drow"><span class="dic">📤</span><span>Posts <code>monthly_earnings_sentiment</code> to Railway signals store</span></div>
+            <div class="drow"><span class="dic">⚙️</span><span><b>Consumed by:</b> Monthly screener's earnings_adj score adjustment per stock</span></div>
+            <div class="hl"><b>Cross-service data sharing:</b> swing_news_sentiment POSTs its history to <code>/signals/upload</code> so monthly_earnings_sentiment can read it even though they're separate Railway services with separate volumes.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- I3 -->
+    <div class="fstep">
+      <div class="ftl">
+        <div class="fdot" style="background:rgba(110,168,254,.2);border:2px solid var(--blue);">🏛️</div>
+        <div class="fline" style="background:rgba(110,168,254,.2);"></div>
+      </div>
+      <div class="fbody">
+        <div class="scard" onclick="toggle(this)">
+          <div class="sc-top">
+            <div class="sc-title">Signal Store — shared API across all services</div>
+            <div class="sc-meta">
+              <span class="badge b-rail">Railway API</span>
+            </div>
+            <span class="sc-caret">▶</span>
+          </div>
+          <div class="sc-detail">
+            <div class="drow"><span class="dic">🗄️</span><span>Railway API's <code>/signals</code> endpoint serves all collected intelligence in one response</span></div>
+            <div class="drow"><span class="dic">📦</span><span>Contains: <code>swing_news_sentiment</code> · <code>monthly_earnings_sentiment</code> · <code>swing_sentiment_history</code> · <code>policy_signals</code> · <code>llm_synthesis</code></span></div>
+            <div class="drow"><span class="dic">💾</span><span>Each signal type persisted to <code>/data/{type}.json</code> on Railway's persistent volume</span></div>
+            <div class="drow"><span class="dic">📱</span><span>Dashboard reads <code>/signals</code> at load time — powers Category Sentiment, AI Macro Verdict, sector badges</span></div>
+            <div class="code">GET /signals → {
+  swing_news_sentiment:     { signals: { IT: "positive", ... } },
+  monthly_earnings_sentiment: { ... },
+  swing_sentiment_history:  [ {date, signals}, ... ],
+  policy_signals:           { ... },
+  llm_synthesis:            { ... }
+}</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- I4 -->
+    <div class="fstep">
+      <div class="ftl">
+        <div class="fdot" style="background:rgba(110,168,254,.2);border:2px solid var(--blue);">🔄</div>
+        <div class="fline" style="opacity:0;"></div>
+      </div>
+      <div class="fbody">
+        <div class="scard" onclick="toggle(this)">
+          <div class="sc-top">
+            <div class="sc-title">How signals flow into stock scores</div>
+            <div class="sc-meta">
+              <span class="badge b-rail">Screener Logic</span>
+            </div>
+            <span class="sc-caret">▶</span>
+          </div>
+          <div class="sc-detail">
+            <div class="drow"><span class="dic">1️⃣</span><span><b>Base score</b> = fundamentals (ROE, PE, PEG, D/E, revenue growth) + momentum (1M, 3M, 6M)</span></div>
+            <div class="drow"><span class="dic">2️⃣</span><span><b>Sector sentiment adj</b> = swing_news_sentiment verdict for the stock's NSE sector (±0 to ±5 pts)</span></div>
+            <div class="drow"><span class="dic">3️⃣</span><span><b>Earnings adj</b> = monthly_earnings_sentiment verdict for sector (±0 to ±5 pts)</span></div>
+            <div class="drow"><span class="dic">4️⃣</span><span><b>Final score</b> = globally normalised across all 500 stocks → top 10 selected</span></div>
+            <div class="drow"><span class="dic">🚫</span><span>Stocks in sectors with <b>negative</b> sentiment are <b>excluded entirely</b> from picks (circuit breaker)</span></div>
+            <div class="code">final_score = base + sentiment_adj + earnings_adj
+             (normalised 0–100 across Nifty 500 universe)
+
+negative sector → stock excluded regardless of fundamentals</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /flow -->
+
+  <!-- Signal key -->
+  <div style="margin-top:16px;background:var(--surface);border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:16px;">
+    <div style="font-size:13px;font-weight:700;margin-bottom:12px;">📊 Signal Key</div>
+    <div style="display:flex;flex-direction:column;gap:6px;">
+      <div style="display:flex;align-items:center;gap:10px;font-size:12px;">
+        <span style="min-width:100px;font-weight:700;color:var(--green);">positive</span>
+        <span style="color:var(--text2);">+5 score bonus · sector included · confidence for new entries</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;font-size:12px;">
+        <span style="min-width:100px;font-weight:700;color:#86efac;">mild_positive</span>
+        <span style="color:var(--text2);">+2 score bonus · sector included · moderate confidence</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;font-size:12px;">
+        <span style="min-width:100px;font-weight:700;color:var(--text2);">neutral</span>
+        <span style="color:var(--text2);">No adjustment · fundamentals drive the decision</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;font-size:12px;">
+        <span style="min-width:100px;font-weight:700;color:#fca5a5;">cautious</span>
+        <span style="color:var(--text2);">−2 score penalty · sector still eligible · watch closely</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;font-size:12px;">
+        <span style="min-width:100px;font-weight:700;color:var(--red);">negative</span>
+        <span style="color:var(--text2);">−5 penalty + <b style="color:var(--red)">sector excluded entirely</b> from picks</span>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /pg-intel -->
+
+<script>
+function showTab(id){
+  document.querySelectorAll('.tab').forEach((t,i)=>{
+    t.classList.toggle('active', ['ind','swing','intel'][i]===id);
+  });
+  document.querySelectorAll('.pg').forEach(p=>{
+    p.classList.toggle('active', p.id==='pg-'+id);
+  });
+}
+function toggle(el){
+  const wasOpen=el.classList.contains('open');
+  // Close all siblings
+  el.closest('.flow,.pg').querySelectorAll('.scard.open').forEach(c=>c.classList.remove('open'));
+  if(!wasOpen) el.classList.add('open');
+}
+</script>
+</body>
+</html>
