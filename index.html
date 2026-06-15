@@ -606,6 +606,9 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
       Refresh
     </button>
+    <button class="refresh-btn" style="color:var(--red);border-color:rgba(255,98,89,.3)" onclick="adminReset()">
+      🗑 Reset
+    </button>
   </div>
 </header>
 
@@ -826,6 +829,15 @@ function refreshAll(){
   if(_cv==='indView')loadIndia();
   else if(_cv==='usView')loadUS();
   else if(_cv==='swingView')loadSwing();
+}
+async function adminReset(){
+  if(!confirm('Reset picks, advisories, queues and performance history?\n\nSentiments, FII/DII and live positions are preserved.'))return;
+  try{
+    const r=await fetch(`${API}/admin/reset`,{method:'POST',headers:_postHeaders()});
+    const d=await r.json();
+    if(d.status==='ok'){alert('✅ Reset done.\nDeleted: '+(d.deleted||[]).join(', ')||'nothing to delete');refreshAll();}
+    else alert('⚠️ Reset failed: '+(d.error||JSON.stringify(d)));
+  }catch(e){alert('⚠️ Error: '+e.message);}
 }
 
 /* ═══ INIT ═══ */
