@@ -2133,6 +2133,87 @@ def india_queue_update():
         return jsonify({"error": str(e)}), 500
 
 
+
+# ── Admin reset ───────────────────────────────────────────────────────────────
+
+@app.route("/admin/reset", methods=["POST", "OPTIONS"])
+def admin_reset():
+    """
+    Wipe all signals, picks, and advisory caches for a fresh start.
+    Preserves: FII/DII history, live portfolio positions (India/US/Swing),
+               trade history, performance history, swing sentiment history.
+    Requires X-Upload-Token header (same token used for uploads).
+    """
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    auth_err = _enforce_upload_token()
+    if auth_err:
+        return auth_err
+
+    global _signals_cache, _portfolio_cache, _picks_cache, _advisory_cache
+    global _us_picks_cache, _us_advisory_cache
+
+    # Clear in-memory signal/picks/advisory caches
+    _signals_cache   = {}
+    _portfolio_cache = {}
+    _picks_cache     = {}
+    _advisory_cache  = {}
+    _us_picks_cache  = {}
+    _us_advisory_cache = {}
+
+    # Files to delete (signals, screener picks, advisories, queues)
+    wipe_files = [
+        "policy_signals.json",
+        "news_signals.json",
+        "llm_synthesis.json",
+        "us_news_signals.json",
+        "us_llm_synthesis.json",
+        "swing_news_sentiment.json",
+        "monthly_earnings_sentiment.json",
+        "swing_candidates.json",
+        "swing_queue.json",
+        "india_queue.json",
+        "monthly_advisory.json",
+        "rebalance_report.json",
+        "us_monthly_advisory.json",
+        "us_portfolio_picks.json",
+    ]
+
+    deleted, skipped = [], []
+    for fname in wipe_files:
+        path = os.path.join(DATA_DIR, fname)
+        if os.path.exists(path):
+            os.remove(path)
+            deleted.append(fname)
+        else:
+            skipped.append(fname)
+
+    # Also delete screener portfolio_*.json picks files (not portfolio_live.json)
+    import glob as _glob
+    for path in _glob.glob(os.path.join(DATA_DIR, "portfolio_*.json")):
+        if "live" not in os.path.basename(path):
+            os.remove(path)
+            deleted.append(os.path.basename(path))
+
+    return jsonify({
+        "status": "ok",
+        "deleted": deleted,
+        "skipped_not_found": skipped,
+        "preserved": [
+            "fiidii_history.json",
+            "portfolio_live.json",
+            "us_portfolio_live.json",
+            "swing_live.json",
+            "swing_history.json",
+            "trade_history.json",
+            "performance_history.json",
+            "us_trade_history.json",
+            "us_performance_history.json",
+            "swing_sentiment_history.json",
+        ],
+    })
+
+
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 8000))
     app.run(host="0.0.0.0", port=port, debug=False)
