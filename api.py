@@ -2151,17 +2151,19 @@ def admin_reset():
         return auth_err
 
     global _signals_cache, _portfolio_cache, _picks_cache, _advisory_cache
-    global _us_picks_cache, _us_advisory_cache
+    global _us_picks_cache, _us_advisory_cache, _perf_cache, _us_perf_cache
 
-    # Clear in-memory signal/picks/advisory caches
-    _signals_cache   = {}
-    _portfolio_cache = {}
-    _picks_cache     = {}
-    _advisory_cache  = {}
-    _us_picks_cache  = {}
+    # Clear in-memory caches
+    _signals_cache     = {}
+    _portfolio_cache   = {}
+    _picks_cache       = {}
+    _advisory_cache    = {}
+    _us_picks_cache    = {}
     _us_advisory_cache = {}
+    _perf_cache        = []
+    _us_perf_cache     = []
 
-    # Files to delete (screener picks, advisories, queues only)
+    # Files to delete (screener picks, advisories, queues, performance history)
     wipe_files = [
         "swing_candidates.json",
         "swing_queue.json",
@@ -2170,6 +2172,8 @@ def admin_reset():
         "rebalance_report.json",
         "us_monthly_advisory.json",
         "us_portfolio_picks.json",
+        "performance_history.json",
+        "us_performance_history.json",
     ]
 
     deleted, skipped = [], []
