@@ -128,26 +128,50 @@ def place_order():
     if not symbol or not data.get("quantity"):
         return jsonify({"error": "symbol and quantity are required"}), 400
     try:
-        kite = _get_kite()
+        kite       = _get_kite()
+        order_type = data.get("order_type", "MARKET").upper()
+        side       = data.get("side", "BUY").upper()
+        exchange   = data.get("exchange", kite.EXCHANGE_NSE)
+        price      = data.get("price")
+
+        # Zerodha API rejects bare MARKET orders ("market protection" required).
+        # Convert to a LIMIT order priced 0.5% through the market so it fills
+        # immediately like a market order would, while satisfying the API.
+        if order_type == "MARKET" and not price:
+            try:
+                ltp_data = kite.ltp(f"{exchange}:{symbol}")
+                ltp = ltp_data[f"{exchange}:{symbol}"]["last_price"]
+                if side == "BUY":
+                    price = round(ltp * 1.005, 2)
+                else:
+                    price = round(ltp * 0.995, 2)
+                order_type = "LIMIT"
+                log.info(
+                    "🔄 MARKET→LIMIT conversion: %s %s LTP=%.2f limit=%.2f",
+                    side, symbol, ltp, price,
+                )
+            except Exception as ltp_err:
+                log.warning("LTP fetch failed (%s) — attempting bare MARKET order", ltp_err)
+
         order_id = kite.place_order(
             variety=data.get("variety", kite.VARIETY_REGULAR),
-            exchange=data.get("exchange", kite.EXCHANGE_NSE),
+            exchange=exchange,
             tradingsymbol=symbol,
             transaction_type=(
                 kite.TRANSACTION_TYPE_BUY
-                if data.get("side", "BUY").upper() == "BUY"
+                if side == "BUY"
                 else kite.TRANSACTION_TYPE_SELL
             ),
             quantity=int(data["quantity"]),
             product=data.get("product", kite.PRODUCT_CNC),
-            order_type=data.get("order_type", kite.ORDER_TYPE_MARKET),
-            price=data.get("price"),
+            order_type=order_type,
+            price=price,
             trigger_price=data.get("trigger_price"),
             tag=(data.get("tag", "eq-advisor") or "eq-advisor")[:20],
         )
         log.info(
-            "✅ Order placed: %s  %s %s  qty=%s  order_id=%s",
-            data.get("side"), symbol, data.get("order_type", "MARKET"),
+            "✅ Order placed: %s  %s %s  price=%s  qty=%s  order_id=%s",
+            side, symbol, order_type, price,
             data.get("quantity"), order_id,
         )
         return jsonify({"order_id": order_id, "status": "placed"})
