@@ -487,7 +487,7 @@ GTT 2 (T1):   sell 50% @ target1    (partial profit)
 GTT 3 (T2):   sell 50% @ target2    (full exit)
 
 All three placed atomically on fill — no manual action needed.</div>
-            <div class="hl"><b>Note:</b> GTTs are mutually exclusive in intent but Zerodha doesn't link them — once T1 fires and sells 50%, you should manually cancel/update the stop GTT to cover only the remaining 50%.</div>
+            <div class="hl">✅ <b>Fully automated:</b> When T1 fires, the postback handler automatically cancels the old stop GTT (full quantity) and places a new stop GTT for the remaining 50% shares at the same price. You get a Telegram confirmation. No manual action needed.</div>
           </div>
         </div>
       </div>
