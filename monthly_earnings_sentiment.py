@@ -440,15 +440,31 @@ def aggregate_from_swing_history() -> dict | None:
     Returns {sector: {signal, score, matches, reason}} or None if history
     is missing or too short (caller will fall back to LLM/keyword scan).
     """
-    if not os.path.exists(SWING_HISTORY_FILE):
-        print(f"  ℹ️  No swing history file found — will run LLM scan instead")
-        return None
+    history = None
 
-    try:
-        with open(SWING_HISTORY_FILE) as f:
-            history = json.load(f)
-    except Exception as e:
-        print(f"  ⚠️  Could not read swing history: {e}")
+    # Try local file first
+    if os.path.exists(SWING_HISTORY_FILE):
+        try:
+            with open(SWING_HISTORY_FILE) as f:
+                history = json.load(f)
+        except Exception as e:
+            print(f"  ⚠️  Could not read swing history file: {e}")
+
+    # Fall back to Railway API (volumes not shared between Railway services)
+    if not history:
+        try:
+            import urllib.request as _ur
+            api_url = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
+            with _ur.urlopen(f"{api_url}/signals", timeout=15) as r:
+                signals_data = json.loads(r.read())
+            history = signals_data.get("swing_sentiment_history")
+            if history:
+                print(f"  ✅ Swing history loaded from API: {len(history)} days")
+        except Exception as e:
+            print(f"  ⚠️  Could not fetch swing history from API: {e}")
+
+    if not history:
+        print(f"  ℹ️  No swing history found — will run LLM scan instead")
         return None
 
     if len(history) < MIN_HISTORY_DAYS:

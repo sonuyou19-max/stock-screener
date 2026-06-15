@@ -1086,6 +1086,24 @@ def run_scan(test_mode: bool = False):
             with open(SWING_HISTORY_FILE, "w") as f:
                 json.dump(history, f, indent=2)
             print(f"  ✅ Raw signals saved to history: {len(history)} days in rolling window")
+            # Also POST history to Railway API so other services (monthly screener)
+            # can access it — volumes are not shared between Railway services
+            try:
+                import urllib.request as _ur2
+                hist_payload = json.dumps(
+                    {"type": "swing_sentiment_history", "payload": history},
+                    default=str
+                ).encode("utf-8")
+                hist_req = _ur2.Request(
+                    f"{API_URL}/signals/upload",
+                    data=hist_payload,
+                    headers={"Content-Type": "application/json", **_UPLOAD_AUTH},
+                    method="POST"
+                )
+                with _ur2.urlopen(hist_req, timeout=12) as r:
+                    print(f"  ✅ History POSTed to API ({len(history)} days)")
+            except Exception as he:
+                print(f"  ⚠️  History API POST failed (non-fatal): {he}")
         except Exception as e:
             print(f"  ⚠️  History append failed (non-fatal): {e}")
 
