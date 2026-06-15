@@ -1640,6 +1640,23 @@ def kite_place_order():
     if request.method == "OPTIONS":
         return jsonify({}), 200
     data = request.get_json(force=True) or {}
+
+    # Zerodha's API rejects bare MARKET orders ("market protection" required).
+    # Convert to a LIMIT order priced 0.5% through the live Zerodha LTP so it
+    # fills immediately like a market order. Done here (server-side) so it
+    # works regardless of frontend cache or the VPS executor's code version.
+    order_type = (data.get("order_type") or "MARKET").upper()
+    if order_type == "MARKET" and not data.get("price"):
+        symbol = (data.get("symbol") or "").strip().upper()
+        side   = (data.get("side") or "BUY").upper()
+        if symbol:
+            q, qstatus = _vps_get(f"/get-quote?symbol={symbol}")
+            ltp = (q or {}).get(symbol, {}).get("last_price")
+            if ltp:
+                buffer = 1.005 if side == "BUY" else 0.995
+                data["price"]      = round(float(ltp) * buffer, 2)
+                data["order_type"] = "LIMIT"
+
     result, status = _vps_post("/place-order", data)
     return jsonify(result), status
 
