@@ -320,7 +320,7 @@ def live_portfolio():
         data = _load_json(path)
         if data:
             return jsonify(_sanitise(data))
-    return jsonify({"error": "No live portfolio found"}), 404
+    return jsonify({"buckets": {}, "stocks": [], "total_invested": 0})
 
 
 @app.route("/portfolio/live/upload", methods=["POST", "OPTIONS"])
