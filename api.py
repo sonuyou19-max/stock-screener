@@ -2161,15 +2161,8 @@ def admin_reset():
     _us_picks_cache  = {}
     _us_advisory_cache = {}
 
-    # Files to delete (signals, screener picks, advisories, queues)
+    # Files to delete (screener picks, advisories, queues only)
     wipe_files = [
-        "policy_signals.json",
-        "news_signals.json",
-        "llm_synthesis.json",
-        "us_news_signals.json",
-        "us_llm_synthesis.json",
-        "swing_news_sentiment.json",
-        "monthly_earnings_sentiment.json",
         "swing_candidates.json",
         "swing_queue.json",
         "india_queue.json",
@@ -2210,6 +2203,13 @@ def admin_reset():
             "us_trade_history.json",
             "us_performance_history.json",
             "swing_sentiment_history.json",
+            "swing_news_sentiment.json",
+            "monthly_earnings_sentiment.json",
+            "policy_signals.json",
+            "news_signals.json",
+            "llm_synthesis.json",
+            "us_news_signals.json",
+            "us_llm_synthesis.json",
         ],
     })
 
