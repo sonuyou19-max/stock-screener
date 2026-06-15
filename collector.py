@@ -69,14 +69,13 @@ def load_history() -> list:
     import urllib.request as _ur
     import urllib.error   as _ure
 
-    api_url = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
+    api_url = os.getenv("API_URL", "https://web-production-50eee.up.railway.app").rstrip("/")
+    get_url = f"{api_url}/fiidii"
+    print(f"  🌐 Fetching history from API: {get_url}")
 
     # ── Source 1: API (always authoritative) ──────────────────────
     try:
-        req = _ur.Request(
-            f"{api_url}/fiidii",
-            headers={"Accept": "application/json"},
-        )
+        req = _ur.Request(get_url, headers={"Accept": "application/json"})
         with _ur.urlopen(req, timeout=10) as resp:
             api_data = json.loads(resp.read().decode())
             if api_data and isinstance(api_data, list) and len(api_data) > 0:
@@ -88,6 +87,9 @@ def load_history() -> list:
                 except Exception:
                     pass
                 return api_data
+    except _ure.HTTPError as e:
+        hint = " — check API_URL env var in Railway collector service" if e.code == 404 else ""
+        print(f"  ⚠️  Could not fetch history from API (HTTP {e.code}{hint}) — falling back to local disk")
     except Exception as e:
         print(f"  ⚠️  Could not fetch history from API ({e}) — falling back to local disk")
 
@@ -272,8 +274,9 @@ def _post_to_api(history: list):
     """POST FII/DII history to the web API so it can serve fresh data."""
     import urllib.request as _urllib
     import urllib.error as _urlerr
-    api_url = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
+    api_url = os.getenv("API_URL", "https://web-production-50eee.up.railway.app").rstrip("/")
     url = f"{api_url}/fiidii/upload"
+    print(f"  📤 POSTing {len(history)} records to: {url}")
     try:
         payload = json.dumps(history).encode("utf-8")
         req = _urllib.Request(url, data=payload,
@@ -281,6 +284,9 @@ def _post_to_api(history: list):
                               method="POST")
         with _urllib.urlopen(req, timeout=10) as resp:
             print(f"  ✅ FII/DII POSTed to API: {resp.read().decode()}")
+    except _urlerr.HTTPError as e:
+        hint = " — check API_URL env var in Railway collector service" if e.code == 404 else ""
+        print(f"  ⚠️  Could not POST to API (HTTP {e.code}{hint}): {e}")
     except Exception as e:
         print(f"  ⚠️  Could not POST to API (non-fatal): {e}")
 
