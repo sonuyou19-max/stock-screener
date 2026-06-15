@@ -49,15 +49,17 @@ IST                      = ZoneInfo("Asia/Kolkata")
 DATA_DIR                 = os.getenv("DATA_DIR", "/data")
 API_URL                  = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
 SWING_SENTIMENT_FILE     = os.path.join(DATA_DIR, "swing_news_sentiment.json")
+SWING_HISTORY_FILE       = os.path.join(DATA_DIR, "swing_sentiment_history.json")
 
 ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 LLM_MODEL     = "claude-haiku-4-5-20251001"
 LLM_ENABLED   = bool(ANTHROPIC_KEY)
 
-SCAN_DAYS   = 7     # last 7 days — wider window to catch more headlines
-MIN_MATCHES = 2     # minimum headline hits before applying signal
-MAX_ITEMS   = 60    # per feed
+SCAN_DAYS        = 7   # last 7 days — wider window to catch more headlines
+MIN_MATCHES      = 2   # minimum headline hits before applying signal
+MAX_ITEMS        = 60  # per feed
+HISTORY_MAX_DAYS = 30  # rolling window kept in history file
 
 HEADERS = {
     "User-Agent": (
@@ -940,6 +942,23 @@ def save_signals(signals: dict, items: list):
     with open(SWING_SENTIMENT_FILE, "w") as f:
         json.dump(output, f, indent=2)
     print(f"\n  ✅ Signals saved: {SWING_SENTIMENT_FILE}")
+
+    # Append to rolling history so monthly screener can aggregate instead of re-scanning
+    try:
+        history = []
+        if os.path.exists(SWING_HISTORY_FILE):
+            with open(SWING_HISTORY_FILE) as f:
+                history = json.load(f)
+        # Remove any existing entry for today (idempotent re-runs)
+        today_str = str(date.today())
+        history = [h for h in history if h.get("date") != today_str]
+        history.append({"date": today_str, "signals": signals})
+        history = history[-HISTORY_MAX_DAYS:]
+        with open(SWING_HISTORY_FILE, "w") as f:
+            json.dump(history, f, indent=2)
+        print(f"  ✅ History updated: {len(history)} days in rolling window")
+    except Exception as e:
+        print(f"  ⚠️  History append failed (non-fatal): {e}")
 
     # POST to API
     try:

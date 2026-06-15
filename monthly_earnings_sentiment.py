@@ -64,10 +64,12 @@ DATA_DIR         = os.getenv("DATA_DIR", "/data")
 API_URL          = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
 ANTHROPIC_API    = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_KEY    = os.getenv("ANTHROPIC_API_KEY", "")
-LLM_MODEL        = "claude-haiku-4-5-20251001"   # cost-efficient; 1 call/month
+LLM_MODEL        = "claude-haiku-4-5-20251001"
 LLM_ENABLED      = bool(ANTHROPIC_KEY)
 
-OUTPUT_FILE      = os.path.join(DATA_DIR, "monthly_earnings_sentiment.json")
+OUTPUT_FILE        = os.path.join(DATA_DIR, "monthly_earnings_sentiment.json")
+SWING_HISTORY_FILE = os.path.join(DATA_DIR, "swing_sentiment_history.json")
+MIN_HISTORY_DAYS   = 7  # need at least 7 daily verdicts before trusting aggregation
 
 SCAN_DAYS        = 30    # wider window vs swing scanner's 7 days
 MIN_MATCHES      = 3     # slightly stricter — more data, want real signal
@@ -429,6 +431,62 @@ def fetch_all_feeds() -> list[dict]:
 # ─────────────────────────────────────────────
 # STAGE 1 — SECTOR STRUCTURAL SCORING
 # ─────────────────────────────────────────────
+
+def aggregate_from_swing_history() -> dict | None:
+    """
+    Aggregate the last 4 weeks of daily swing sentiment verdicts into a
+    monthly sector signal — avoids re-scanning RSS and calling the LLM again.
+
+    Returns {sector: {signal, score, matches, reason}} or None if history
+    is missing or too short (caller will fall back to LLM/keyword scan).
+    """
+    if not os.path.exists(SWING_HISTORY_FILE):
+        print(f"  ℹ️  No swing history file found — will run LLM scan instead")
+        return None
+
+    try:
+        with open(SWING_HISTORY_FILE) as f:
+            history = json.load(f)
+    except Exception as e:
+        print(f"  ⚠️  Could not read swing history: {e}")
+        return None
+
+    if len(history) < MIN_HISTORY_DAYS:
+        print(f"  ℹ️  Only {len(history)} days of swing history (need {MIN_HISTORY_DAYS}) — running LLM scan")
+        return None
+
+    SIGNAL_TO_INT = {"positive": 2, "mild_positive": 1, "neutral": 0, "cautious": -1, "negative": -2}
+    INT_TO_SIGNAL = [(1.5, "positive"), (0.5, "mild_positive"), (-0.5, "neutral"), (-1.5, "cautious")]
+
+    result = {}
+    for sector in SECTOR_KEYWORDS:
+        scores = []
+        for entry in history:
+            sig = entry.get("signals", {}).get(sector, {})
+            signal = sig.get("signal", "neutral") if isinstance(sig, dict) else "neutral"
+            scores.append(SIGNAL_TO_INT.get(signal, 0))
+
+        avg = sum(scores) / len(scores) if scores else 0.0
+
+        if   avg >= 1.5:  signal = "positive"
+        elif avg >= 0.5:  signal = "mild_positive"
+        elif avg <= -1.5: signal = "negative"
+        elif avg <= -0.5: signal = "cautious"
+        else:             signal = "neutral"
+
+        SIGNAL_SCORES = {"positive": 8.0, "mild_positive": 3.0, "neutral": 0.0, "cautious": -3.0, "negative": -8.0}
+
+        result[sector] = {
+            "score":   SIGNAL_SCORES[signal],
+            "signal":  signal,
+            "matches": len(history),
+            "reason":  f"Aggregated from {len(history)} daily swing verdicts (avg score {avg:+.2f}).",
+        }
+
+    n_nonneut = sum(1 for v in result.values() if v["signal"] != "neutral")
+    print(f"  ✅ Aggregated {len(history)} daily swing verdicts → {n_nonneut} non-neutral sectors (no LLM call)")
+    return result
+
 
 def _get_sector_headlines(items: list[dict]) -> dict[str, list[str]]:
     """Filter up to 15 relevant headlines per sector using keyword presence."""
@@ -910,15 +968,18 @@ def run_scan(target_tickers: Optional[list[str]] = None, test_mode: bool = False
         return None, None
 
     # ── Stage 1: Sector structural scoring ───────────────────
-    print(f"\n  Stage 1: Scoring {len(items)} headlines across 20 sectors...")
-    sector_signals = None
-    if LLM_ENABLED:
-        print(f"  🤖 LLM sector analysis (Claude {LLM_MODEL})...")
-        sector_signals = llm_score_sectors(items)
+    print(f"\n  Stage 1: Sector signals...")
+    # Prefer aggregating existing swing history — avoids re-scanning RSS + LLM call
+    sector_signals = aggregate_from_swing_history()
     if sector_signals is None:
+        print(f"  Falling back to fresh LLM scan of {len(items)} headlines...")
         if LLM_ENABLED:
-            print(f"  ↩️  Falling back to keyword scoring...")
-        sector_signals = aggregate_sector_sentiment(items)
+            print(f"  🤖 LLM sector analysis (Claude {LLM_MODEL})...")
+            sector_signals = llm_score_sectors(items)
+        if sector_signals is None:
+            if LLM_ENABLED:
+                print(f"  ↩️  LLM failed — using keyword scoring...")
+            sector_signals = aggregate_sector_sentiment(items)
 
     print(f"\n  {'SECTOR':<35} {'SIGNAL':<14} {'SCORE':>6}  {'MATCHES':>7}")
     print(f"  {'─'*35} {'─'*14} {'─'*6}  {'─'*7}")
