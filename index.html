@@ -338,6 +338,10 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
 .v-badge{font-size:9px;font-weight:700;letter-spacing:.1em;padding:4px 10px;border-radius:999px;text-transform:uppercase;background:var(--surface2);border:1px solid var(--line2);color:var(--text2);}
 .v-badge.BULLISH,.v-badge.bullish{background:rgba(48,209,88,.1);color:var(--green);border-color:rgba(48,209,88,.25);}
 .v-badge.BEARISH,.v-badge.bearish{background:rgba(255,98,89,.1);color:var(--red);border-color:rgba(255,98,89,.25);}
+.v-badge.positive{background:rgba(48,209,88,.1);color:var(--green);border-color:rgba(48,209,88,.25);}
+.v-badge.mild_positive{background:rgba(255,214,10,.1);color:#ffd60a;border-color:rgba(255,214,10,.25);}
+.v-badge.cautious{background:rgba(255,159,10,.1);color:#ff9f0a;border-color:rgba(255,159,10,.25);}
+.v-badge.negative{background:rgba(255,98,89,.1);color:var(--red);border-color:rgba(255,98,89,.25);}
 .v-bkt{font-size:11.5px;color:var(--text2);line-height:1.55;padding:8px 0;border-bottom:1px solid var(--line);}
 .v-bkt:last-child{border-bottom:none;}
 .v-action{font-size:11.5px;color:var(--text);font-weight:500;line-height:1.5;margin-top:8px;}
@@ -700,7 +704,7 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
   <div class="closed-wrap" id="indClosed" style="display:none"><div class="spin-wrap"><div class="spinner"></div></div></div>
   <div class="sec"><span class="sec-lbl">Monthly Advisory</span><span class="sec-line"></span></div>
   <div id="indAdvisory"><div class="spin-wrap"><div class="spinner"></div></div></div>
-  <div class="sec sec-toggle" onclick="toggleClosed('indMacroWrap','indMacroCaret')"><span class="sec-lbl">Policy Signals (RBI / PIB)</span><span class="sec-caret" id="indMacroCaret">▸</span><span class="sec-line"></span></div>
+  <div class="sec sec-toggle" onclick="toggleClosed('indMacroWrap','indMacroCaret')"><span class="sec-lbl">Category Sentiment (LLM Analysed)</span><span class="sec-caret" id="indMacroCaret">▸</span><span class="sec-line"></span></div>
   <div id="indMacroWrap" style="display:none"><div class="sig-grid" id="indMacro"><div class="spin-wrap" style="grid-column:1/-1"><div class="spinner"></div></div></div></div>
   <div class="sec sec-toggle" onclick="toggleClosed('indVerdictWrap','indVerdictCaret')"><span class="sec-lbl">AI Macro Verdict</span><span class="sec-caret" id="indVerdictCaret">▸</span><span class="sec-line"></span></div>
   <div id="indVerdictWrap" style="display:none"><div id="indVerdict"><div class="spin-wrap"><div class="spinner"></div></div></div></div>
@@ -2338,12 +2342,12 @@ function renderSwaps(cId,data,mkt){
 
 /* ═══ MACRO / VERDICT ═══ */
 function renderIndMacro(){
-  const el=document.getElementById('indMacro');if(!indSignals){el.innerHTML=`<div class="empty" style="grid-column:1/-1">No policy signals.</div>`;return;}
-  const policy=(indSignals.policy_signals||{}).signals||{};
+  const el=document.getElementById('indMacro');if(!indSignals){el.innerHTML=`<div class="empty" style="grid-column:1/-1">No sentiment data.</div>`;return;}
+  const swing=(indSignals.swing_news_sentiment||{}).signals||(indSignals.swing_news_sentiment?.payload||{}).signals||{};
   const em={positive:'🟢',mild_positive:'🟡',neutral:'⚪',cautious:'🟠',negative:'🔴'};
-  const keys=Object.keys(policy);
-  if(!keys.length){el.innerHTML=`<div class="empty" style="grid-column:1/-1">No signals yet.</div>`;return;}
-  el.innerHTML=keys.map(bk=>{const sig=policy[bk];const ss=typeof sig==='string'?sig:(sig?.signal||'neutral');return`<div class="sig-c"><div class="sig-bkt">${bk.replace(/_/g,' ')}</div><div class="sig-val">${em[ss]||'⚪'} ${ss.replace(/_/g,' ')}</div></div>`;}).join('');
+  const keys=Object.keys(swing).sort();
+  if(!keys.length){el.innerHTML=`<div class="empty" style="grid-column:1/-1">No category sentiment yet. Run swing_news_sentiment.py first.</div>`;return;}
+  el.innerHTML=keys.map(sector=>{const sig=swing[sector];const ss=sig?.signal||'neutral';return`<div class="sig-c"><div class="sig-bkt">${sector}</div><div class="sig-val">${em[ss]||'⚪'} ${ss.replace(/_/g,' ')}</div></div>`;}).join('');
 }
 
 function renderVerdict(containerId,verdict,buckets,labels){
@@ -2360,19 +2364,23 @@ function renderVerdict(containerId,verdict,buckets,labels){
 }
 
 function renderIndVerdict(){
-  const v=indSignals?.llm_synthesis?.verdict;
   const el=document.getElementById('indVerdict');
-  if(!v){el.innerHTML='<div class="empty">No AI verdict yet.</div>';return;}
-  const em={Positive:'🟢',Cautious:'🟠',Neutral:'⚪',Negative:'🔴'};
-  const overall=v.overall_market;
-  const buckets=Object.keys(v).filter(k=>k!=='overall_market');
-  el.innerHTML=(overall?`<div class="v-overall">${overall}</div>`:'')+
-  buckets.map(bk=>{const bv=v[bk];if(!bv||typeof bv!=='object')return'';const vrd=bv.verdict||'Neutral';return`<div class="v-card">
-    <div class="v-hdr"><div class="v-bkt">${bk}</div><div class="v-badge ${vrd}">${em[vrd]||'⚪'} ${vrd}</div></div>
-    <div class="v-driver">${bv.key_driver||''}</div>
-    <div class="v-action">${bv.action||''}</div>
-    ${bv.watch_for?`<div class="v-watch">👀 ${bv.watch_for}</div>`:''}
-  </div>`;}).join('');
+  const swData=indSignals?.swing_news_sentiment||{};
+  const swing=(swData.signals||swData.payload?.signals||{});
+  const keys=Object.keys(swing).sort();
+  if(!keys.length){el.innerHTML='<div class="empty">No AI verdict yet.</div>';return;}
+  const em={positive:'🟢',mild_positive:'🟡',neutral:'⚪',cautious:'🟠',negative:'🔴'};
+  const genAt=swData.generated_at||'';
+  const nonNeutral=keys.filter(s=>swing[s]?.signal&&swing[s].signal!=='neutral');
+  const header=genAt?`<div style="font-size:11px;color:var(--text3);margin:0 20px 12px">LLM analysed · ${genAt}</div>`:'';
+  const cards=nonNeutral.map(sector=>{
+    const sig=swing[sector];const signal=sig.signal;const reason=sig.reason||'';
+    return`<div class="v-card">
+      <div class="v-hdr"><div style="font-size:12px;font-weight:600;color:var(--text)">${sector}</div><div class="v-badge ${signal}">${em[signal]||'⚪'} ${signal.replace(/_/g,' ')}</div></div>
+      <div class="v-driver">${reason.length>220?reason.substring(0,220)+'…':reason}</div>
+    </div>`;
+  }).join('');
+  el.innerHTML=header+(cards||`<div class="empty" style="margin:0 20px">All sectors neutral — no strong signals today.</div>`);
 }
 
 /* ═══ US MACRO SIGNALS ═══ */
