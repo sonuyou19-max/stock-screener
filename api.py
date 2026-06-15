@@ -2152,19 +2152,25 @@ def admin_reset():
 
     global _signals_cache, _portfolio_cache, _picks_cache, _advisory_cache
     global _us_picks_cache, _us_advisory_cache, _perf_cache, _us_perf_cache
+    global _live_cache, _history_cache, _swing_live_cache, _swing_history_cache
 
-    # Clear in-memory caches
-    _signals_cache     = {}
-    _portfolio_cache   = {}
-    _picks_cache       = {}
-    _advisory_cache    = {}
-    _us_picks_cache    = {}
-    _us_advisory_cache = {}
-    _perf_cache        = []
-    _us_perf_cache     = []
+    # Clear all in-memory caches except FII/DII and US live
+    _signals_cache       = {}
+    _portfolio_cache     = {}
+    _picks_cache         = {}
+    _advisory_cache      = {}
+    _us_picks_cache      = {}
+    _us_advisory_cache   = {}
+    _perf_cache          = []
+    _us_perf_cache       = []
+    _live_cache          = {}
+    _history_cache       = []
+    _swing_live_cache    = []
+    _swing_history_cache = []
 
-    # Files to delete (screener picks, advisories, queues, performance history)
+    # Files to delete
     wipe_files = [
+        # Screener picks, advisories, queues
         "swing_candidates.json",
         "swing_queue.json",
         "india_queue.json",
@@ -2172,8 +2178,15 @@ def admin_reset():
         "rebalance_report.json",
         "us_monthly_advisory.json",
         "us_portfolio_picks.json",
+        # Performance / P&L history
         "performance_history.json",
         "us_performance_history.json",
+        # India live portfolio + trade history
+        "portfolio_live.json",
+        "trade_history.json",
+        # Swing live positions + history
+        "swing_live.json",
+        "swing_history.json",
     ]
 
     deleted, skipped = [], []
@@ -2198,12 +2211,7 @@ def admin_reset():
         "skipped_not_found": skipped,
         "preserved": [
             "fiidii_history.json",
-            "portfolio_live.json",
             "us_portfolio_live.json",
-            "swing_live.json",
-            "swing_history.json",
-            "trade_history.json",
-            "performance_history.json",
             "us_trade_history.json",
             "us_performance_history.json",
             "swing_sentiment_history.json",

@@ -831,7 +831,7 @@ function refreshAll(){
   else if(_cv==='swingView')loadSwing();
 }
 async function adminReset(){
-  if(!confirm('Reset picks, advisories, queues and performance history?\n\nSentiments, FII/DII and live positions are preserved.'))return;
+  if(!confirm('Hard reset: wipes India & Swing portfolios, P&L, trade history, picks, advisories and queues.\n\nPreserved: FII/DII, US portfolio, sentiments and LLM verdicts.\n\nContinue?'))return;
   try{
     const r=await fetch(`${API}/admin/reset`,{method:'POST',headers:_postHeaders()});
     const d=await r.json();
