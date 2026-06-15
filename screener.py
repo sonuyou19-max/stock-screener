@@ -1847,20 +1847,33 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
         live_holdings = rebalance_holdings(live_holdings, all_df)
 
     # ── Build screener top picks (new buys only, not already in portfolio) ────
+    # Index ATR data from portfolio stocks_list so advisory picks include it
+    _port_atr = {}
+    for s in portfolio.get("top_picks", {}).get("stocks", []):
+        _port_atr[s["ticker"]] = {
+            "trailing_stop_dist": s.get("trailing_stop_dist"),
+            "stop_loss_price":    s.get("stop_loss_price"),
+            "stop_loss_pct":      s.get("stop_loss_pct"),
+        }
+
     new_picks    = []
     live_tickers = {h["ticker"] for h in live_holdings}
     for _, row in sorted_df.head(TOP_PICKS).iterrows():
+        _atr = _port_atr.get(row["ticker"], {})
         new_picks.append({
-            "ticker":    row["ticker"],
-            "name":      row["name"],
-            "sector":    row.get("nse_sector", ""),
-            "score":     round(row["final_score"], 1),
-            "sentiment": row.get("sector_sentiment", "neutral"),
-            "policy":    row.get("policy_signal", "neutral"),
-            "earnings":  row.get("earnings_signal", "neutral"),
-            "mom_3m":    round(float(row.get("momentum_3m", 0) or 0), 1),
-            "roe":       round(float(row.get("roe_pct", 0) or 0), 1),
-            "pe":        round(float(row.get("pe_ratio", 0) or 0), 1),
+            "ticker":             row["ticker"],
+            "name":               row["name"],
+            "sector":             row.get("nse_sector", ""),
+            "score":              round(row["final_score"], 1),
+            "sentiment":          row.get("sector_sentiment", "neutral"),
+            "policy":             row.get("policy_signal", "neutral"),
+            "earnings":           row.get("earnings_signal", "neutral"),
+            "mom_3m":             round(float(row.get("momentum_3m", 0) or 0), 1),
+            "roe":                round(float(row.get("roe_pct", 0) or 0), 1),
+            "pe":                 round(float(row.get("pe_ratio", 0) or 0), 1),
+            "trailing_stop_dist": _atr.get("trailing_stop_dist"),
+            "stop_loss_price":    _atr.get("stop_loss_price"),
+            "stop_loss_pct":      _atr.get("stop_loss_pct"),
         })
     new_entry_picks = [p for p in new_picks if p["ticker"] not in live_tickers]
 
