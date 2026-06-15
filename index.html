@@ -1952,13 +1952,19 @@ async function queueIndiaBuy(ticker){
     const gate=parseFloat((curr*1.03).toFixed(2));
     const autoQty=Math.max(1,Math.floor(INDIA_SLOT_BUDGET/optEntry));
     const basisLabel=curr<=ma20?'Price at/below 20-DMA — buy at market':'20-DMA support zone';
-    const advPick=(_advData?.top_picks||[]).find(p=>p.ticker===ticker);
-    // Picks bucket (/portfolio/picks) has full ATR data — use as primary source
-    let _picksFull=null;
-    if(_indPicksData){for(const b of Object.values(_indPicksData)){_picksFull=(b.stocks||[]).find(s=>s.ticker===ticker);if(_picksFull)break;}}
-    const _atrSrc=_picksFull||advPick;
-    const trailRs=_atrSrc?.trailing_stop_dist?`₹${parseFloat(_atrSrc.trailing_stop_dist).toFixed(2)} (1.5× ATR) below day's high`:'ATR data unavailable';
-    _ibqEntry={ticker,nse_symbol:sym,optimal_entry:optEntry,limit_price:gate,ma20:parseFloat(ma20.toFixed(2)),ma50:parseFloat(ma50.toFixed(2)),current_price:curr};
+    // Compute 14-day ATR directly from live Zerodha OHLCV rows
+    let liveAtr=null;
+    if(rows.length>=15){
+      const trs=[];
+      for(let i=1;i<rows.length;i++){
+        const h=rows[i].high,l=rows[i].low,pc=rows[i-1].close;
+        trs.push(Math.max(h-l,Math.abs(h-pc),Math.abs(l-pc)));
+      }
+      liveAtr=trs.slice(-14).reduce((a,b)=>a+b,0)/14;
+    }
+    const liveTrailDist=liveAtr?parseFloat((liveAtr*1.5).toFixed(2)):null;
+    const trailRs=liveTrailDist?`₹${liveTrailDist.toFixed(2)} (1.5× ATR) below day's high`:'ATR data unavailable';
+    _ibqEntry={ticker,nse_symbol:sym,optimal_entry:optEntry,limit_price:gate,ma20:parseFloat(ma20.toFixed(2)),ma50:parseFloat(ma50.toFixed(2)),current_price:curr,trail_atr:liveTrailDist};
     document.getElementById('ibqSub').textContent='Budget: ₹'+INDIA_SLOT_BUDGET.toLocaleString('en-IN');
     document.getElementById('ibqEntryInfo').innerHTML=
       `<strong>Optimal entry:</strong> ₹${optEntry.toFixed(2)}<br>`+
@@ -2008,7 +2014,7 @@ async function _ibqSubmit(){
       ma20:_ibqEntry.ma20,
       ma50:_ibqEntry.ma50,
       budget_inr:INDIA_SLOT_BUDGET,
-      trail_atr:_atrSrc?.trailing_stop_dist||null,
+      trail_atr:_ibqEntry.trail_atr||null,
       status:'queued',
     };
     const r=await fetch(`${API}/india/queue`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});
