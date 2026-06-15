@@ -315,12 +315,6 @@ def live_portfolio():
     live = _read_live_ind()
     if live:
         return jsonify(_sanitise(live))
-    # Fall back to latest screener picks (first run migration)
-    path = _find_latest_portfolio()
-    if path:
-        data = _load_json(path)
-        if data:
-            return jsonify(_sanitise(data))
     return jsonify({})
 
 
