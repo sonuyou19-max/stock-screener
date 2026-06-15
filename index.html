@@ -1659,7 +1659,7 @@ async function _asSubmit(){
         _showSpinner('Placing order on Zerodha…');
         try{
           let _oType=orderType,_oPrice=orderType==='LIMIT'?price:undefined;
-          if(orderType==='MARKET'){try{const _q=await fetch(`${API}/kite/quote?symbol=${nseSymbol}`,{headers:_postHeaders()});const _qd=await _q.json();const _ltp=_qd[nseSymbol]?.last_price;if(_ltp){_oPrice=Math.round(_ltp*1.005*100)/100;_oType='LIMIT';}}catch(_){}}
+          if(orderType==='MARKET'){try{const _q=await fetch(`${API}/kite/quote?symbol=${nseSymbol}`,{headers:_postHeaders()});const _qd=await _q.json();const _ltp=_qd[nseSymbol]?.last_price;if(_ltp){_oPrice=Math.round(Math.round(_ltp*1.005/0.05)*0.05*100)/100;_oType='LIMIT';}}catch(_){}}
           const kiteRes=await fetch(`${API}/kite/place-order`,{method:'POST',headers:_postHeaders(),body:JSON.stringify({
             symbol:nseSymbol,side:'BUY',quantity:Math.round(qty),
             order_type:_oType,price:_oPrice,
@@ -2207,7 +2207,7 @@ async function _eswSubmit(){
       if(placeKite){
         const nseSymbol=(c.ticker||'').replace(/\.NS$/i,'').replace(/\.BO$/i,'');
         let _oType2=orderType,_oPrice2=orderType==='LIMIT'?parseFloat(c.current_price):undefined;
-        if(orderType==='MARKET'){try{const _q=await fetch(`${API}/kite/quote?symbol=${nseSymbol}`,{headers:_postHeaders()});const _qd=await _q.json();const _ltp=_qd[nseSymbol]?.last_price;if(_ltp){_oPrice2=Math.round(_ltp*1.005*100)/100;_oType2='LIMIT';}}catch(_){}}
+        if(orderType==='MARKET'){try{const _q=await fetch(`${API}/kite/quote?symbol=${nseSymbol}`,{headers:_postHeaders()});const _qd=await _q.json();const _ltp=_qd[nseSymbol]?.last_price;if(_ltp){_oPrice2=Math.round(Math.round(_ltp*1.005/0.05)*0.05*100)/100;_oType2='LIMIT';}}catch(_){}}
         const kiteRes=await fetch(`${API}/kite/place-order`,{method:'POST',headers:_postHeaders(),body:JSON.stringify({
           symbol:nseSymbol,side:'BUY',quantity:Math.round(qty),
           order_type:_oType2,price:_oPrice2,

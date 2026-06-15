@@ -1653,8 +1653,10 @@ def kite_place_order():
             q, qstatus = _vps_get(f"/get-quote?symbol={symbol}")
             ltp = (q or {}).get(symbol, {}).get("last_price")
             if ltp:
-                buffer = 1.005 if side == "BUY" else 0.995
-                data["price"]      = round(float(ltp) * buffer, 2)
+                buffer    = 1.005 if side == "BUY" else 0.995
+                raw_price = float(ltp) * buffer
+                # NSE tick size is ₹0.05 — round to nearest 0.05
+                data["price"]      = round(round(raw_price / 0.05) * 0.05, 2)
                 data["order_type"] = "LIMIT"
 
     result, status = _vps_post("/place-order", data)
