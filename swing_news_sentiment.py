@@ -47,7 +47,7 @@ import requests
 
 IST                      = ZoneInfo("Asia/Kolkata")
 DATA_DIR                 = os.getenv("DATA_DIR", "/data")
-API_URL                  = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
+API_URL                  = os.getenv("API_URL", "https://web-production-50eee.up.railway.app").rstrip("/")
 SWING_SENTIMENT_FILE     = os.path.join(DATA_DIR, "swing_news_sentiment.json")
 
 SCAN_DAYS   = 7     # last 7 days — wider window to catch more headlines
@@ -834,13 +834,15 @@ def save_signals(signals: dict, items: list):
     print(f"\n  ✅ Signals saved: {SWING_SENTIMENT_FILE}")
 
     # POST to API
+    upload_url = f"{API_URL}/signals/upload"
+    print(f"  📤 POSTing signals to: {upload_url}")
     try:
         payload = json.dumps(
             {"type": "swing_news_sentiment", "payload": output},
             default=str
         ).encode("utf-8")
         req = _ur.Request(
-            f"{API_URL}/signals/upload",
+            upload_url,
             data=payload,
             headers={"Content-Type": "application/json", **_UPLOAD_AUTH},
             method="POST"
@@ -848,7 +850,7 @@ def save_signals(signals: dict, items: list):
         with _ur.urlopen(req, timeout=12) as r:
             print(f"  ✅ Signals POSTed to API: {r.read().decode()}")
     except Exception as e:
-        print(f"  ⚠️  POST failed (non-fatal): {e}")
+        print(f"  ⚠️  Could not POST signals to {upload_url} ({e})")
 
 
 # ─────────────────────────────────────────────
