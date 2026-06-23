@@ -78,7 +78,7 @@ from nse_universe import fetch_nifty500
 
 IST             = ZoneInfo("Asia/Kolkata")
 DATA_DIR        = os.getenv("DATA_DIR", "/data")
-API_URL         = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
+API_URL         = os.getenv("API_URL", "https://web-production-50eee.up.railway.app").rstrip("/")
 CANDIDATES_FILE = os.path.join(DATA_DIR, "swing_candidates.json")
 
 # Oracle VPS — used for Zerodha OHLCV (more accurate NSE data than yfinance)
@@ -409,9 +409,21 @@ def calc_fii_signal(fii_data: list) -> dict:
     """
     FII net positive in at least 2 of last 3 days.
     fii_data: list of {date, fii_net_cr, dii_net_cr} sorted newest first.
+
+    When the collector feed is down, fii_data is empty. The old "no data"
+    return was missing the net_3d_cr key that analyse_stock() reads
+    unconditionally — every ticker raised a KeyError here, was caught by
+    the scan loop's generic except, and was silently skipped. So a broken
+    FII feed didn't just make this one signal harder to pass; it crashed
+    every stock before scoring and produced zero candidates outright.
+    Treat "no data" as neutral pass-through (same as missing sector
+    sentiment) instead of a penalty, and log loudly so a real outage is
+    still visible in Railway logs.
     """
     if not fii_data or len(fii_data) < 1:
-        return {"signal": False, "note": "No FII data available", "positive_days": 0}
+        return {"signal": True, "net_3d_cr": 0.0, "positive_days": 0, "total_days": 0,
+                "data_available": False,
+                "note": "⚠️ No FII data available — excluded from scoring (neutral)"}
 
     recent = fii_data[:FII_LOOKBACK]
     pos    = sum(1 for r in recent if r.get("fii_net_cr", 0) > 0)
@@ -899,16 +911,18 @@ def fetch_sentiment_signals() -> dict:
 
 def fetch_fii_data() -> list:
     """Fetch FII/DII data from API. Returns list sorted newest first."""
+    url = f"{API_URL}/fiidii"
     try:
-        url = f"{API_URL}/fiidii"
         req = _urllib.Request(url, headers={"Accept": "application/json"})
         with _urllib.urlopen(req, timeout=10) as r:
             data = json.loads(r.read().decode())
         if isinstance(data, list):
+            print(f"  ✅ FII data loaded from {url}: {len(data)} days")
             return sorted(data, key=lambda x: x.get("date",""), reverse=True)
         return []
     except Exception as e:
-        print(f"  ⚠️  Could not fetch FII data: {e}")
+        print(f"  ⚠️  Could not fetch FII data from {url} ({e}) — "
+              f"FII signal will fail for every stock today")
         return []
 
 
@@ -1069,14 +1083,15 @@ def save_candidates(candidates: list, regime: dict = None):
     print(f"\n  ✅ Candidates saved: {CANDIDATES_FILE}")
 
     # POST to API
+    upload_url = f"{API_URL}/swing/candidates/upload"
+    print(f"  📤 POSTing {len(candidates)} candidates to: {upload_url}")
     try:
         payload = json.dumps(
             {"type": "swing_candidates", "payload": output},
             default=str
         ).encode("utf-8")
-        # Post to swing/candidates/upload (primary)
         req1 = _urllib.Request(
-            f"{API_URL}/swing/candidates/upload",
+            upload_url,
             data=payload,
             headers={"Content-Type": "application/json", **_UPLOAD_AUTH},
             method="POST"
@@ -1084,7 +1099,8 @@ def save_candidates(candidates: list, regime: dict = None):
         with _urllib.urlopen(req1, timeout=15) as r:
             print(f"  ✅ Candidates POSTed to API: {r.read().decode()}")
     except Exception as e:
-        print(f"  ⚠️  Could not POST to API (non-fatal): {e}")
+        print(f"  ⚠️  Could not POST candidates to {upload_url} ({e}) — "
+              f"dashboard will not see today's scan results")
 
 
 # ─────────────────────────────────────────────
