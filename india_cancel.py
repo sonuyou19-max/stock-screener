@@ -120,9 +120,12 @@ def main():
         try:
             cancel_order(order_id)
             cancelled.append(symbol)
-            msgs.append(f"⏸ {symbol}: LIMIT order cancelled — will retry tomorrow if still queued")
+            retry = entry.get("retry_count", 0) + 1
+            msgs.append(f"⏸ {symbol}: LIMIT order cancelled — re-queued (attempt {retry})")
             update_queue([{
-                "ticker": ticker, "status": "cancelled",
+                "ticker":       ticker,
+                "status":       "queued",
+                "retry_count":  retry,
                 "cancelled_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
             }])
         except Exception as e:

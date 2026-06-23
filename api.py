@@ -282,7 +282,8 @@ def signals():
     result = {}
     for name in ["policy_signals", "news_signals", "llm_synthesis",
                   "us_news_signals", "us_llm_synthesis", "swing_candidates",
-                  "swing_news_sentiment", "monthly_earnings_sentiment"]:
+                  "swing_news_sentiment", "monthly_earnings_sentiment",
+                  "swing_sentiment_history"]:
         # Try in-memory cache first
         if name in _signals_cache:
             result[name] = _signals_cache[name]
@@ -1536,24 +1537,6 @@ def swing_prices():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/trigger/llm-synth", methods=["POST", "OPTIONS"])
-def trigger_llm_synth():
-    """Run LLM macro synthesis from the web service (has outbound internet).
-    Protected by X-Upload-Token. Returns the verdict on success."""
-    if request.method == "OPTIONS":
-        return jsonify({}), 200
-    try:
-        import importlib, sys
-        # Force fresh import in case module was cached without env vars
-        if "llm_synthesiser" in sys.modules:
-            del sys.modules["llm_synthesiser"]
-        from llm_synthesiser import run_synthesis
-        verdict = run_synthesis()
-        if verdict is None:
-            return jsonify({"error": "Synthesis failed — check ANTHROPIC_API_KEY and network"}), 500
-        return jsonify({"status": "ok", "verdict": verdict})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
 
 
 # ════════════════════════════════════════════════════════════════
@@ -1565,8 +1548,24 @@ def trigger_llm_synth():
 
 ORACLE_VPS_URL   = os.getenv("ORACLE_VPS_URL", "")   # e.g. http://80.225.201.62:5001
 EXECUTOR_SECRET  = os.getenv("EXECUTOR_SECRET", "")   # shared secret with Oracle VPS
+_TG_BOT          = os.getenv("TELEGRAM_BOT_TOKEN", "")
+_TG_CHAT         = os.getenv("TELEGRAM_CHAT_ID", "")
 
 _VPS_HEADERS = lambda: {"X-Executor-Secret": EXECUTOR_SECRET}
+
+
+def _tg(msg: str):
+    if not _TG_BOT or not _TG_CHAT:
+        return
+    try:
+        import urllib.request as _ur, json as _j
+        body = _j.dumps({"chat_id": _TG_CHAT, "text": msg, "parse_mode": "HTML"}).encode()
+        req = _ur.Request(f"https://api.telegram.org/bot{_TG_BOT}/sendMessage",
+                          data=body, headers={"Content-Type": "application/json"}, method="POST")
+        with _ur.urlopen(req, timeout=10):
+            pass
+    except Exception as e:
+        print(f"Telegram error: {e}")
 
 
 def _vps_post(endpoint: str, payload: dict):
@@ -1636,6 +1635,25 @@ def kite_place_order():
     if request.method == "OPTIONS":
         return jsonify({}), 200
     data = request.get_json(force=True) or {}
+
+    # Zerodha's API rejects bare MARKET orders ("market protection" required).
+    # Convert to a LIMIT order priced 0.5% through the live Zerodha LTP so it
+    # fills immediately like a market order. Done here (server-side) so it
+    # works regardless of frontend cache or the VPS executor's code version.
+    order_type = (data.get("order_type") or "MARKET").upper()
+    if order_type == "MARKET" and not data.get("price"):
+        symbol = (data.get("symbol") or "").strip().upper()
+        side   = (data.get("side") or "BUY").upper()
+        if symbol:
+            q, qstatus = _vps_get(f"/get-quote?symbol={symbol}")
+            ltp = (q or {}).get(symbol, {}).get("last_price")
+            if ltp:
+                buffer    = 1.005 if side == "BUY" else 0.995
+                raw_price = float(ltp) * buffer
+                # NSE tick size is ₹0.05 — round to nearest 0.05
+                data["price"]      = round(round(raw_price / 0.05) * 0.05, 2)
+                data["order_type"] = "LIMIT"
+
     result, status = _vps_post("/place-order", data)
     return jsonify(result), status
 
@@ -1806,6 +1824,9 @@ def kite_postback():
                         q[t_key].update({
                             "status":     "filled",
                             "fill_price": fill_price,
+                            "fill_qty":   fill_qty,
+                            "stop_qty":   fill_qty,
+                            "trail_high": fill_price,
                             "order_id":   order_id,
                             "gtt_id":     gtt_id,
                             "gtt_t1_id":  gtt_t1_id,
@@ -1843,12 +1864,138 @@ def kite_postback():
                         print(f"✅ India auto-add: {symbol} {fill_qty}sh @ ₹{fill_price} → live portfolio")
 
                     if i_key:
+                        trail_atr  = i_entry.get("trail_atr")
+                        tsl_gtt_id = None
+                        tsl_stop   = None
+                        if trail_atr:
+                            try:
+                                tsl_stop = round(fill_price - float(trail_atr), 2)
+                                tsl_res, _ = _vps_post("/place-gtt", {
+                                    "symbol":        symbol,
+                                    "trigger_price": tsl_stop,
+                                    "quantity":      fill_qty,
+                                    "side":          "SELL",
+                                    "order_type":    "MARKET",
+                                    "product":       "CNC",
+                                })
+                                tsl_gtt_id = tsl_res.get("gtt_id") or tsl_res.get("trigger_id")
+                                print(f"✅ India TSL GTT: {symbol} ₹{tsl_stop} qty={fill_qty} → id={tsl_gtt_id}")
+                            except Exception as tge:
+                                print(f"⚠️  India TSL GTT failed: {tge}")
                         iq[i_key].update({
                             "status":     "filled",
                             "fill_price": fill_price,
+                            "fill_qty":   fill_qty,
+                            "stop_qty":   fill_qty,
+                            "trail_high": fill_price,
+                            "tsl_stop":   tsl_stop,
+                            "gtt_id":     tsl_gtt_id,
                             "order_id":   order_id,
                         })
                         _write_india_queue(iq)
+
+        # ── Swing SELL fills: auto-adjust GTTs + Telegram ──────────────
+        if status == "COMPLETE" and side == "SELL" and avg_price:
+            try:
+                fill_price = float(avg_price)
+                fill_qty   = int(data.get("filled_quantity") or qty or 0)
+            except (TypeError, ValueError):
+                fill_price, fill_qty = 0, 0
+
+            if fill_qty > 0:
+                q = _read_queue()
+                ticker_ns = f"{symbol}.NS"
+                entry = q.get(ticker_ns) or q.get(symbol)
+                t_key = ticker_ns if ticker_ns in q else (symbol if symbol in q else None)
+
+                if entry and entry.get("status") == "filled":
+                    bought_qty = int(entry.get("fill_qty") or entry.get("quantity") or 0)
+                    stop_loss  = entry.get("stop_loss")
+                    target1    = entry.get("target1")
+                    target2    = entry.get("target2")
+                    gtt_id     = entry.get("gtt_id")
+                    gtt_t1_id  = entry.get("gtt_t1_id")
+                    gtt_t2_id  = entry.get("gtt_t2_id")
+                    qty_t1     = bought_qty // 2
+                    qty_t2     = bought_qty - qty_t1
+                    name       = entry.get("name", symbol)
+                    buy_price  = entry.get("fill_price", "?")
+
+                    def _cancel_gtt(gid):
+                        if gid:
+                            try:
+                                _vps_post("/cancel-gtt", {"gtt_id": gid})
+                                print(f"🗑 Cancelled GTT {gid}")
+                            except Exception as ce:
+                                print(f"⚠️  GTT cancel failed ({gid}): {ce}")
+
+                    if fill_qty == qty_t1 and target1:
+                        # T1 fired: cancel old stop (full qty), place new stop (remaining qty)
+                        _cancel_gtt(gtt_id)
+                        new_gtt_id = None
+                        if stop_loss and qty_t2 > 0:
+                            try:
+                                res, _ = _vps_post("/place-gtt", {
+                                    "symbol":        symbol,
+                                    "trigger_price": float(stop_loss),
+                                    "quantity":      qty_t2,
+                                    "side":          "SELL",
+                                    "order_type":    "MARKET",
+                                    "product":       "CNC",
+                                })
+                                new_gtt_id = res.get("gtt_id") or res.get("trigger_id")
+                                print(f"✅ New stop GTT: {symbol} ₹{stop_loss} qty={qty_t2} → id={new_gtt_id}")
+                            except Exception as ge:
+                                print(f"⚠️  New stop GTT failed: {ge}")
+
+                        if t_key:
+                            q[t_key]["gtt_id"]   = new_gtt_id
+                            q[t_key]["stop_qty"]  = qty_t2
+                            _write_queue(q)
+
+                        sl_note = (f"New stop GTT placed for {qty_t2} shares at ₹{stop_loss} ✅"
+                                   if new_gtt_id else
+                                   f"⚠️ Could not auto-place new stop — manually set stop for {qty_t2} shares at ₹{stop_loss}")
+                        _tg(
+                            f"🎯 <b>T1 hit: {name} ({symbol})</b>\n"
+                            f"Sold {fill_qty} of {bought_qty} shares @ ₹{fill_price:.2f}\n"
+                            f"T1 = ₹{target1} ✅\n\n"
+                            f"🤖 <b>Auto-adjusted:</b>\n"
+                            f"Old stop GTT (qty {bought_qty}) cancelled.\n"
+                            f"{sl_note}\n\n"
+                            f"T2 ({qty_t2} shares) still live at ₹{target2}"
+                        )
+                        print(f"📨 Telegram: T1 auto-adjust sent for {symbol}")
+
+                    elif fill_qty == qty_t2 and target2:
+                        # T2 fired: cancel remaining stop GTT, position fully closed
+                        _cancel_gtt(gtt_id)
+                        if t_key:
+                            q[t_key]["gtt_id"] = None
+                            _write_queue(q)
+                        _tg(
+                            f"🎯 <b>T2 hit: {name} ({symbol})</b>\n"
+                            f"Sold final {fill_qty} shares @ ₹{fill_price:.2f}\n"
+                            f"T2 = ₹{target2} ✅\n\n"
+                            f"🤖 Stop GTT cancelled automatically.\n"
+                            f"Position fully closed. 🏁"
+                        )
+                        print(f"📨 Telegram: T2 sent for {symbol}")
+
+                    elif fill_qty == bought_qty and stop_loss:
+                        # Stop fired: cancel T1 and T2 GTTs
+                        _cancel_gtt(gtt_t1_id)
+                        _cancel_gtt(gtt_t2_id)
+                        if t_key:
+                            q[t_key].update({"gtt_t1_id": None, "gtt_t2_id": None})
+                            _write_queue(q)
+                        _tg(
+                            f"🛑 <b>Stop hit: {name} ({symbol})</b>\n"
+                            f"Sold {fill_qty} shares @ ₹{fill_price:.2f}\n"
+                            f"Stop = ₹{stop_loss} triggered.\n\n"
+                            f"🤖 T1 + T2 GTTs cancelled automatically."
+                        )
+                        print(f"📨 Telegram: stop sent for {symbol}")
 
         # ── India SELL fills: remove/reduce shares in live portfolio ──
         if status == "COMPLETE" and side == "SELL" and avg_price:
@@ -1979,6 +2126,99 @@ def india_queue_update():
         return jsonify({"status": "ok", "updated": len(updates)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+
+# ── Admin reset ───────────────────────────────────────────────────────────────
+
+@app.route("/admin/reset", methods=["POST", "OPTIONS"])
+def admin_reset():
+    """
+    Wipe all signals, picks, and advisory caches for a fresh start.
+    Preserves: FII/DII history, live portfolio positions (India/US/Swing),
+               trade history, performance history, swing sentiment history.
+    Requires X-Upload-Token header (same token used for uploads).
+    """
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    auth_err = _enforce_upload_token()
+    if auth_err:
+        return auth_err
+
+    global _signals_cache, _portfolio_cache, _picks_cache, _advisory_cache
+    global _us_picks_cache, _us_advisory_cache, _perf_cache, _us_perf_cache
+    global _live_cache, _history_cache, _swing_live_cache, _swing_history_cache
+
+    # Clear all in-memory caches except FII/DII and US live
+    _signals_cache       = {}
+    _portfolio_cache     = {}
+    _picks_cache         = {}
+    _advisory_cache      = {}
+    _us_picks_cache      = {}
+    _us_advisory_cache   = {}
+    _perf_cache          = []
+    _us_perf_cache       = []
+    _live_cache          = {}
+    _history_cache       = []
+    _swing_live_cache    = []
+    _swing_history_cache = []
+
+    # Files to delete
+    wipe_files = [
+        # Screener picks, advisories, queues
+        "swing_candidates.json",
+        "swing_queue.json",
+        "india_queue.json",
+        "monthly_advisory.json",
+        "rebalance_report.json",
+        "us_monthly_advisory.json",
+        "us_portfolio_picks.json",
+        # Performance / P&L history
+        "performance_history.json",
+        "us_performance_history.json",
+        # India live portfolio + trade history
+        "portfolio_live.json",
+        "trade_history.json",
+        # Swing live positions + history
+        "swing_live.json",
+        "swing_history.json",
+    ]
+
+    deleted, skipped = [], []
+    for fname in wipe_files:
+        path = os.path.join(DATA_DIR, fname)
+        if os.path.exists(path):
+            os.remove(path)
+            deleted.append(fname)
+        else:
+            skipped.append(fname)
+
+    # Also delete screener portfolio_*.json picks files (not portfolio_live.json)
+    import glob as _glob
+    for path in _glob.glob(os.path.join(DATA_DIR, "portfolio_*.json")):
+        if "live" not in os.path.basename(path):
+            os.remove(path)
+            deleted.append(os.path.basename(path))
+
+    return jsonify({
+        "status": "ok",
+        "deleted": deleted,
+        "skipped_not_found": skipped,
+        "preserved": [
+            "fiidii_history.json",
+            "us_portfolio_live.json",
+            "us_trade_history.json",
+            "us_performance_history.json",
+            "swing_sentiment_history.json",
+            "swing_news_sentiment.json",
+            "monthly_earnings_sentiment.json",
+            "policy_signals.json",
+            "news_signals.json",
+            "llm_synthesis.json",
+            "us_news_signals.json",
+            "us_llm_synthesis.json",
+        ],
+    })
 
 
 if __name__ == "__main__":

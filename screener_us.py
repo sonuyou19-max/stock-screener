@@ -24,6 +24,7 @@ import pandas as pd
 import numpy as np
 import json
 import time
+import logging
 import warnings
 import os
 import urllib.request as _ur
@@ -36,6 +37,12 @@ from sp500_universe import (
 )
 
 warnings.filterwarnings("ignore")
+
+# Observability: surface pipeline dropouts instead of silently swallowing them.
+# WARNING level keeps the screening loop from flooding logs while still flagging
+# stocks that drop out due to data/parse failures.
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
+logger = logging.getLogger("screener_us")
 
 # ──────────────────────────────────────────────────────────────────────
 # UNIVERSE DEFINITION — no buckets
@@ -183,7 +190,8 @@ def calculate_atr(ticker, period=ATR_PERIOD):
         hist["tr3"] = (hist["Low"]  - hist["prev_close"]).abs()
         hist["true_range"] = hist[["tr1","tr2","tr3"]].max(axis=1)
         return round(float(hist["true_range"].iloc[1:].mean()), 4)
-    except Exception:
+    except Exception as e:
+        logger.warning(f"calculate_atr failed for {ticker}: {e}")
         return None
 
 def compute_atr_stops(ticker, buy_price):
@@ -211,10 +219,9 @@ def compute_atr_stops(ticker, buy_price):
 # DATA FETCHER
 # ──────────────────────────────────────────────────────────────────────
 
-def fetch_stock_data(ticker):
+def fetch_stock_data(stock, ticker):
     try:
         import math as _math
-        stock = yf.Ticker(ticker)
         info  = stock.info
         if not info or info.get("regularMarketPrice") is None:
             return None
@@ -311,7 +318,8 @@ def fetch_stock_data(ticker):
             "insider_pct": round(info.get("heldPercentInsiders", 0) * 100, 2) if info.get("heldPercentInsiders") is not None else None,
             "institutional_pct": round(info.get("heldPercentInstitutions", 0) * 100, 2) if info.get("heldPercentInstitutions") is not None else None,
         }
-    except Exception:
+    except Exception as e:
+        logger.warning(f"fetch_stock_data failed for {ticker}: {e}")
         return None
 
 
@@ -570,11 +578,11 @@ def check_circuit_risk(data):
     if not result["circuit_notes"].strip(): result["circuit_notes"] = "Volatility risk: low ✅"
     return result
 
-def check_pledge_dilution(ticker, data):
+def check_pledge_dilution(stock, ticker, data):
     result = {"pledge_risk": "low", "dilution_flag": False, "short_interest": None, "float_ratio": None,
               "shares_growth": None, "pledge_penalty": 0, "dilution_penalty": 0, "net_pledge_adj": 0, "pledge_notes": ""}
     try:
-        stock = yf.Ticker(ticker); info = stock.info
+        info = stock.info
         spf = info.get("shortPercentOfFloat")
         if spf is not None:
             sp = round(spf * 100, 2); result["short_interest"] = sp
@@ -685,7 +693,11 @@ def screen_universe(universe_tickers, live_extra_tickers=None):
     records = []; excl_liq = excl_fund = excl_earn = 0
 
     for ticker in all_tickers:
-        data = fetch_stock_data(ticker)
+        # Instantiate yf.Ticker once and thread it through the helpers that read
+        # .info — yfinance caches .info on the instance, so check_pledge_dilution
+        # reuses it instead of firing a 2nd .info network call.
+        stock_obj = yf.Ticker(ticker)
+        data = fetch_stock_data(stock_obj, ticker)
         if data is None: excl_liq += 1; time.sleep(0.3); continue
         passed, reason = passes_filters(data)
         if not passed: print(f"    ⛔ {ticker} — {reason}"); excl_fund += 1; time.sleep(0.3); continue
@@ -703,7 +715,7 @@ def screen_universe(universe_tickers, live_extra_tickers=None):
         circuit = check_circuit_risk(data)
         if circuit["circuit_exclude"]: print(f"    ⛔ {ticker} — {circuit['circuit_notes'].strip()}"); excl_earn += 1; continue
         for k in ["circuit_risk","circuit_penalty","circuit_notes"]: data[k] = circuit[k]
-        pledge = check_pledge_dilution(ticker, data); time.sleep(0.3)
+        pledge = check_pledge_dilution(stock_obj, ticker, data); time.sleep(0.3)
         for k in ["pledge_risk","dilution_flag","short_interest","float_ratio","shares_growth","net_pledge_adj","pledge_notes"]: data[k] = pledge[k]
         scores = score_stock(data, SCORING_WEIGHTS)
         records.append({**data, **scores}); time.sleep(0.3)
@@ -849,8 +861,12 @@ def run_screener():
         bp = row.get("current_price", 0)
         row["audit_trail"]   = generate_audit_trail(sr)
         row["buy_date"]      = datetime.now().strftime("%Y-%m-%d")
-        row["allocation_usd"]= round(BUDGET / MAX_PICKS, 2)
-        row["approx_shares"] = int((BUDGET / MAX_PICKS) // bp) if bp > 0 else 0
+        per_slot             = BUDGET / MAX_PICKS
+        row["allocation_usd"]= round(per_slot, 2)
+        # US brokers support fractional shares, and at ~$143/slot most quality
+        # tech names cost more than one slot. Use fractional shares so allocation
+        # is accurate instead of silently flooring to 0 while booking full cash.
+        row["approx_shares"] = round(per_slot / bp, 4) if bp > 0 else 0
         atr = compute_atr_stops(row["ticker"], bp)
         row.update(atr)
 

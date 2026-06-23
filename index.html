@@ -339,6 +339,10 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
 .v-badge{font-size:9px;font-weight:700;letter-spacing:.1em;padding:4px 10px;border-radius:999px;text-transform:uppercase;background:var(--surface2);border:1px solid var(--line2);color:var(--text2);}
 .v-badge.BULLISH,.v-badge.bullish{background:rgba(48,209,88,.1);color:var(--green);border-color:rgba(48,209,88,.25);}
 .v-badge.BEARISH,.v-badge.bearish{background:rgba(255,98,89,.1);color:var(--red);border-color:rgba(255,98,89,.25);}
+.v-badge.positive{background:rgba(48,209,88,.1);color:var(--green);border-color:rgba(48,209,88,.25);}
+.v-badge.mild_positive{background:rgba(255,214,10,.1);color:#ffd60a;border-color:rgba(255,214,10,.25);}
+.v-badge.cautious{background:rgba(255,159,10,.1);color:#ff9f0a;border-color:rgba(255,159,10,.25);}
+.v-badge.negative{background:rgba(255,98,89,.1);color:var(--red);border-color:rgba(255,98,89,.25);}
 .v-bkt{font-size:11.5px;color:var(--text2);line-height:1.55;padding:8px 0;border-bottom:1px solid var(--line);}
 .v-bkt:last-child{border-bottom:none;}
 .v-action{font-size:11.5px;color:var(--text);font-weight:500;line-height:1.5;margin-top:8px;}
@@ -616,6 +620,10 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
       Refresh
     </button>
+    <button class="refresh-btn" style="color:var(--red);border-color:rgba(255,98,89,.3)" onclick="adminReset()">
+      🗑 Reset
+    </button>
+    <a href="system_overview.html" target="_blank" class="refresh-btn" style="text-decoration:none">❓ How it works</a>
   </div>
 </header>
 
@@ -714,7 +722,7 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
   <div class="closed-wrap" id="indClosed" style="display:none"><div class="spin-wrap"><div class="spinner"></div></div></div>
   <div class="sec"><span class="sec-lbl">Monthly Advisory</span><span class="sec-line"></span></div>
   <div id="indAdvisory"><div class="spin-wrap"><div class="spinner"></div></div></div>
-  <div class="sec sec-toggle" onclick="toggleClosed('indMacroWrap','indMacroCaret')"><span class="sec-lbl">Policy Signals (RBI / PIB)</span><span class="sec-caret" id="indMacroCaret">▸</span><span class="sec-line"></span></div>
+  <div class="sec sec-toggle" onclick="toggleClosed('indMacroWrap','indMacroCaret')"><span class="sec-lbl">Category Sentiment (LLM Analysed)</span><span class="sec-caret" id="indMacroCaret">▸</span><span class="sec-line"></span></div>
   <div id="indMacroWrap" style="display:none"><div class="sig-grid" id="indMacro"><div class="spin-wrap" style="grid-column:1/-1"><div class="spinner"></div></div></div></div>
   <div class="sec sec-toggle" onclick="toggleClosed('indVerdictWrap','indVerdictCaret')"><span class="sec-lbl">AI Macro Verdict</span><span class="sec-caret" id="indVerdictCaret">▸</span><span class="sec-line"></span></div>
   <div id="indVerdictWrap" style="display:none"><div id="indVerdict"><div class="spin-wrap"><div class="spinner"></div></div></div></div>
@@ -836,6 +844,15 @@ function refreshAll(){
   if(_cv==='indView')loadIndia();
   else if(_cv==='usView')loadUS();
   else if(_cv==='swingView')loadSwing();
+}
+async function adminReset(){
+  if(!confirm('Hard reset: wipes India & Swing portfolios, P&L, trade history, picks, advisories and queues.\n\nPreserved: FII/DII, US portfolio, sentiments and LLM verdicts.\n\nContinue?'))return;
+  try{
+    const r=await fetch(`${API}/admin/reset`,{method:'POST',headers:_postHeaders()});
+    const d=await r.json();
+    if(d.status==='ok'){alert('✅ Reset done.\nDeleted: '+(d.deleted||[]).join(', ')||'nothing to delete');refreshAll();}
+    else alert('⚠️ Reset failed: '+(d.error||JSON.stringify(d)));
+  }catch(e){alert('⚠️ Error: '+e.message);}
 }
 
 /* ═══ INIT ═══ */
@@ -1410,11 +1427,11 @@ function renderAdvisory(adv){
       }).join('')}
     </div>`:'';
 
-  // ── Picks — show all 7 from screener, exclude current holdings ─────────
+  // ── Picks — show all screener picks, exclude current holdings ──────────
   let _raDep=0;
   for(const b of Object.values(indPortfolio||{}))for(const s of(b.stocks||[]))_raDep+=s.allocation_inr||0;
   const _raAvail=Math.max(0,100000-_raDep);
-  const _raSlots=Math.max(0,7-liveTkrs.size);
+  const _raSlots=Math.max(0,INDIA_MAX_SLOTS-liveTkrs.size);
   const allPicks=(adv.top_picks||[]).filter(p=>!liveTkrs.has(p.ticker));
   const picks=allPicks; // show all screener picks (not capped to open slots)
   const perAlloc=picks.length>0&&_raSlots>0?Math.floor(_raAvail/picks.length):0;
@@ -1672,9 +1689,11 @@ async function _asSubmit(){
         const nseSymbol=ticker.replace(/\.NS$/i,'').replace(/\.BO$/i,'');
         _showSpinner('Placing order on Zerodha…');
         try{
+          let _oType=orderType,_oPrice=orderType==='LIMIT'?price:undefined;
+          if(orderType==='MARKET'){try{const _q=await fetch(`${API}/kite/quote?symbol=${nseSymbol}`,{headers:_postHeaders()});const _qd=await _q.json();const _ltp=_qd[nseSymbol]?.last_price;if(_ltp){_oPrice=Math.round(Math.round(_ltp*1.005/0.05)*0.05*100)/100;_oType='LIMIT';}}catch(_){}}
           const kiteRes=await fetch(`${API}/kite/place-order`,{method:'POST',headers:_postHeaders(),body:JSON.stringify({
             symbol:nseSymbol,side:'BUY',quantity:Math.round(qty),
-            order_type:orderType,price:orderType==='LIMIT'?price:undefined,
+            order_type:_oType,price:_oPrice,
             product:'CNC',tag:'eq-advisor'
           })});
           const kiteData=await kiteRes.json();
@@ -1915,6 +1934,7 @@ function _eswToggleKite(){
 
 /* ── India monthly queue functions ───────────────────── */
 const INDIA_SLOT_BUDGET = 10000; // ₹10,000 per position slot
+const INDIA_MAX_SLOTS   = 10;    // ₹1,00,000 corpus / ₹10,000 = 10 positions (matches screener TOP_PICKS)
 
 // ─── BUY queue ────────────────────────────────────────
 let _ibqTicker=null, _ibqEntry={};
@@ -1947,13 +1967,26 @@ async function queueIndiaBuy(ticker){
     const gate=parseFloat((curr*1.03).toFixed(2));
     const autoQty=Math.max(1,Math.floor(INDIA_SLOT_BUDGET/optEntry));
     const basisLabel=curr<=ma20?'Price at/below 20-DMA — buy at market':'20-DMA support zone';
-    _ibqEntry={ticker,nse_symbol:sym,optimal_entry:optEntry,limit_price:gate,ma20:parseFloat(ma20.toFixed(2)),ma50:parseFloat(ma50.toFixed(2)),current_price:curr};
-    document.getElementById('ibqSub').textContent='Stop: set via rebalancer · Budget: ₹'+INDIA_SLOT_BUDGET.toLocaleString('en-IN');
+    // Compute 14-day ATR directly from live Zerodha OHLCV rows
+    let liveAtr=null;
+    if(rows.length>=15){
+      const trs=[];
+      for(let i=1;i<rows.length;i++){
+        const h=rows[i].high,l=rows[i].low,pc=rows[i-1].close;
+        trs.push(Math.max(h-l,Math.abs(h-pc),Math.abs(l-pc)));
+      }
+      liveAtr=trs.slice(-14).reduce((a,b)=>a+b,0)/14;
+    }
+    const liveTrailDist=liveAtr?parseFloat((liveAtr*1.5).toFixed(2)):null;
+    const trailRs=liveTrailDist?`₹${liveTrailDist.toFixed(2)} (1.5× ATR) below day's high`:'ATR data unavailable';
+    _ibqEntry={ticker,nse_symbol:sym,optimal_entry:optEntry,limit_price:gate,ma20:parseFloat(ma20.toFixed(2)),ma50:parseFloat(ma50.toFixed(2)),current_price:curr,trail_atr:liveTrailDist};
+    document.getElementById('ibqSub').textContent='Budget: ₹'+INDIA_SLOT_BUDGET.toLocaleString('en-IN');
     document.getElementById('ibqEntryInfo').innerHTML=
       `<strong>Optimal entry:</strong> ₹${optEntry.toFixed(2)}<br>`+
       `<strong>Entry basis:</strong> ${basisLabel}<br>`+
       `<strong>20-DMA:</strong> ₹${ma20.toFixed(2)} · <strong>50-DMA:</strong> ₹${ma50.toFixed(2)}<br>`+
-      `<strong>Max gate:</strong> ₹${gate.toFixed(2)} (skip if gaps above 3%)`;
+      `<strong>Max gate:</strong> ₹${gate.toFixed(2)} (skip if gaps above 3%)<br>`+
+      `<strong>Trailing stop (ATR):</strong> ${trailRs}`;
     document.getElementById('ibqQty').value=autoQty;
     document.getElementById('ibqQtyNote').textContent='Auto: ₹'+INDIA_SLOT_BUDGET.toLocaleString('en-IN')+' ÷ ₹'+optEntry.toFixed(0)+' = '+autoQty+' shares';
     _ibqCalcValue();
@@ -1996,6 +2029,7 @@ async function _ibqSubmit(){
       ma20:_ibqEntry.ma20,
       ma50:_ibqEntry.ma50,
       budget_inr:INDIA_SLOT_BUDGET,
+      trail_atr:_ibqEntry.trail_atr||null,
       status:'queued',
     };
     const r=await fetch(`${API}/india/queue`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});
@@ -2115,11 +2149,13 @@ function queueSwingTrade(ticker){
   const basisLabel={'breakout-pullback':'Broken resistance (now support)','bb-cross':'20-DMA support zone','momentum-dip':'Pullback from scan close'}[entryType]||entryType;
   const opt=c.optimal_entry||c.current_price||0;
   const gate=c.limit_price||(opt*1.02);
+  const trailRs=(c.trailing_stop||0).toFixed?.(2)||(c.trailing_stop||'—');
   document.getElementById('qswEntryInfo').innerHTML=
     `<strong>Optimal entry:</strong> ₹${parseFloat(opt).toFixed(2)}<br>`+
     `<strong>Entry basis:</strong> ${basisLabel}<br>`+
     `<strong>Max entry gate:</strong> ₹${parseFloat(gate).toFixed(2)} (skip if gap above)<br>`+
-    `<strong>Auto stop-loss GTT:</strong> ₹${(c.stop_loss||0).toFixed?.(2)||(c.stop_loss||'—')} on fill`;
+    `<strong>Auto stop-loss GTT:</strong> ₹${(c.stop_loss||0).toFixed?.(2)||(c.stop_loss||'—')} on fill<br>`+
+    `<strong>Trailing stop (ATR):</strong> ₹${trailRs} below day's high — auto-updated daily`;
   document.getElementById('qswQty').value='';
   document.getElementById('qswValueNote').textContent='';
   document.getElementById('queueSwModal').classList.remove('hidden');
@@ -2158,6 +2194,7 @@ async function _qswSubmit(){
       entry_type:c.entry_type,
       entry_basis:c.entry_basis,
       scan_date:scanD,
+      trail_atr:c.trailing_stop||null,
       status:'queued',
     };
     const r=await fetch(`${API}/swing/queue`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});
@@ -2210,9 +2247,11 @@ async function _eswSubmit(){
       _swL=false;await loadSwing();
       if(placeKite){
         const nseSymbol=(c.ticker||'').replace(/\.NS$/i,'').replace(/\.BO$/i,'');
+        let _oType2=orderType,_oPrice2=orderType==='LIMIT'?parseFloat(c.current_price):undefined;
+        if(orderType==='MARKET'){try{const _q=await fetch(`${API}/kite/quote?symbol=${nseSymbol}`,{headers:_postHeaders()});const _qd=await _q.json();const _ltp=_qd[nseSymbol]?.last_price;if(_ltp){_oPrice2=Math.round(Math.round(_ltp*1.005/0.05)*0.05*100)/100;_oType2='LIMIT';}}catch(_){}}
         const kiteRes=await fetch(`${API}/kite/place-order`,{method:'POST',headers:_postHeaders(),body:JSON.stringify({
           symbol:nseSymbol,side:'BUY',quantity:Math.round(qty),
-          order_type:orderType,price:orderType==='LIMIT'?parseFloat(c.current_price):undefined,
+          order_type:_oType2,price:_oPrice2,
           product:'CNC',tag:'sw-advisor'
         })});
         const kiteData=await kiteRes.json();
@@ -2340,12 +2379,12 @@ function renderSwaps(cId,data,mkt){
 
 /* ═══ MACRO / VERDICT ═══ */
 function renderIndMacro(){
-  const el=document.getElementById('indMacro');if(!indSignals){el.innerHTML=`<div class="empty" style="grid-column:1/-1">No policy signals.</div>`;return;}
-  const policy=(indSignals.policy_signals||{}).signals||{};
+  const el=document.getElementById('indMacro');if(!indSignals){el.innerHTML=`<div class="empty" style="grid-column:1/-1">No sentiment data.</div>`;return;}
+  const swing=(indSignals.swing_news_sentiment||{}).signals||(indSignals.swing_news_sentiment?.payload||{}).signals||{};
   const em={positive:'🟢',mild_positive:'🟡',neutral:'⚪',cautious:'🟠',negative:'🔴'};
-  const keys=Object.keys(policy);
-  if(!keys.length){el.innerHTML=`<div class="empty" style="grid-column:1/-1">No signals yet.</div>`;return;}
-  el.innerHTML=keys.map(bk=>{const sig=policy[bk];const ss=typeof sig==='string'?sig:(sig?.signal||'neutral');return`<div class="sig-c"><div class="sig-bkt">${bk.replace(/_/g,' ')}</div><div class="sig-val">${em[ss]||'⚪'} ${ss.replace(/_/g,' ')}</div></div>`;}).join('');
+  const keys=Object.keys(swing).sort();
+  if(!keys.length){el.innerHTML=`<div class="empty" style="grid-column:1/-1">No category sentiment yet. Run swing_news_sentiment.py first.</div>`;return;}
+  el.innerHTML=keys.map(sector=>{const sig=swing[sector];const ss=sig?.signal||'neutral';return`<div class="sig-c"><div class="sig-bkt">${sector}</div><div class="sig-val">${em[ss]||'⚪'} ${ss.replace(/_/g,' ')}</div></div>`;}).join('');
 }
 
 const _verdictCache={};
@@ -2353,7 +2392,7 @@ function _escAttr(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;
 
 function renderVerdict(containerId,verdict,buckets,labels){
   const el=document.getElementById(containerId);if(!verdict){el.innerHTML=`<div class="empty">No AI verdict yet.</div>`;return;}
-  _verdictCache[containerId]={data:verdict,labels:labels||{}};
+  _verdictCache[containerId]={kind:'macro',data:verdict,labels:labels||{}};
   const em={Positive:'🟢',Cautious:'🟠',Neutral:'⚪',Negative:'🔴'};
   const overall=verdict.overall_market;
   el.innerHTML=(overall?`<div class="v-overall">${overall}</div>`:'')+
@@ -2366,37 +2405,49 @@ function renderVerdict(containerId,verdict,buckets,labels){
 }
 
 function renderIndVerdict(){
-  const v=indSignals?.llm_synthesis?.verdict;
   const el=document.getElementById('indVerdict');
-  if(!v){el.innerHTML='<div class="empty">No AI verdict yet.</div>';return;}
-  _verdictCache['indVerdict']={data:v,labels:{}};
-  const em={Positive:'🟢',Cautious:'🟠',Neutral:'⚪',Negative:'🔴'};
-  const overall=v.overall_market;
-  const buckets=Object.keys(v).filter(k=>k!=='overall_market');
-  el.innerHTML=(overall?`<div class="v-overall">${overall}</div>`:'')+
-  buckets.map(bk=>{const bv=v[bk];if(!bv||typeof bv!=='object')return'';const vrd=bv.verdict||'Neutral';return`<div class="v-card" data-vc="indVerdict" data-bk="${_escAttr(bk)}" onclick="openVerdictDetail(this)">
-    <div class="v-hdr"><div class="v-bkt">${bk}</div><div class="v-badge ${vrd}">${em[vrd]||'⚪'} ${vrd}</div></div>
-    <div class="v-driver">${bv.key_driver||''}</div>
-    <div class="v-action">${bv.action||''}</div>
-    ${bv.watch_for?`<div class="v-watch">👀 ${bv.watch_for}</div>`:''}
-  </div>`;}).join('');
+  const swData=indSignals?.swing_news_sentiment||{};
+  const swing=(swData.signals||swData.payload?.signals||{});
+  const keys=Object.keys(swing).sort();
+  if(!keys.length){el.innerHTML='<div class="empty">No AI verdict yet.</div>';return;}
+  _verdictCache['indVerdict']={kind:'sentiment',data:swing,labels:{}};
+  const em={positive:'🟢',mild_positive:'🟡',neutral:'⚪',cautious:'🟠',negative:'🔴'};
+  const genAt=swData.generated_at||'';
+  const nonNeutral=keys.filter(s=>swing[s]?.signal&&swing[s].signal!=='neutral');
+  const header=genAt?`<div style="font-size:11px;color:var(--text3);margin:0 20px 12px">LLM analysed · ${genAt}</div>`:'';
+  const cards=nonNeutral.map(sector=>{
+    const sig=swing[sector];const signal=sig.signal;const reason=sig.reason||'';
+    return`<div class="v-card" data-vc="indVerdict" data-bk="${_escAttr(sector)}" onclick="openVerdictDetail(this)">
+      <div class="v-hdr"><div style="font-size:12px;font-weight:600;color:var(--text)">${sector}</div><div class="v-badge ${signal}">${em[signal]||'⚪'} ${signal.replace(/_/g,' ')}</div></div>
+      <div class="v-driver">${reason.length>220?reason.substring(0,220)+'…':reason}</div>
+    </div>`;
+  }).join('');
+  el.innerHTML=header+(cards||`<div class="empty" style="margin:0 20px">All sectors neutral — no strong signals today.</div>`);
 }
 
 function openVerdictDetail(cardEl){
   const containerId=cardEl.dataset.vc,bk=cardEl.dataset.bk;
   const cache=_verdictCache[containerId];if(!cache)return;
   const bv=cache.data[bk];if(!bv||typeof bv!=='object')return;
-  const label=cache.labels[bk]||bk;
-  const vrd=bv.verdict||'Neutral';
-  const em={Positive:'🟢',Cautious:'🟠',Neutral:'⚪',Negative:'🔴'};
-  document.getElementById('vdTitle').textContent=label;
-  document.getElementById('vdBadgeWrap').innerHTML=
-    `<span class="v-badge ${vrd}">${em[vrd]||'⚪'} ${vrd}</span>`+
-    (bv.confidence?`<span style="color:var(--text3);font-size:11px;margin-left:8px">Confidence: ${bv.confidence}</span>`:'');
-  document.getElementById('vdBody').innerHTML=
-    (bv.key_driver?`<div class="v-driver" style="margin-top:0">${bv.key_driver}</div>`:'')+
-    (bv.action?`<div class="v-action">${bv.action}</div>`:'')+
-    (bv.watch_for?`<div class="v-watch">👀 ${bv.watch_for}</div>`:'');
+  document.getElementById('vdTitle').textContent=cache.labels[bk]||bk;
+  if(cache.kind==='sentiment'){
+    const em={positive:'🟢',mild_positive:'🟡',neutral:'⚪',cautious:'🟠',negative:'🔴'};
+    const signal=bv.signal||'neutral';
+    document.getElementById('vdBadgeWrap').innerHTML=
+      `<span class="v-badge ${signal}">${em[signal]||'⚪'} ${signal.replace(/_/g,' ')}</span>`;
+    document.getElementById('vdBody').innerHTML=
+      `<div class="v-driver" style="margin-top:0">${bv.reason||''}</div>`;
+  }else{
+    const em={Positive:'🟢',Cautious:'🟠',Neutral:'⚪',Negative:'🔴'};
+    const vrd=bv.verdict||'Neutral';
+    document.getElementById('vdBadgeWrap').innerHTML=
+      `<span class="v-badge ${vrd}">${em[vrd]||'⚪'} ${vrd}</span>`+
+      (bv.confidence?`<span style="color:var(--text3);font-size:11px;margin-left:8px">Confidence: ${bv.confidence}</span>`:'');
+    document.getElementById('vdBody').innerHTML=
+      (bv.key_driver?`<div class="v-driver" style="margin-top:0">${bv.key_driver}</div>`:'')+
+      (bv.action?`<div class="v-action">${bv.action}</div>`:'')+
+      (bv.watch_for?`<div class="v-watch">👀 ${bv.watch_for}</div>`:'');
+  }
   document.getElementById('verdictDetailModal').classList.remove('hidden');
 }
 function _vdClose(){document.getElementById('verdictDetailModal').classList.add('hidden');}

@@ -1,10 +1,10 @@
 """
-Indian Stock Screener — Monthly Top 7
+Indian Stock Screener — Monthly Top 10
 ======================================
 Fetches live data from Yahoo Finance (yfinance) for all Nifty 500 stocks,
 applies universal fundamental + quality filters, scores globally across
 20 NSE sectors, integrates swing-news sentiment signals (hard-excludes
-negative-sentiment sectors), and selects the top 7 stocks.
+negative-sentiment sectors), and selects the top 10 stocks.
 
 Sectors match the 20 NSE classifications used by the swing scanner.
 Run monthly to refresh your portfolio picks.
@@ -28,6 +28,7 @@ _UPLOAD_AUTH = {"X-Upload-Token": _os_tok.environ["UPLOAD_TOKEN"]} if _os_tok.ge
 
 import json
 import time
+import logging
 import warnings
 import requests
 import urllib.request as _urllib
@@ -50,7 +51,9 @@ from nse_universe import (
 # ─────────────────────────────────────────────
 
 BUDGET         = 100_000   # Total corpus in INR
-TOP_PICKS      = 7         # Global top-N to select
+TOP_PICKS      = 10        # Global top-N to select. 10 slots → ₹100,000/10 =
+                           # ₹10,000 per slot, matching INDIA_SLOT_BUDGET in the
+                           # dashboard's queue/auto-buy system.
 MAX_PER_SECTOR = 2         # Diversification cap — max picks from one NSE sector
 
 ATR_MULT       = 2.5       # Stop-loss = buy_price - ATR_MULT * ATR
@@ -142,6 +145,12 @@ def _load_prev_institutional() -> dict:
 
 warnings.filterwarnings("ignore")
 
+# Observability: surface pipeline dropouts on the Railway dashboard instead of
+# silently swallowing them. WARNING level keeps the 500-stock loop from flooding
+# logs while still flagging stocks that drop out due to data/parse failures.
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
+logger = logging.getLogger("screener")
+
 
 # ─────────────────────────────────────────────
 # ATR CALCULATOR
@@ -176,7 +185,8 @@ def calculate_atr(ticker: str, period: int = ATR_PERIOD) -> Optional[float]:
         atr = hist["true_range"].iloc[1:].mean()
         return round(float(atr), 2)
 
-    except Exception:
+    except Exception as e:
+        logger.warning(f"calculate_atr failed for {ticker}: {e}")
         return None
 
 
@@ -215,12 +225,15 @@ def compute_atr_stops(ticker: str, buy_price: float) -> dict:
 # DATA FETCHER
 # ─────────────────────────────────────────────
 
-def fetch_stock_data(ticker: str) -> Optional[dict]:
+def fetch_stock_data(stock: "yf.Ticker", ticker: str) -> Optional[dict]:
     """Fetch fundamentals + price data for a single NSE ticker.
     Returns None if stock fails liquidity filter.
+
+    Takes a pre-instantiated yf.Ticker so .info is fetched once and reused by
+    downstream checks on the same object (avoids a duplicate .info network call
+    in check_pledge_dilution).
     """
     try:
-        stock = yf.Ticker(ticker)
         info  = stock.info
 
         if not info or info.get("regularMarketPrice") is None:
@@ -360,7 +373,8 @@ def fetch_stock_data(ticker: str) -> Optional[dict]:
                                     if info.get("heldPercentInstitutions") is not None else None,
         }
 
-    except Exception:
+    except Exception as e:
+        logger.warning(f"fetch_stock_data failed for {ticker}: {e}")
         return None
 
 
@@ -931,10 +945,11 @@ SHORT_INTEREST_ELEVATED = 2.0
 FLOAT_RATIO_SUSPICIOUS  = 0.65
 DILUTION_THRESHOLD      = 5.0
 
-def check_pledge_dilution(ticker: str, data: dict) -> dict:
+def check_pledge_dilution(stock: "yf.Ticker", ticker: str, data: dict) -> dict:
     """
     Flag promoter pledge risk (proxy) and share dilution.
-    Makes one extra yfinance call per stock.
+    Reuses the shared yf.Ticker object so .info is read from cache (no extra
+    network call); only quarterly_balance_sheet is a genuinely new fetch.
     """
     result = {
         "pledge_risk":      "low",
@@ -949,7 +964,6 @@ def check_pledge_dilution(ticker: str, data: dict) -> dict:
     }
 
     try:
-        stock = yf.Ticker(ticker)
         info  = stock.info
 
         short_pct_float = info.get("shortPercentOfFloat")
@@ -1245,7 +1259,7 @@ def screen_all(
       10. Global normalisation (scores relative to entire Nifty 500 universe)
       11. All quality adjustments applied to final_score
       12. Sentiment bonus/penalty applied per sector
-      13. Sort globally → return (top_7_df, all_df)
+      13. Sort globally → return (top_picks_df, all_df)
     """
     records            = []
     excluded_sentiment = 0
@@ -1273,7 +1287,12 @@ def screen_all(
         print(f"\n  Screening {sector_name} ({len(tickers)} stocks) {semj} {sentiment}...")
 
         for ticker in tickers:
-            data = fetch_stock_data(ticker)
+            # Instantiate the yf.Ticker once per stock and thread it through the
+            # helpers that read .info — yfinance caches .info on the instance, so
+            # check_pledge_dilution reuses it instead of firing a 2nd .info call.
+            stock_obj = yf.Ticker(ticker)
+
+            data = fetch_stock_data(stock_obj, ticker)
             if data is None:
                 excluded_liq += 1
                 time.sleep(0.3)
@@ -1341,7 +1360,7 @@ def screen_all(
             data["circuit_penalty"] = circuit["circuit_penalty"]
             data["circuit_notes"]   = circuit["circuit_notes"]
 
-            pledge = check_pledge_dilution(ticker, data)
+            pledge = check_pledge_dilution(stock_obj, ticker, data)
             time.sleep(0.3)
             data["pledge_risk"]    = pledge["pledge_risk"]
             data["dilution_flag"]  = pledge["dilution_flag"]
@@ -1451,11 +1470,22 @@ def select_top_diversified(all_df: pd.DataFrame, n_picks: int, max_per_sector: i
     Walk down the ranked list, capping picks per NSE sector so one hot
     sector (sentiment boost + sector-wide rally) cannot fill the whole
     portfolio. Skipped stocks remain in all_df for the full ranking report.
+
+    Also skips stocks whose single-share price exceeds the per-stock budget
+    (BUDGET / TOP_PICKS) — otherwise floor-division allocation yields 0 shares
+    while still booking the cash (e.g. MRF, Page, Bosch > ₹14,285/share).
+    Skipping here promotes the next affordable runner-up automatically.
     """
     picked_idx   = []
     sector_count: dict[str, int] = {}
+    max_affordable = BUDGET / TOP_PICKS
 
     for idx, row in all_df.iterrows():
+        price = row.get("current_price", 0) or 0
+        if price > max_affordable:
+            print(f"  ⏭️  {row['ticker']} skipped — share price ₹{price:,.0f} exceeds "
+                  f"per-stock budget ₹{max_affordable:,.0f} (would buy 0 shares)")
+            continue
         sector = row.get("nse_sector", "Unknown")
         if sector_count.get(sector, 0) >= max_per_sector:
             print(f"  ⏭️  {row['ticker']} skipped for diversification — "
@@ -1474,7 +1504,7 @@ def select_top_diversified(all_df: pd.DataFrame, n_picks: int, max_per_sector: i
 # ─────────────────────────────────────────────
 
 def build_portfolio(budget: int = BUDGET) -> tuple[dict, pd.DataFrame, pd.DataFrame]:
-    """Run screener across all 20 NSE sectors and build the top-7 portfolio."""
+    """Run screener across all 20 NSE sectors and build the top-10 portfolio."""
 
     print("\n" + "="*60)
     print("  INDIAN STOCK SCREENER — MONTHLY TOP 7")
@@ -1613,7 +1643,7 @@ def build_portfolio(budget: int = BUDGET) -> tuple[dict, pd.DataFrame, pd.DataFr
 
     portfolio = {
         "top_picks": {
-            "label":                "Monthly Top 7 — Nifty 500",
+            "label":                f"Monthly Top {TOP_PICKS} — Nifty 500",
             "total_allocation":     budget,
             "per_stock_allocation": round(per_stock, 0),
             "stocks":               stocks_list,
@@ -1755,12 +1785,23 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
             for stock in bucket.get("stocks", []):
                 tick = stock.get("ticker", "")
                 si   = all_scores.get(tick)
+                # Holding duration for the LTCG tax rule in the LLM prompt —
+                # computed here so it's present in BOTH the API-rebalancer and
+                # the lightweight-fallback paths (rebalance_holdings only sets it
+                # in the fallback).
+                buy_date = stock.get("buy_date", "")
+                try:
+                    days_held = (datetime.now() -
+                                 datetime.strptime(buy_date, "%Y-%m-%d")).days
+                except (ValueError, TypeError):
+                    days_held = None
                 live_holdings.append({
                     "ticker":    tick,
                     "name":      stock.get("name", ""),
                     "sector":    stock.get("nse_sector", stock.get("sector", "")),
                     "buy_price": stock.get("price", stock.get("buy_price", 0)),
-                    "buy_date":  stock.get("buy_date", ""),
+                    "buy_date":  buy_date,
+                    "days_held": days_held,
                     # screener rank (used as context only, not exit trigger)
                     "current_score": si["score"] if si else None,
                     "current_rank":  si["rank"]  if si else None,
@@ -1805,28 +1846,41 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
         print(f"  ⚠️  Rebalancer API report not available ({e}) — running lightweight check")
         live_holdings = rebalance_holdings(live_holdings, all_df)
 
-    # ── Build screener top-10 (new buys only, not already in portfolio) ───────
+    # ── Build screener top picks (new buys only, not already in portfolio) ────
+    # Index ATR data from portfolio stocks_list so advisory picks include it
+    _port_atr = {}
+    for s in portfolio.get("top_picks", {}).get("stocks", []):
+        _port_atr[s["ticker"]] = {
+            "trailing_stop_dist": s.get("trailing_stop_dist"),
+            "stop_loss_price":    s.get("stop_loss_price"),
+            "stop_loss_pct":      s.get("stop_loss_pct"),
+        }
+
     new_picks    = []
     live_tickers = {h["ticker"] for h in live_holdings}
-    for _, row in sorted_df.head(10).iterrows():
+    for _, row in sorted_df.head(TOP_PICKS).iterrows():
+        _atr = _port_atr.get(row["ticker"], {})
         new_picks.append({
-            "ticker":    row["ticker"],
-            "name":      row["name"],
-            "sector":    row.get("nse_sector", ""),
-            "score":     round(row["final_score"], 1),
-            "sentiment": row.get("sector_sentiment", "neutral"),
-            "policy":    row.get("policy_signal", "neutral"),
-            "earnings":  row.get("earnings_signal", "neutral"),
-            "mom_3m":    round(float(row.get("momentum_3m", 0) or 0), 1),
-            "roe":       round(float(row.get("roe_pct", 0) or 0), 1),
-            "pe":        round(float(row.get("pe_ratio", 0) or 0), 1),
+            "ticker":             row["ticker"],
+            "name":               row["name"],
+            "sector":             row.get("nse_sector", ""),
+            "score":              round(row["final_score"], 1),
+            "sentiment":          row.get("sector_sentiment", "neutral"),
+            "policy":             row.get("policy_signal", "neutral"),
+            "earnings":           row.get("earnings_signal", "neutral"),
+            "mom_3m":             round(float(row.get("momentum_3m", 0) or 0), 1),
+            "roe":                round(float(row.get("roe_pct", 0) or 0), 1),
+            "pe":                 round(float(row.get("pe_ratio", 0) or 0), 1),
+            "trailing_stop_dist": _atr.get("trailing_stop_dist"),
+            "stop_loss_price":    _atr.get("stop_loss_price"),
+            "stop_loss_pct":      _atr.get("stop_loss_pct"),
         })
     new_entry_picks = [p for p in new_picks if p["ticker"] not in live_tickers]
 
     base = {
         "generated_at":        generated_at,
         "current_holdings":    len(live_holdings),
-        "top_picks":           new_picks[:7],
+        "top_picks":           new_picks[:TOP_PICKS],
         "holdings_health":     live_holdings,   # rebalancer data per holding
         "rebalance_report_date": rb_report.get("date") if rb_report else None,
     }
@@ -1835,9 +1889,18 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
 
     # ── LLM path ────────────────────────────────────────────────────────────
     if api_key and live_holdings:
+        def _hold_tax(h):
+            d = h.get("days_held")
+            if d is None:
+                return "holding period unknown"
+            if d > 365:
+                return f"held {d}d — LTCG-eligible (10% tax)"
+            return f"held {d}d — STCG ({365 - d}d to LTCG, 15% tax)"
+
         live_str = "\n".join(
             f"  {i+1}. {h['ticker'].replace('.NS','')} ({h['name'][:28]}) "
             f"| bought ₹{(h.get('buy_price') or 0):,.0f} on {h.get('buy_date','?')} "
+            f"| {_hold_tax(h)} "
             f"| PnL {(h.get('pnl_pct') or 0):+.1f}% "
             f"| rebalancer verdict: {h.get('rebalancer_verdict','?')} "
             f"| reason: {str(h.get('rebalancer_reason',''))[:60]}"
@@ -1847,7 +1910,7 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
             f"  {i+1}. {p['ticker'].replace('.NS','')} ({p['name'][:28]}) "
             f"| {p['sector']} | Score {p['score']} | Mom-3M {(p.get('mom_3m') or 0):+.1f}% "
             f"| ROE {(p.get('roe') or 0):.0f}% | PE {(p.get('pe') or 0):.0f}"
-            for i, p in enumerate(new_entry_picks[:7])
+            for i, p in enumerate(new_entry_picks[:TOP_PICKS])
         )
 
         rb_note = (
@@ -1876,7 +1939,7 @@ TASK: Pick exactly ONE action:
 A) HOLD        — no exits flagged, all positions healthy
 B) EXIT        [ticker] — bank profits from this position, hold cash
 C) EXIT_AND_ADD [sell] → [buy] — exit one position, immediately redeploy into screener top pick
-D) ADD         [ticker] — add a new position if portfolio < 7 and cash is available
+D) ADD         [ticker] — add a new position if portfolio < {TOP_PICKS} and cash is available
 
 RULES:
 - Only recommend EXIT/EXIT_AND_ADD for a holding whose rebalancer verdict is EXIT or TRIM

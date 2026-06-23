@@ -16,7 +16,7 @@ Sentiment scale:
   cautious      → −1 penalty
   negative      → HARD EXCLUDE (stock removed regardless of technicals)
 
-Schedule: 30 13 * * 1-5  (7:00 PM IST = 13:30 UTC, runs 30 min before swing-scanner at 14:00 UTC)
+Schedule: 0 17 * * 0-6  (10:30 PM IST = 17:00 UTC, captures full business day; swing-scanner runs 30 min later at 17:30 UTC)
 
 Usage:
   python swing_news_sentiment.py           # run scan
@@ -49,10 +49,20 @@ IST                      = ZoneInfo("Asia/Kolkata")
 DATA_DIR                 = os.getenv("DATA_DIR", "/data")
 API_URL                  = os.getenv("API_URL", "https://web-production-50eee.up.railway.app").rstrip("/")
 SWING_SENTIMENT_FILE     = os.path.join(DATA_DIR, "swing_news_sentiment.json")
+SWING_HISTORY_FILE       = os.path.join(DATA_DIR, "swing_sentiment_history.json")
 
-SCAN_DAYS   = 7     # last 7 days — wider window to catch more headlines
-MIN_MATCHES = 2     # minimum headline hits before applying signal
-MAX_ITEMS   = 60    # per feed
+ANTHROPIC_API = "https://api.anthropic.com/v1/messages"
+ANTHROPIC_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+LLM_MODEL     = "claude-haiku-4-5-20251001"
+LLM_ENABLED   = bool(ANTHROPIC_KEY)
+
+SCAN_DAYS           = 1   # only today's headlines — blending with history avoids duplicate scanning
+MIN_MATCHES         = 1   # 1-day window yields fewer items so lower threshold
+MAX_ITEMS           = 60  # per feed
+HISTORY_MAX_DAYS    = 30  # rolling window kept in history file
+HISTORY_BLEND_DAYS  = 7   # how many past days to blend with today's raw signal
+HISTORY_BLEND_TODAY = 0.40  # weight given to today's raw signal
+HISTORY_BLEND_PAST  = 0.60  # weight given to rolling history average
 
 HEADERS = {
     "User-Agent": (
@@ -727,7 +737,179 @@ def fetch_all_feeds() -> list:
 
 
 # ─────────────────────────────────────────────
-# SCORER
+# LLM SECTOR SCORER
+# ─────────────────────────────────────────────
+
+def _get_sector_headlines(items: list) -> dict:
+    """Filter up to 15 relevant headlines per sector using keyword presence."""
+    result = {s: [] for s in SECTOR_KEYWORDS}
+    for item in items:
+        text = (item["title"] + " " + item.get("body", "")).lower()
+        for sector, kw in SECTOR_KEYWORDS.items():
+            if len(result[sector]) >= 15:
+                continue
+            all_kw = kw.get("positive", []) + kw.get("negative", [])
+            if any(k in text for k in all_kw):
+                result[sector].append(item["title"])
+    return result
+
+
+def llm_score_sectors(items: list) -> dict | None:
+    """
+    Call Claude Haiku with sector-relevant headlines to get near-term verdicts.
+    Returns {sector: {signal, score, matches, reason}} matching aggregate_sentiment
+    format, or None if unavailable/failed (caller falls back to keyword scoring).
+    """
+    sector_headlines = _get_sector_headlines(items)
+
+    sectors_block = []
+    for sector, headlines in sector_headlines.items():
+        bullets = "\n".join(f"  - {h[:100]}" for h in headlines) if headlines else "  (no relevant headlines found)"
+        sectors_block.append(f"{sector}:\n{bullets}")
+
+    sector_template = "\n".join(
+        f'  "{s}": {{"signal": "neutral", "reason": "..."}}'
+        for s in SECTOR_KEYWORDS
+    )
+
+    prompt = f"""You are a senior equity analyst for an Indian equity portfolio. Analyse today's financial news headlines and rate the near-term outlook for each of the 20 NSE sectors for swing trading (1–4 week horizon).
+
+Signal options (pick exactly one per sector):
+- positive: multiple strong positive signals, clear near-term tailwind
+- mild_positive: more good news than bad, moderate tailwind
+- neutral: mixed or insufficient signals
+- cautious: more bad news than good, sector headwinds
+- negative: multiple strong negative signals, avoid for swing trades
+
+HEADLINES BY SECTOR (today):
+{"=" * 60}
+{chr(10).join(sectors_block)}
+{"=" * 60}
+
+Return ONLY a JSON object with exactly these 20 sector keys — no markdown, no preamble:
+{{
+{sector_template}
+}}"""
+
+    try:
+        resp = requests.post(
+            ANTHROPIC_API,
+            headers={
+                "x-api-key":         ANTHROPIC_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type":      "application/json",
+            },
+            json={
+                "model":      LLM_MODEL,
+                "max_tokens": 1500,
+                "messages":   [{"role": "user", "content": prompt}],
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["content"][0]["text"].strip()
+
+        if raw.startswith("```"):
+            raw = re.sub(r"^```[a-z]*\n?", "", raw)
+            raw = re.sub(r"\n?```$", "", raw)
+
+        parsed = json.loads(raw.strip())
+
+        VALID_SIGNALS = {"positive", "mild_positive", "neutral", "cautious", "negative"}
+        SIGNAL_SCORES = {"positive": 5.0, "mild_positive": 2.0, "neutral": 0.0, "cautious": -2.0, "negative": -5.0}
+        result = {}
+        for sector in SECTOR_KEYWORDS:
+            entry  = parsed.get(sector, {})
+            signal = entry.get("signal", "neutral")
+            if signal not in VALID_SIGNALS:
+                signal = "neutral"
+            result[sector] = {
+                "score":   SIGNAL_SCORES[signal],
+                "signal":  signal,
+                "matches": len(sector_headlines.get(sector, [])),
+                "reason":  entry.get("reason", "LLM verdict."),
+            }
+
+        n_nonneut = sum(1 for v in result.values() if v["signal"] != "neutral")
+        print(f"  ✅ LLM scored 20 sectors ({n_nonneut} non-neutral)")
+        return result
+
+    except Exception as e:
+        print(f"  ⚠️  LLM sector scoring failed: {e} — falling back to keyword scoring")
+        return None
+
+
+# ─────────────────────────────────────────────
+# HISTORY BLENDING
+# ─────────────────────────────────────────────
+
+_SIGNAL_TO_INT = {"positive": 2, "mild_positive": 1, "neutral": 0, "cautious": -1, "negative": -2}
+_SIGNAL_SCORES = {"positive": 5.0, "mild_positive": 2.0, "neutral": 0.0, "cautious": -2.0, "negative": -5.0}
+
+
+def _int_to_signal(avg: float) -> str:
+    if avg >= 1.5:   return "positive"
+    if avg >= 0.5:   return "mild_positive"
+    if avg <= -1.5:  return "negative"
+    if avg <= -0.5:  return "cautious"
+    return "neutral"
+
+
+def blend_with_history(raw_signals: dict) -> dict:
+    """
+    Blend today's raw signals (40%) with the rolling history average (60%).
+    If no history exists, returns raw_signals unchanged.
+    History entries saved before today are used (today not yet appended).
+    """
+    history = []
+    if os.path.exists(SWING_HISTORY_FILE):
+        try:
+            with open(SWING_HISTORY_FILE) as f:
+                history = json.load(f)
+        except Exception:
+            pass
+
+    today_str = str(date.today())
+    past = [h for h in history if h.get("date") != today_str][-HISTORY_BLEND_DAYS:]
+
+    if not past:
+        print(f"  ℹ️  No history yet — using today's raw signals as-is")
+        return raw_signals
+
+    blended = {}
+    for sector in SECTOR_KEYWORDS:
+        today_int = _SIGNAL_TO_INT.get(raw_signals.get(sector, {}).get("signal", "neutral"), 0)
+        hist_ints = [
+            _SIGNAL_TO_INT.get(h.get("signals", {}).get(sector, {}).get("signal", "neutral"), 0)
+            for h in past
+        ]
+        hist_avg = sum(hist_ints) / len(hist_ints)
+        blended_val = HISTORY_BLEND_TODAY * today_int + HISTORY_BLEND_PAST * hist_avg
+        signal = _int_to_signal(blended_val)
+        raw = raw_signals.get(sector, {})
+        blended[sector] = {
+            "score":   _SIGNAL_SCORES[signal],
+            "signal":  signal,
+            "matches": raw.get("matches", 0),
+            "reason":  (
+                f"Blended: today={raw.get('signal','neutral')} "
+                f"({HISTORY_BLEND_TODAY:.0%}), "
+                f"{len(past)}-day hist avg={hist_avg:+.2f} "
+                f"({HISTORY_BLEND_PAST:.0%}) → {signal}. "
+                + raw.get("reason", "")
+            )[:200],
+        }
+
+    n_changed = sum(
+        1 for s in SECTOR_KEYWORDS
+        if blended[s]["signal"] != raw_signals.get(s, {}).get("signal")
+    )
+    print(f"  🔀 Blended with {len(past)}-day history — {n_changed} sector(s) changed signal")
+    return blended
+
+
+# ─────────────────────────────────────────────
+# KEYWORD SCORER (fallback)
 # ─────────────────────────────────────────────
 
 def score_headline(title: str, body: str, sector: str) -> float:
@@ -870,7 +1052,7 @@ def run_scan(test_mode: bool = False):
     print(f"\n{'='*60}")
     print(f"  📰 SWING NEWS SENTIMENT — 20 NSE SECTORS")
     print(f"  {datetime.now(IST).strftime('%d %B %Y, %I:%M %p IST')}")
-    print(f"  Window: {SCAN_DAYS} days | Min matches: {MIN_MATCHES}")
+    print(f"  Window: {SCAN_DAYS} days | Min matches: {MIN_MATCHES} | LLM: {'enabled' if LLM_ENABLED else 'disabled'}")
     print(f"{'='*60}\n")
 
     print("  Fetching RSS feeds...\n")
@@ -882,9 +1064,56 @@ def run_scan(test_mode: bool = False):
         return None
 
     print(f"\n  Scoring {len(items)} headlines across 20 sectors...\n")
-    signals = aggregate_sentiment(items)
+    raw_signals = None
+    if LLM_ENABLED:
+        print(f"  🤖 LLM sector analysis (Claude {LLM_MODEL})...")
+        raw_signals = llm_score_sectors(items)
+    if raw_signals is None:
+        if LLM_ENABLED:
+            print(f"  ↩️  Falling back to keyword scoring...")
+        raw_signals = aggregate_sentiment(items)
 
-    # Print results
+    # Append RAW signals to rolling history (before blending)
+    if not test_mode:
+        try:
+            os.makedirs(DATA_DIR, exist_ok=True)
+            history = []
+            if os.path.exists(SWING_HISTORY_FILE):
+                with open(SWING_HISTORY_FILE) as f:
+                    history = json.load(f)
+            today_str = str(date.today())
+            history = [h for h in history if h.get("date") != today_str]
+            history.append({"date": today_str, "signals": raw_signals})
+            history = history[-HISTORY_MAX_DAYS:]
+            with open(SWING_HISTORY_FILE, "w") as f:
+                json.dump(history, f, indent=2)
+            print(f"  ✅ Raw signals saved to history: {len(history)} days in rolling window")
+            # Also POST history to Railway API so other services (monthly screener)
+            # can access it — volumes are not shared between Railway services
+            try:
+                import urllib.request as _ur2
+                hist_payload = json.dumps(
+                    {"type": "swing_sentiment_history", "payload": history},
+                    default=str
+                ).encode("utf-8")
+                hist_req = _ur2.Request(
+                    f"{API_URL}/signals/upload",
+                    data=hist_payload,
+                    headers={"Content-Type": "application/json", **_UPLOAD_AUTH},
+                    method="POST"
+                )
+                with _ur2.urlopen(hist_req, timeout=12) as r:
+                    print(f"  ✅ History POSTed to API ({len(history)} days)")
+            except Exception as he:
+                print(f"  ⚠️  History API POST failed (non-fatal): {he}")
+        except Exception as e:
+            print(f"  ⚠️  History append failed (non-fatal): {e}")
+
+    # Blend today's raw with rolling history for stability
+    print(f"\n  Blending today's signals with {HISTORY_BLEND_DAYS}-day history...")
+    signals = blend_with_history(raw_signals)
+
+    # Print results (blended)
     print(f"\n  {'SECTOR':<35} {'SIGNAL':<14} {'SCORE':>6}  {'MATCHES':>7}")
     print(f"  {'─'*35} {'─'*14} {'─'*6}  {'─'*7}")
     for sector, sig in sorted(signals.items()):
