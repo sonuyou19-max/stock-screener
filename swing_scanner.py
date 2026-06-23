@@ -12,23 +12,35 @@ Hard gates (fail any one → skipped, regardless of score):
   - Structural stop within 6% (a wider stop means the setup isn't tight
     — skip the trade, never tighten the stop to force it)
   - Earnings blackout: reports within 14 calendar days → skipped
-  - Market regime: Nifty below its 50-DMA → min signals raised to 6/7
-    and candidate list halved
+  - Market regime: Nifty below its 50-DMA → composite floor raised by
+    BEARISH_SCORE_BUMP points and candidate list halved
 
-Entry signals scored 0–7 (need ≥5 for candidate):
-  1. RSI(14)           — 45–75 confirmed momentum zone
-  2. MACD(12,26,9)     — bullish crossover OR (above signal + histogram growing)
-  3. Bollinger Bands   — price crossing middle band from below (momentum
-                         confirmation only — lower-band "bounces" removed,
-                         they were knife-catches)
-  4. Volume Surge      — volume > 2× 20-day average ON AN UP-DAY
-                         (close > prev close and close > open; direction-blind
-                         volume let distribution days score this point)
-  5. Momentum Breakout — within 8% of 52w high or broke 20d resistance
-  6. FII/DII Flow      — net FII positive in at least 2 of last 3 days
-  7. Sector Sentiment  — news sentiment per NSE sector bucket
-                         negative → HARD EXCLUDE (overrides all technicals)
-                         cautious → −1 penalty / mild_positive → +0.5 / positive → +1
+Entry signals — continuous composite score 0–100 (replaces the old "N of 7"
+count-vote; magnitude matters now, not just pass/fail). Each signal's old
+binary threshold maps to ~50 strength, so a stock that barely cleared a
+gate scores around 50 on it, and one deep in the zone scores near 100:
+  1. RSI(14)           — 45–75 momentum-zone plateau, ramps either side
+  2. MACD(12,26,9)     — histogram magnitude (bps of price) + crossover recency
+  3. Bollinger Bands   — %B position above the middle band (continuation,
+                         not lower-band "bounces" — those were knife-catches)
+  4. Volume Surge      — surge-ratio strength, gated to UP-DAYS only
+                         (direction-blind volume let distribution days score)
+  5. Momentum Breakout — proximity to 52w high / size of 20d resistance break
+  6. FII/DII Flow      — net 3-day flow MAGNITUDE (market-wide, not
+                         stock-specific) — supersedes the old day-count
+                         vote, where 1 of 3 days positive was nearly a
+                         free signal point regardless of size
+  7. Sector Sentiment  — negative → HARD EXCLUDE (overrides all technicals);
+                         else mapped to a 0–100 strength (positive=100,
+                         mild_positive=75, neutral=50, cautious=25)
+
+  Weighted sum → composite score (0–100):
+    momentum 0.20, volume 0.20, macd 0.15, sentiment 0.15,
+    rsi 0.10, bollinger 0.10, fii 0.10
+  Candidate if composite ≥ MIN_COMPOSITE_SCORE (62, bullish regime;
+  +BEARISH_SCORE_BUMP when Nifty < 50-DMA). These floors translate from
+  the old 5/7 (71%) and 6/7 (86%) count gates but are NOT yet backtested
+  at this granularity — watch real scan output and recalibrate.
 
 Entry discipline:
   - limit_price = scan close +2%. If it opens above that, the R/R you
@@ -98,11 +110,33 @@ BB_STD           = 2.0
 VOL_SURGE_MULT   = 2.0     # real conviction — volume > 2× 20-day avg ON AN UP-DAY
 BREAKOUT_PCT     = 0.08    # within 8% of 52-week high or broke 20d resistance
 FII_LOOKBACK     = 3       # days of FII data to check
-FII_MIN_POSITIVE = 2       # FII positive in at least 2 of last 3 days
-                           # (1/3 was nearly always true — a free signal point)
+FII_MIN_POSITIVE = 2       # legacy threshold, kept for the "note" text only —
+                           # the composite score uses net flow magnitude instead
+FII_SCALE_CR     = 5000.0  # ₹Cr of 3-day net flow treated as "large" for the
+                           # strength curve — a rough starting calibration,
+                           # not backtested against real flow distributions
 
-MIN_SIGNALS      = 5       # high-conviction only — 5 of 7 must pass
 MAX_CANDIDATES   = 10      # max candidates to report
+
+# ── Continuous scoring (replaces the old "N of 7 signals" count-vote) ──
+# Each signal contributes a 0-100 "strength" (magnitude-aware, not just
+# pass/fail), weighted and summed into one composite 0-100 score. See the
+# module docstring for the rationale and how each strength curve is anchored.
+SIGNAL_WEIGHTS = {
+    "momentum":  0.20,   # near 52w high / broke resistance — strongest trend confirmation
+    "volume":    0.20,   # surge ON AN UP-DAY — conviction confirmation
+    "macd":      0.15,   # trend momentum
+    "sentiment": 0.15,   # sector news — contextual, not technical, but matters
+    "rsi":       0.10,   # momentum zone — overlaps info with MACD, lower weight
+    "bollinger": 0.10,   # overlaps info with MACD/momentum, lower weight
+    "fii":       0.10,   # market-wide flow — macro tailwind, not stock-specific
+}
+assert abs(sum(SIGNAL_WEIGHTS.values()) - 1.0) < 1e-9
+
+MIN_COMPOSITE_SCORE = 62.0   # bullish-regime floor, 0-100 scale
+BEARISH_SCORE_BUMP  = 10.0   # added to the floor when Nifty < its 50-DMA
+# Translated from the old 5/7 (71%) and 6/7 (86%) count thresholds — not
+# yet backtested at this granularity. Watch real scan output and adjust.
 
 # ── Hard gates (not scored — fail any one and the stock is skipped) ──
 TREND_DMA            = 50    # stock must close above its own 50-DMA
@@ -176,6 +210,17 @@ SENTIMENT_SCORE = {
     "positive":       1,
 }
 
+# 0-100 strength for the composite score. negative never reaches scoring
+# (hard-excluded before the composite is computed) — mapped here only so
+# the lookup never KeyErrors on an unexpected label.
+SENTIMENT_STRENGTH = {
+    "negative":       0.0,
+    "cautious":      25.0,
+    "neutral":       50.0,
+    "mild_positive": 75.0,
+    "positive":     100.0,
+}
+
 
 # ─────────────────────────────────────────────
 # DATA FETCHER — one call per stock
@@ -232,6 +277,28 @@ def _fetch_ohlcv_yf(ticker: str) -> Optional[pd.DataFrame]:
 
 
 # ─────────────────────────────────────────────
+# CONTINUOUS STRENGTH HELPERS
+# ─────────────────────────────────────────────
+
+def _ramp(x: float, lo: float, hi: float) -> float:
+    """Linear 0→100 as x goes lo→hi. Clamped outside [lo, hi]."""
+    if hi == lo:
+        return 100.0 if x >= hi else 0.0
+    return float(np.clip((x - lo) / (hi - lo) * 100, 0, 100))
+
+
+def _trapezoid(x: float, a: float, b: float, c: float, d: float) -> float:
+    """0 below a, ramps to 100 at b, flat 100 between b and c, ramps to 0 at d."""
+    if x <= a or x >= d:
+        return 0.0
+    if x < b:
+        return _ramp(x, a, b)
+    if x <= c:
+        return 100.0
+    return 100.0 - _ramp(x, c, d)
+
+
+# ─────────────────────────────────────────────
 # SIGNAL CALCULATORS
 # ─────────────────────────────────────────────
 
@@ -248,10 +315,18 @@ def calc_rsi(closes: pd.Series, period: int = RSI_PERIOD) -> float:
     return round(float(rsi.iloc[-1]), 2) if not rsi.empty else 50.0
 
 
+def calc_rsi_strength(rsi: float) -> float:
+    """0-100 strength. The old binary zone (RSI_MIN-RSI_MAX) is the
+    full-strength plateau; partial credit ramps in/out over a 15-point
+    band on each side instead of a hard cliff at the old gate edges."""
+    return round(_trapezoid(rsi, RSI_MIN - 15, RSI_MIN, RSI_MAX, RSI_MAX + 15), 1)
+
+
 def calc_macd(closes: pd.Series) -> dict:
     """
-    MACD(12,26,9). Returns MACD line, signal line, histogram,
-    and whether a bullish crossover happened in last MACD_CROSS_DAYS days.
+    MACD(12,26,9). Returns MACD line, signal line, histogram, whether a
+    bullish crossover happened in last MACD_CROSS_DAYS days, and a
+    continuous 0-100 strength for the composite score.
     """
     ema12  = closes.ewm(span=MACD_FAST,  adjust=False).mean()
     ema26  = closes.ewm(span=MACD_SLOW,  adjust=False).mean()
@@ -260,21 +335,36 @@ def calc_macd(closes: pd.Series) -> dict:
     hist   = macd - signal
 
     # Bullish crossover = MACD crossed ABOVE signal in last N days
-    crossed = False
+    crossed, cross_days_ago = False, None
     for i in range(1, min(MACD_CROSS_DAYS + 1, len(hist))):
         if hist.iloc[-i] > 0 and hist.iloc[-(i+1)] <= 0:
-            crossed = True
+            crossed, cross_days_ago = True, i
             break
 
     hist_growing = float(hist.iloc[-1]) > float(hist.iloc[-2]) if len(hist) >= 2 else False
+    macd_above   = float(macd.iloc[-1]) > float(signal.iloc[-1])
+
+    # Strength: histogram magnitude in basis points of price (comparable
+    # across stocks regardless of absolute share price), boosted by a
+    # fresh crossover — a cross is the strongest form of this signal even
+    # before the histogram has had time to build magnitude.
+    curr_price = float(closes.iloc[-1])
+    hist_bps   = (float(hist.iloc[-1]) / curr_price) * 10000 if curr_price else 0.0
+    strength   = _ramp(hist_bps, -10, 50)
+    if crossed:
+        strength = max(strength, 100.0 - (cross_days_ago - 1) * (100.0 / MACD_CROSS_DAYS))
+    elif macd_above and hist_growing:
+        strength = max(strength, 50.0)
 
     return {
-        "macd":         round(float(macd.iloc[-1]), 4),
-        "signal":       round(float(signal.iloc[-1]), 4),
-        "histogram":    round(float(hist.iloc[-1]), 4),
+        "macd":          round(float(macd.iloc[-1]), 4),
+        "signal":        round(float(signal.iloc[-1]), 4),
+        "histogram":     round(float(hist.iloc[-1]), 4),
         "bullish_cross": crossed,
-        "macd_above":   float(macd.iloc[-1]) > float(signal.iloc[-1]),
-        "hist_growing": hist_growing,
+        "cross_days_ago":cross_days_ago,
+        "macd_above":    macd_above,
+        "hist_growing":  hist_growing,
+        "strength":      round(strength, 1),
     }
 
 
@@ -301,6 +391,15 @@ def calc_bollinger(hist: pd.DataFrame) -> dict:
     # produced knife-catches that drove the stop-out rate. Not a signal.
     near_lower  = float(closes.iloc[-2]) <= float(lower.iloc[-2]) * 1.01
 
+    pct_b = round((curr - float(lower.iloc[-1])) /
+                  (float(upper.iloc[-1]) - float(lower.iloc[-1]) + 1e-9) * 100, 1)
+
+    # Strength: plateau just above the middle band (confirmed continuation),
+    # ramping back down near the upper band (extended, mean-reversion risk).
+    strength = _trapezoid(pct_b, 30, 50, 80, 100)
+    if crossed_mid:
+        strength = max(strength, 50.0)
+
     return {
         "upper":        round(float(upper.iloc[-1]), 2),
         "middle":       round(mid, 2),
@@ -309,8 +408,8 @@ def calc_bollinger(hist: pd.DataFrame) -> dict:
         "crossed_mid":  crossed_mid,
         "near_lower":   near_lower,
         "signal":       crossed_mid,
-        "pct_b":        round((curr - float(lower.iloc[-1])) /
-                              (float(upper.iloc[-1]) - float(lower.iloc[-1]) + 1e-9) * 100, 1),
+        "pct_b":        pct_b,
+        "strength":     round(strength, 1),
     }
 
 
@@ -329,13 +428,22 @@ def calc_volume_surge(hist: pd.DataFrame) -> dict:
     ratio     = round(today_vol / avg_20, 2) if avg_20 > 0 else 1.0
     up_day    = (float(closes.iloc[-1]) > float(closes.iloc[-2])
                  and float(closes.iloc[-1]) > float(opens.iloc[-1]))
+    surge     = ratio >= VOL_SURGE_MULT and up_day
+
+    # Strength: zero on a down/flat day regardless of volume — this is the
+    # exact distribution-day case the up_day requirement exists to exclude,
+    # so the continuous score must not partially reward it either.
+    strength = _ramp(ratio, 0.5, 3.5) if up_day else 0.0
+    if surge:
+        strength = max(strength, 50.0)
 
     return {
         "today_vol":  int(today_vol),
         "avg_20d":    int(avg_20),
         "ratio":      ratio,
         "up_day":     up_day,
-        "surge":      ratio >= VOL_SURGE_MULT and up_day,
+        "surge":      surge,
+        "strength":   round(strength, 1),
     }
 
 
@@ -350,6 +458,17 @@ def calc_momentum_breakout(hist: pd.DataFrame) -> dict:
     # 20-day resistance break: curr > max(high) of last 20 days (excluding today)
     res_20d   = float(highs.iloc[-21:-1].max())
     broke_20d = curr > res_20d
+    signal    = pct_from <= BREAKOUT_PCT * 100 or broke_20d
+
+    # Strength: take the stronger of the two paths (OR logic preserved).
+    # near_52w_strength: 100 at the high itself, 0 at 2x the old 8% gate.
+    # breakout_strength: how far above (or below) the 20d resistance, in %.
+    near_52w_strength = max(0.0, 100.0 * (1 - pct_from / (BREAKOUT_PCT * 100 * 2)))
+    breakout_pct      = (curr - res_20d) / res_20d * 100 if res_20d else 0.0
+    breakout_strength = _ramp(breakout_pct, -4, 4)
+    strength          = max(near_52w_strength, breakout_strength)
+    if signal:
+        strength = max(strength, 50.0)
 
     return {
         "high_52w":     round(high_52w, 2),
@@ -358,7 +477,8 @@ def calc_momentum_breakout(hist: pd.DataFrame) -> dict:
         "near_52w":     pct_from <= BREAKOUT_PCT * 100,
         "broke_20d_res":broke_20d,
         "res_20d":      round(res_20d, 2),
-        "signal":       pct_from <= BREAKOUT_PCT * 100 or broke_20d,
+        "signal":       signal,
+        "strength":     round(strength, 1),
     }
 
 
@@ -407,8 +527,15 @@ def check_hard_gates(hist: pd.DataFrame) -> Optional[str]:
 
 def calc_fii_signal(fii_data: list) -> dict:
     """
-    FII net positive in at least 2 of last 3 days.
+    Market-wide FII/DII net flow (same value applied to every ticker that
+    day — this is a macro tailwind/headwind, not a stock-specific signal).
     fii_data: list of {date, fii_net_cr, dii_net_cr} sorted newest first.
+
+    Strength is driven by NET FLOW MAGNITUDE over the last FII_LOOKBACK
+    days, not the day-count vote the old binary signal used — "2 of 3
+    days positive" was nearly always true regardless of size (a free
+    signal point), so magnitude is a more honest read of how strong the
+    institutional tailwind actually is.
 
     When the collector feed is down, fii_data is empty. The old "no data"
     return was missing the net_3d_cr key that analyse_stock() reads
@@ -416,25 +543,27 @@ def calc_fii_signal(fii_data: list) -> dict:
     the scan loop's generic except, and was silently skipped. So a broken
     FII feed didn't just make this one signal harder to pass; it crashed
     every stock before scoring and produced zero candidates outright.
-    Treat "no data" as neutral pass-through (same as missing sector
-    sentiment) instead of a penalty, and log loudly so a real outage is
-    still visible in Railway logs.
+    Treat "no data" as neutral pass-through (strength 50, same as missing
+    sector sentiment) instead of a penalty, and log loudly so a real
+    outage is still visible in Railway logs.
     """
     if not fii_data or len(fii_data) < 1:
         return {"signal": True, "net_3d_cr": 0.0, "positive_days": 0, "total_days": 0,
-                "data_available": False,
+                "data_available": False, "strength": 50.0,
                 "note": "⚠️ No FII data available — excluded from scoring (neutral)"}
 
-    recent = fii_data[:FII_LOOKBACK]
-    pos    = sum(1 for r in recent if r.get("fii_net_cr", 0) > 0)
-    net_3d = sum(r.get("fii_net_cr", 0) for r in recent)
+    recent   = fii_data[:FII_LOOKBACK]
+    pos      = sum(1 for r in recent if r.get("fii_net_cr", 0) > 0)
+    net_3d   = sum(r.get("fii_net_cr", 0) for r in recent)
+    strength = float(np.clip(50 + 50 * (net_3d / FII_SCALE_CR), 0, 100))
 
     return {
         "signal":        pos >= FII_MIN_POSITIVE,
         "positive_days": pos,
         "total_days":    len(recent),
         "net_3d_cr":     round(net_3d, 2),
-        "note":          f"FII positive {pos}/{len(recent)} days, net ₹{net_3d:.0f}Cr",
+        "strength":      round(strength, 1),
+        "note":          f"FII net ₹{net_3d:.0f}Cr over {len(recent)}d ({pos}/{len(recent)} days positive)",
     }
 
 
@@ -591,11 +720,12 @@ def compute_swing_levels(hist: pd.DataFrame, buy_price: float) -> dict:
 # ─────────────────────────────────────────────
 
 def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
-                  min_signals: int = MIN_SIGNALS) -> Optional[dict]:
+                  min_composite: float = MIN_COMPOSITE_SCORE) -> Optional[dict]:
     """
     Run all signals on a single stock.
-    Returns candidate dict if score ≥ min_signals, else None.
-    min_signals is raised by one when the market regime is bearish.
+    Returns candidate dict if the weighted composite score (0-100) ≥
+    min_composite, else None. min_composite is raised by BEARISH_SCORE_BUMP
+    when the market regime is bearish.
     """
     hist = fetch_ohlcv(ticker)
     if hist is None:
@@ -616,49 +746,65 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
     closes = hist["Close"]
     curr   = float(closes.iloc[-1])
 
-    # ── Calculate all 6 signals ───────────────────────────────
-    rsi     = calc_rsi(closes)
+    # ── Calculate all 6 technical signals ─────────────────────
+    rsi          = calc_rsi(closes)
+    rsi_strength = calc_rsi_strength(rsi)
     macd    = calc_macd(closes)
     bb      = calc_bollinger(hist)
     vol     = calc_volume_surge(hist)
     mom     = calc_momentum_breakout(hist)
     fii     = calc_fii_signal(fii_data)
 
-    # ── Score each signal ─────────────────────────────────────
+    # ── Score each signal — "pass" kept for the existing pass/fail
+    # display (dashboard's "signals passed/failed" breakdown); "strength"
+    # (0-100) and "weight" feed the composite score below. ─────────────
     signals = {
         "rsi": {
-            "pass":  RSI_MIN <= rsi <= RSI_MAX,
-            "value": rsi,
-            "note":  f"RSI {rsi:.1f} ({'✅ momentum zone' if RSI_MIN <= rsi <= RSI_MAX else f'❌ outside {RSI_MIN}-{RSI_MAX}'})",
+            "pass":     RSI_MIN <= rsi <= RSI_MAX,
+            "value":    rsi,
+            "strength": rsi_strength,
+            "weight":   SIGNAL_WEIGHTS["rsi"],
+            "note":     f"RSI {rsi:.1f} ({'✅ momentum zone' if RSI_MIN <= rsi <= RSI_MAX else f'❌ outside {RSI_MIN}-{RSI_MAX}'})",
         },
         "macd": {
-            "pass":  macd["bullish_cross"] or (macd["macd_above"] and macd["hist_growing"]),
-            "value": macd["histogram"],
-            "note":  f"MACD {'✅ bullish cross' if macd['bullish_cross'] else ('✅ above+growing' if macd['macd_above'] and macd['hist_growing'] else '❌ no momentum')}",
+            "pass":     macd["bullish_cross"] or (macd["macd_above"] and macd["hist_growing"]),
+            "value":    macd["histogram"],
+            "strength": macd["strength"],
+            "weight":   SIGNAL_WEIGHTS["macd"],
+            "note":     f"MACD {'✅ bullish cross' if macd['bullish_cross'] else ('✅ above+growing' if macd['macd_above'] and macd['hist_growing'] else '❌ no momentum')}",
         },
         "bollinger": {
-            "pass":  bb["signal"],
-            "value": bb["pct_b"],
-            "note":  f"BB %B={bb['pct_b']:.0f}% {'✅ crossed middle' if bb['crossed_mid'] else ('✅ near lower' if bb['near_lower'] else '❌')}",
+            "pass":     bb["signal"],
+            "value":    bb["pct_b"],
+            "strength": bb["strength"],
+            "weight":   SIGNAL_WEIGHTS["bollinger"],
+            "note":     f"BB %B={bb['pct_b']:.0f}% {'✅ crossed middle' if bb['crossed_mid'] else ('✅ near lower' if bb['near_lower'] else '❌')}",
         },
         "volume": {
-            "pass":  vol["surge"],
-            "value": vol["ratio"],
-            "note":  f"Volume {vol['ratio']:.1f}× avg {'✅ surge' if vol['surge'] else '❌ normal'}",
+            "pass":     vol["surge"],
+            "value":    vol["ratio"],
+            "strength": vol["strength"],
+            "weight":   SIGNAL_WEIGHTS["volume"],
+            "note":     f"Volume {vol['ratio']:.1f}× avg {'✅ surge' if vol['surge'] else '❌ normal'}",
         },
         "momentum": {
-            "pass":  mom["signal"],
-            "value": mom["pct_from_52w"],
-            "note":  f"{'✅ near 52w high' if mom['near_52w'] else ('✅ broke 20d resistance' if mom['broke_20d_res'] else '❌')} ({mom['pct_from_52w']:.1f}% from 52w)",
+            "pass":     mom["signal"],
+            "value":    mom["pct_from_52w"],
+            "strength": mom["strength"],
+            "weight":   SIGNAL_WEIGHTS["momentum"],
+            "note":     f"{'✅ near 52w high' if mom['near_52w'] else ('✅ broke 20d resistance' if mom['broke_20d_res'] else '❌')} ({mom['pct_from_52w']:.1f}% from 52w)",
         },
         "fii": {
-            "pass":  fii["signal"],
-            "value": fii["net_3d_cr"],
-            "note":  fii["note"],
+            "pass":     fii["signal"],
+            "value":    fii["net_3d_cr"],
+            "strength": fii["strength"],
+            "weight":   SIGNAL_WEIGHTS["fii"],
+            "note":     fii["note"],
         },
     }
 
-    # ── Technical score (signals 1-6) ────────────────────────
+    # ── Legacy count (informational only — composite score below is
+    # what actually gates and ranks candidates now) ───────────────────
     tech_score = sum(1 for s in signals.values() if s["pass"])
 
     # ── Signal 7: Sector Sentiment ────────────────────────────
@@ -697,10 +843,13 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
         "✅" if sentiment_score_adj > 0 else
         "⚠️" if sentiment_score_adj < 0 else "➖"
     )
+    sentiment_strength = SENTIMENT_STRENGTH.get(sentiment_val, 50.0)
     signals["sentiment"] = {
-        "pass":  sentiment_score_adj > 0,
-        "value": sentiment_val,
-        "note":  (
+        "pass":     sentiment_score_adj > 0,
+        "value":    sentiment_val,
+        "strength": sentiment_strength,
+        "weight":   SIGNAL_WEIGHTS["sentiment"],
+        "note":     (
             f"{sent_emoji} {bucket_key or 'unmapped'} → {sentiment_val}"
             + (" (HARD EXCLUDE)" if excluded_by_sentiment else
                f" ({sentiment_score_adj:+.1f})" if sentiment_score_adj != 0 else "")
@@ -712,10 +861,13 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
         print(f"  🚫 {ticker} EXCLUDED — negative sentiment ({bucket_key})")
         return None
 
-    # Final score = technical (0-6) + sentiment modifier (-1 / 0 / +0.5 / +1)
-    score = tech_score + sentiment_score_adj
+    # ── Composite score: weighted sum of all 7 strengths (0-100) ──────
+    # Replaces the old "tech_score (0-6) + sentiment modifier" count-vote.
+    score = sum(sig["strength"] * sig["weight"] for sig in signals.values())
+    for sig in signals.values():
+        sig["contribution"] = round(sig["strength"] * sig["weight"], 1)
 
-    if score < min_signals:
+    if score < min_composite:
         return None
 
     # Earnings blackout — don't hold a 10-day swing through quarterly results
@@ -737,8 +889,8 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
     if levels["rr_ratio"] < 1.5:
         return None
 
-    # ── Conviction (based on tech_score, sentiment is modifier) ─
-    conviction = "HIGH" if tech_score >= 6 else "MEDIUM" if tech_score >= 5 else "LOW"
+    # ── Conviction (based on the composite 0-100 score) ─────────
+    conviction = "HIGH" if score >= 80 else "MEDIUM" if score >= 65 else "LOW"
 
     # ── Optimal entry calculation ──────────────────────────────
     # The scan close is the signal confirmation price, not the entry price.
@@ -791,8 +943,8 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
         "scanned_at":    datetime.now(IST).strftime("%Y-%m-%d %H:%M IST"),
         "current_price": round(curr, 2),
         "score":         round(score, 1),
-        "tech_score":    tech_score,
-        "max_score":     7,
+        "tech_score":    tech_score,   # legacy 0-6 count, informational only
+        "max_score":     100,
         "conviction":    conviction,
         # Signals detail
         "signals":       signals,
@@ -938,11 +1090,11 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
     # ── Step 0: Market regime — tighten the bar in a falling market ──
     regime = fetch_market_regime()
     if regime["bullish"]:
-        min_signals    = MIN_SIGNALS
+        min_composite  = MIN_COMPOSITE_SCORE
         max_candidates = MAX_CANDIDATES
         regime_label   = "🟢 BULLISH (Nifty above 50-DMA)"
     else:
-        min_signals    = MIN_SIGNALS + 1
+        min_composite  = MIN_COMPOSITE_SCORE + BEARISH_SCORE_BUMP
         max_candidates = max(MAX_CANDIDATES // 2, 3)
         regime_label   = "🔴 BEARISH (Nifty below 50-DMA) — bar raised"
 
@@ -952,7 +1104,7 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
     print(f"  Regime: {regime_label}")
     if regime.get("nifty_close"):
         print(f"  Nifty: {regime['nifty_close']:,.1f}  |  50-DMA: {regime['dma_50']:,.1f}")
-    print(f"  Min signals: {min_signals}/7  |  Max candidates: {max_candidates}")
+    print(f"  Min composite score: {min_composite:.0f}/100  |  Max candidates: {max_candidates}")
     print(f"  Holding: 1-2 weeks  |  Targets: +{SWING_TARGET_1*100:.0f}% / +{SWING_TARGET_2*100:.0f}%")
     print(f"{'='*58}\n")
 
@@ -992,7 +1144,7 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
 
     for ticker in tickers:
         try:
-            result = analyse_stock(ticker, fii_data, sentiment_signals, min_signals)
+            result = analyse_stock(ticker, fii_data, sentiment_signals, min_composite)
             scanned += 1
 
             if result is None:
@@ -1002,7 +1154,7 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
                 conv = result["conviction"]
                 emoji = "🔥" if conv == "HIGH" else "⚡" if conv == "MEDIUM" else "✳️"
                 sent_icon = {"positive":"🟢","mild_positive":"🟡","neutral":"⬜","cautious":"🟠","negative":"🔴"}.get(result.get("sentiment_val","neutral"),"⬜")
-                print(f"  {emoji} {ticker:<20} Score:{result['score']:.1f}/7  "
+                print(f"  {emoji} {ticker:<20} Score:{result['score']:.1f}/100  "
                       f"RSI:{result['rsi']:.0f}  "
                       f"Vol:{result['vol_ratio']:.1f}×  "
                       f"Sent:{sent_icon}{result.get('sentiment_val','—')[:4]}  "
@@ -1041,7 +1193,7 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
 
     for i, c in enumerate(top, 1):
         print(f"\n  {'─'*54}")
-        print(f"  {i}. {c['ticker']:<18} [{c['conviction']}]  Score: {c['score']}/7")
+        print(f"  {i}. {c['ticker']:<18} [{c['conviction']}]  Score: {c['score']}/100")
         print(f"     {c['name']}")
         print(f"     Price: ₹{c['current_price']:,.2f}  |  "
               f"Vol: {c['vol_ratio']:.1f}× avg  |  "
@@ -1050,9 +1202,11 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
         print(f"     T1:    ₹{c['target1']:,.2f}  (+{SWING_TARGET_1*100:.0f}% — sell 50%)")
         print(f"     T2:    ₹{c['target2']:,.2f}  (+{SWING_TARGET_2*100:.0f}% — sell 50%)")
         print(f"     R/R:   {c['rr_ratio']:.2f}×  |  Max hold: {c['max_days']} days")
-        print(f"     Signals:")
+        print(f"     Signals (strength × weight = contribution):")
         for sig_name, sig in c["signals"].items():
-            print(f"       {'✅' if sig['pass'] else '❌'} {sig_name:<12} {sig['note']}")
+            print(f"       {'✅' if sig['pass'] else '❌'} {sig_name:<12} "
+                  f"{sig.get('strength', 0):.0f} × {sig.get('weight', 0):.2f} "
+                  f"= {sig.get('contribution', 0):.1f}   {sig['note']}")
 
     # ── Step 6: Save and post ─────────────────────────────────
     if not test_mode:
@@ -1136,7 +1290,7 @@ def send_telegram_alert(candidates: list):
             limit = c.get("limit_price")
             lines.append(
                 f"{conv_emoji} *{i}. {c['ticker'].replace('.NS','')}* "
-                f"[{c['conviction']}] Score: {c['score']}/{len(c['signals'])}\n"
+                f"[{c['conviction']}] Score: {c['score']:.0f}/100\n"
                 f"  Price: ₹{c['current_price']:,.2f}"
                 + (f" | Enter ≤ ₹{limit:,.2f} (skip if gaps above)" if limit else "") + "\n"
                 f"  Stop:  ₹{c['stop_loss']:,.2f} ({c['stop_pct']:.1f}% below)\n"
@@ -1195,7 +1349,7 @@ def show_status():
     for c in data.get("candidates", []):
         conv = c["conviction"]
         emoji = "🔥" if conv == "HIGH" else "⚡" if conv == "MEDIUM" else "✳️"
-        print(f"\n  {emoji} {c['ticker']:<20} Score:{c['score']}/7  "
+        print(f"\n  {emoji} {c['ticker']:<20} Score:{c['score']}/100  "
               f"RSI:{c['rsi']:.0f}  R/R:{c['rr_ratio']:.2f}×")
         print(f"     ₹{c['current_price']:,.2f}  →  "
               f"Stop:₹{c['stop_loss']:,.2f}  "
