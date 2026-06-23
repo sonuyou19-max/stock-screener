@@ -897,7 +897,7 @@ def blend_with_history(raw_signals: dict) -> dict:
                 f"{len(past)}-day hist avg={hist_avg:+.2f} "
                 f"({HISTORY_BLEND_PAST:.0%}) → {signal}. "
                 + raw.get("reason", "")
-            )[:200],
+            ),
         }
 
     n_changed = sum(
