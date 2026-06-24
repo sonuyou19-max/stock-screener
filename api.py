@@ -13,6 +13,10 @@ from flask import Flask, jsonify, request
 import glob
 import json
 import os
+import subprocess
+import sys
+import threading
+import time
 
 app = Flask(__name__)
 
@@ -91,6 +95,8 @@ SWING_LIVE_FILE       = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_live
 SWING_HISTORY_FILE    = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_history.json")
 SWING_QUEUE_FILE      = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_queue.json")
 INDIA_QUEUE_FILE      = os.path.join(os.getenv("DATA_DIR", "/data"), "india_queue.json")
+SWING_SCAN_LOCK_FILE  = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_scan.lock")
+SWING_SCAN_TIMEOUT_SEC = 20 * 60  # matches swing_scanner.py's stale-lock cutoff
 
 
 def _load_json(path: str):
@@ -1291,6 +1297,64 @@ def swing_candidates_upload():
         return jsonify({"status": "ok", "candidates": count})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ── Swing scan — manual trigger from the dashboard ────────────────
+def _swing_scan_lock_age():
+    """Seconds since the lock file was written, or None if no lock exists."""
+    if not os.path.exists(SWING_SCAN_LOCK_FILE):
+        return None
+    return time.time() - os.path.getmtime(SWING_SCAN_LOCK_FILE)
+
+
+@app.route("/swing/scan/trigger", methods=["POST", "OPTIONS"])
+def swing_scan_trigger():
+    """Kick off a swing_scanner.py run in the background. Non-blocking —
+    returns immediately while the scan runs as a detached subprocess.
+    Guarded by swing_scan.lock so it can't collide with the cron or another
+    manual trigger. Requires X-Upload-Token (enforced via _WRITE_PATH_MARKERS)."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    auth_err = _enforce_upload_token()
+    if auth_err:
+        return auth_err
+
+    age = _swing_scan_lock_age()
+    if age is not None and age < SWING_SCAN_TIMEOUT_SEC:
+        return jsonify({"status": "already_running", "started_seconds_ago": round(age)}), 409
+
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "swing_scanner.py")
+    try:
+        proc = subprocess.Popen(
+            [sys.executable, script_path],
+            cwd=os.path.dirname(script_path),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        threading.Thread(target=proc.wait, daemon=True).start()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    return jsonify({"status": "started"})
+
+
+@app.route("/swing/scan/status", methods=["GET", "OPTIONS"])
+def swing_scan_status():
+    """Is a swing scan currently running, and when did candidates last update."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    age = _swing_scan_lock_age()
+    running = age is not None and age < SWING_SCAN_TIMEOUT_SEC
+    global _swing_candidates_cache
+    if not _swing_candidates_cache:
+        loaded = _load_json(SWING_CANDIDATES_FILE)
+        if loaded:
+            _swing_candidates_cache = loaded
+    return jsonify({
+        "running": running,
+        "generated_at": (_swing_candidates_cache or {}).get("generated_at"),
+    })
 
 
 # ── GET /swing/live ──────────────────────────────────────────────

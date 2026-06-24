@@ -92,6 +92,8 @@ IST             = ZoneInfo("Asia/Kolkata")
 DATA_DIR        = os.getenv("DATA_DIR", "/data")
 API_URL         = os.getenv("API_URL", "https://web-production-50eee.up.railway.app").rstrip("/")
 CANDIDATES_FILE = os.path.join(DATA_DIR, "swing_candidates.json")
+SCAN_LOCK_FILE        = os.path.join(DATA_DIR, "swing_scan.lock")
+SCAN_LOCK_TIMEOUT_SEC = 20 * 60  # stale-lock cutoff — longer than any real scan
 
 # Oracle VPS — used for Zerodha OHLCV (more accurate NSE data than yfinance)
 VPS_URL    = os.getenv("ORACLE_VPS_URL", "")
@@ -1082,7 +1084,41 @@ def fetch_fii_data() -> list:
 # MAIN SCANNER
 # ─────────────────────────────────────────────
 
+def _acquire_scan_lock() -> bool:
+    """True if lock acquired. False if a fresh lock from another run already exists."""
+    if os.path.exists(SCAN_LOCK_FILE):
+        age = time.time() - os.path.getmtime(SCAN_LOCK_FILE)
+        if age < SCAN_LOCK_TIMEOUT_SEC:
+            return False
+    os.makedirs(DATA_DIR, exist_ok=True)
+    with open(SCAN_LOCK_FILE, "w") as f:
+        f.write(datetime.now(IST).isoformat())
+    return True
+
+
+def _release_scan_lock():
+    try:
+        os.remove(SCAN_LOCK_FILE)
+    except OSError:
+        pass
+
+
 def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
+    """Lock-guarded entry point — protects the cron and the manual dashboard
+    trigger from stepping on each other. Single-ticker/test runs are exempt
+    since they don't save and are used for quick manual debugging."""
+    guard = not test_mode and not single_ticker
+    if guard and not _acquire_scan_lock():
+        print("⏭  Scan already in progress (lock held) — skipping this run.")
+        return []
+    try:
+        return _run_scan_impl(test_mode=test_mode, single_ticker=single_ticker)
+    finally:
+        if guard:
+            _release_scan_lock()
+
+
+def _run_scan_impl(test_mode: bool = False, single_ticker: str = None) -> list:
     """
     Scan Nifty 500 for swing trade candidates.
     Returns sorted list of candidates (best score first).
