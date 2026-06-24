@@ -40,6 +40,17 @@ def _enforce_upload_token():
     return None
 
 
+def _require_upload_token():
+    """Same check as _enforce_upload_token() but without the path-marker
+    gate — for POST routes that need the token enforced regardless of
+    whether their path happens to match _WRITE_PATH_MARKERS."""
+    if not UPLOAD_TOKEN:
+        return None
+    if request.headers.get("X-Upload-Token", "") != UPLOAD_TOKEN:
+        return jsonify({"error": "unauthorized — missing or bad X-Upload-Token"}), 401
+    return None
+
+
 @app.route("/auth/verify", methods=["POST", "OPTIONS"])
 def auth_verify():
     """Dashboard PIN check. With UPLOAD_TOKEN set the PIN lives only in
@@ -1299,7 +1310,11 @@ def swing_candidates_upload():
         return jsonify({"error": str(e)}), 500
 
 
-# ── Swing scan — manual trigger from the dashboard ────────────────
+# ── Swing scan lock ────────────────────────────────────────────────
+# swing_scanner.py's cron runs on the Oracle VPS; the dashboard's manual
+# trigger runs this same script on Railway. Two different machines, so a
+# local lock file can't see across them — this API (the one thing both
+# sides can always reach) is the shared lock both call into.
 def _swing_scan_lock_age():
     """Seconds since the lock file was written, or None if no lock exists."""
     if not os.path.exists(SWING_SCAN_LOCK_FILE):
@@ -1307,12 +1322,57 @@ def _swing_scan_lock_age():
     return time.time() - os.path.getmtime(SWING_SCAN_LOCK_FILE)
 
 
+def _claim_swing_scan_lock() -> bool:
+    age = _swing_scan_lock_age()
+    if age is not None and age < SWING_SCAN_TIMEOUT_SEC:
+        return False
+    os.makedirs(os.path.dirname(SWING_SCAN_LOCK_FILE), exist_ok=True)
+    with open(SWING_SCAN_LOCK_FILE, "w") as f:
+        f.write(str(time.time()))
+    return True
+
+
+def _release_swing_scan_lock():
+    try:
+        os.remove(SWING_SCAN_LOCK_FILE)
+    except OSError:
+        pass
+
+
+@app.route("/swing/scan/claim", methods=["POST", "OPTIONS"])
+def swing_scan_claim():
+    """swing_scanner.py calls this at the start of run_scan(), wherever it's
+    running (Oracle VPS cron or a Railway-triggered manual scan)."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    auth_err = _require_upload_token()
+    if auth_err:
+        return auth_err
+    if _claim_swing_scan_lock():
+        return jsonify({"ok": True})
+    age = _swing_scan_lock_age()
+    return jsonify({"ok": False, "started_seconds_ago": round(age or 0)}), 409
+
+
+@app.route("/swing/scan/release", methods=["POST", "OPTIONS"])
+def swing_scan_release():
+    """swing_scanner.py calls this when run_scan() finishes (success or not)."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    auth_err = _require_upload_token()
+    if auth_err:
+        return auth_err
+    _release_swing_scan_lock()
+    return jsonify({"ok": True})
+
+
 @app.route("/swing/scan/trigger", methods=["POST", "OPTIONS"])
 def swing_scan_trigger():
     """Kick off a swing_scanner.py run in the background. Non-blocking —
     returns immediately while the scan runs as a detached subprocess.
-    Guarded by swing_scan.lock so it can't collide with the cron or another
-    manual trigger. Requires X-Upload-Token (enforced via _WRITE_PATH_MARKERS)."""
+    This only spawns the process; the lock itself is claimed by run_scan()
+    once it starts, same as the Oracle VPS cron. This pre-check is just a
+    fast no-op-spawn when a scan is already known to be running."""
     if request.method == "OPTIONS":
         return jsonify({}), 200
     auth_err = _enforce_upload_token()

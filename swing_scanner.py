@@ -78,6 +78,7 @@ import os
 import time
 import argparse
 import urllib.request as _urllib
+import urllib.error as _urlerr
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from typing import Optional
@@ -92,8 +93,6 @@ IST             = ZoneInfo("Asia/Kolkata")
 DATA_DIR        = os.getenv("DATA_DIR", "/data")
 API_URL         = os.getenv("API_URL", "https://web-production-50eee.up.railway.app").rstrip("/")
 CANDIDATES_FILE = os.path.join(DATA_DIR, "swing_candidates.json")
-SCAN_LOCK_FILE        = os.path.join(DATA_DIR, "swing_scan.lock")
-SCAN_LOCK_TIMEOUT_SEC = 20 * 60  # stale-lock cutoff — longer than any real scan
 
 # Oracle VPS — used for Zerodha OHLCV (more accurate NSE data than yfinance)
 VPS_URL    = os.getenv("ORACLE_VPS_URL", "")
@@ -1085,22 +1084,40 @@ def fetch_fii_data() -> list:
 # ─────────────────────────────────────────────
 
 def _acquire_scan_lock() -> bool:
-    """True if lock acquired. False if a fresh lock from another run already exists."""
-    if os.path.exists(SCAN_LOCK_FILE):
-        age = time.time() - os.path.getmtime(SCAN_LOCK_FILE)
-        if age < SCAN_LOCK_TIMEOUT_SEC:
+    """Claim the shared scan lock via the API. The cron runs on the Oracle
+    VPS while the dashboard's manual trigger runs on Railway — two different
+    machines, so a local lock file can't see across them. The API (always
+    on Railway) is the one place both sides can reach."""
+    try:
+        req = _urllib.Request(
+            f"{API_URL}/swing/scan/claim",
+            data=b"{}",
+            headers={"Content-Type": "application/json", **_UPLOAD_AUTH},
+            method="POST",
+        )
+        with _urllib.urlopen(req, timeout=10) as r:
+            return json.loads(r.read().decode()).get("ok", True)
+    except _urlerr.HTTPError as e:
+        if e.code == 409:
             return False
-    os.makedirs(DATA_DIR, exist_ok=True)
-    with open(SCAN_LOCK_FILE, "w") as f:
-        f.write(datetime.now(IST).isoformat())
-    return True
+        print(f"  ⚠️  Scan-lock API error ({e}) — proceeding without lock.")
+        return True
+    except Exception as e:
+        print(f"  ⚠️  Could not reach scan-lock API ({e}) — proceeding without lock.")
+        return True
 
 
 def _release_scan_lock():
     try:
-        os.remove(SCAN_LOCK_FILE)
-    except OSError:
-        pass
+        req = _urllib.Request(
+            f"{API_URL}/swing/scan/release",
+            data=b"{}",
+            headers={"Content-Type": "application/json", **_UPLOAD_AUTH},
+            method="POST",
+        )
+        _urllib.urlopen(req, timeout=10).close()
+    except Exception as e:
+        print(f"  ⚠️  Could not release scan lock via API ({e})")
 
 
 def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
