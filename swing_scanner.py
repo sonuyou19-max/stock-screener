@@ -83,7 +83,7 @@ from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from typing import Optional
 
-from nse_universe import fetch_nifty500
+from nse_universe import fetch_nifty500, NSE_SECTOR_MAP
 
 # ─────────────────────────────────────────────
 # CONFIG
@@ -721,7 +721,8 @@ def compute_swing_levels(hist: pd.DataFrame, buy_price: float) -> dict:
 # ─────────────────────────────────────────────
 
 def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
-                  min_composite: float = MIN_COMPOSITE_SCORE) -> Optional[dict]:
+                  min_composite: float = MIN_COMPOSITE_SCORE,
+                  nse_sector: str = None) -> Optional[dict]:
     """
     Run all signals on a single stock.
     Returns candidate dict if the weighted composite score (0-100) ≥
@@ -819,13 +820,23 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
         name       = ticker.replace(".NS","")
         sector_raw = ""
 
-    # Map yfinance sector string → NSE sector bucket
-    sector_lower = sector_raw.lower()
-    bucket_key   = None
-    for nse_sec in NSE_SECTOR_BUCKET:
-        if nse_sec.lower() in sector_lower or sector_lower in nse_sec.lower():
-            bucket_key = nse_sec
-            break
+    # Determine the NSE sector bucket for the sentiment lookup.
+    # Prefer the authoritative NSE classification passed in from the Nifty
+    # 500 universe (industry → NSE_SECTOR_MAP) — its names match the sentiment
+    # signal keys exactly. yfinance reports GICS-style sectors ("Consumer
+    # Cyclical", "Technology", …) that rarely match the NSE bucket names,
+    # which is what left stocks like MARUTI showing "unmapped → neutral".
+    bucket_key = nse_sector if nse_sector in NSE_SECTOR_BUCKET else None
+    if not bucket_key:
+        # Fallback (single-ticker debug runs, or a sector we couldn't map):
+        # best-effort substring match against yfinance's sector string.
+        sector_lower = sector_raw.lower()
+        for nse_sec in NSE_SECTOR_BUCKET:
+            if nse_sec.lower() in sector_lower or sector_lower in nse_sec.lower():
+                bucket_key = nse_sec
+                break
+    if bucket_key:
+        sector_raw = bucket_key   # report the NSE sector (consistent across app)
 
     sentiment_val         = "neutral"
     sentiment_score_adj   = 0.0
@@ -1162,6 +1173,11 @@ def _run_scan_impl(test_mode: bool = False, single_ticker: str = None) -> list:
     print(f"{'='*58}\n")
 
     # ── Step 1: Get universe ──────────────────────────────────
+    # sector_map: ticker → authoritative NSE sector bucket (industry →
+    # NSE_SECTOR_MAP). Passed into analyse_stock so the sentiment lookup
+    # uses the real NSE sector instead of guessing from yfinance's GICS
+    # labels (which left most stocks "unmapped → neutral").
+    sector_map = {}
     if single_ticker:
         tickers = [single_ticker if single_ticker.endswith(".NS")
                    else single_ticker + ".NS"]
@@ -1170,6 +1186,11 @@ def _run_scan_impl(test_mode: bool = False, single_ticker: str = None) -> list:
         print("  Fetching Nifty 500 universe...")
         nifty_df = fetch_nifty500()
         tickers  = nifty_df["nse_ticker"].tolist() if not nifty_df.empty else []
+        if not nifty_df.empty:
+            sector_map = {
+                row["nse_ticker"]: NSE_SECTOR_MAP.get(row["industry"])
+                for _, row in nifty_df.iterrows()
+            }
         print(f"  Universe: {len(tickers)} stocks")
 
     # ── Step 2: Fetch FII data once ───────────────────────────
@@ -1197,7 +1218,8 @@ def _run_scan_impl(test_mode: bool = False, single_ticker: str = None) -> list:
 
     for ticker in tickers:
         try:
-            result = analyse_stock(ticker, fii_data, sentiment_signals, min_composite)
+            result = analyse_stock(ticker, fii_data, sentiment_signals,
+                                   min_composite, sector_map.get(ticker))
             scanned += 1
 
             if result is None:
