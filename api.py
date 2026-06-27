@@ -107,6 +107,7 @@ SWING_HISTORY_FILE    = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_hist
 SWING_QUEUE_FILE      = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_queue.json")
 INDIA_QUEUE_FILE      = os.path.join(os.getenv("DATA_DIR", "/data"), "india_queue.json")
 SWING_SCAN_LOCK_FILE  = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_scan.lock")
+SWING_SCAN_LOG_FILE   = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_scan.log")
 SWING_SCAN_TIMEOUT_SEC = 20 * 60  # matches swing_scanner.py's stale-lock cutoff
 
 
@@ -1366,13 +1367,42 @@ def swing_scan_release():
     return jsonify({"ok": True})
 
 
+def _swing_scan_log_tail(n: int = 60) -> str:
+    """Last n lines of the manual-scan log, for live display on the dashboard."""
+    try:
+        with open(SWING_SCAN_LOG_FILE, encoding="utf-8", errors="replace") as f:
+            return "".join(f.readlines()[-n:])
+    except Exception:
+        return ""
+
+
+def _reap_swing_scan(proc):
+    """Wait for the background scan, stamp a final marker in the log, free the
+    lock (safety net in case the scanner was killed before it could release),
+    and Telegram on failure. Success notification is sent by the scanner
+    itself (the candidate summary)."""
+    rc = proc.wait()
+    stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with open(SWING_SCAN_LOG_FILE, "a", encoding="utf-8") as f:
+            if rc == 0:
+                f.write(f"\n=== SCAN FINISHED OK · {stamp} ===\n")
+            else:
+                f.write(f"\n=== SCAN FAILED (exit {rc}) · {stamp} ===\n")
+    except Exception:
+        pass
+    _release_swing_scan_lock()
+    if rc != 0:
+        _tg(f"❌ Manual swing scan failed (exit {rc}).\nCheck the dashboard scan log.")
+
+
 @app.route("/swing/scan/trigger", methods=["POST", "OPTIONS"])
 def swing_scan_trigger():
     """Kick off a swing_scanner.py run in the background. Non-blocking —
-    returns immediately while the scan runs as a detached subprocess.
-    This only spawns the process; the lock itself is claimed by run_scan()
-    once it starts, same as the Oracle VPS cron. This pre-check is just a
-    fast no-op-spawn when a scan is already known to be running."""
+    returns immediately while the scan runs as a detached subprocess. The
+    subprocess's output is streamed (unbuffered) to swing_scan.log so the
+    dashboard can show live step-by-step progress; the lock itself is claimed
+    by run_scan() once it starts, same as the Oracle VPS cron."""
     if request.method == "OPTIONS":
         return jsonify({}), 200
     auth_err = _enforce_upload_token()
@@ -1385,15 +1415,23 @@ def swing_scan_trigger():
 
     script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "swing_scanner.py")
     try:
+        # Fresh log per run, with an immediate start marker so the dashboard
+        # has something to show before the scanner prints its first line.
+        log_f = open(SWING_SCAN_LOG_FILE, "w", encoding="utf-8")
+        log_f.write(f"=== SCAN STARTED · {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n")
+        log_f.write("Launching swing_scanner.py (this takes a few minutes)…\n")
+        log_f.flush()
+        env = {**os.environ, "SWING_SCAN_SOURCE": "manual", "PYTHONUNBUFFERED": "1"}
         proc = subprocess.Popen(
-            [sys.executable, script_path],
+            [sys.executable, "-u", script_path],
             cwd=os.path.dirname(script_path),
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,   # merge tracebacks into the same log
             stdin=subprocess.DEVNULL,
             start_new_session=True,
+            env=env,
         )
-        threading.Thread(target=proc.wait, daemon=True).start()
+        threading.Thread(target=_reap_swing_scan, args=(proc,), daemon=True).start()
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     return jsonify({"status": "started"})
@@ -1401,7 +1439,7 @@ def swing_scan_trigger():
 
 @app.route("/swing/scan/status", methods=["GET", "OPTIONS"])
 def swing_scan_status():
-    """Is a swing scan currently running, and when did candidates last update."""
+    """Is a swing scan running, its live log tail, and when candidates last updated."""
     if request.method == "OPTIONS":
         return jsonify({}), 200
     age = _swing_scan_lock_age()
@@ -1414,6 +1452,7 @@ def swing_scan_status():
     return jsonify({
         "running": running,
         "generated_at": (_swing_candidates_cache or {}).get("generated_at"),
+        "log": _swing_scan_log_tail(),
     })
 
 

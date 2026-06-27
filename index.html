@@ -118,6 +118,12 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
 .refresh-btn{display:flex;align-items:center;gap:5px;background:var(--surface2);border:1px solid var(--line2);color:var(--text2);font-size:11px;font-weight:500;padding:7px 12px;border-radius:999px;cursor:pointer;transition:color .12s;}
 .refresh-btn:active{color:var(--text);}
 .refresh-btn:disabled{opacity:.5;cursor:default;}
+.scan-log-head{display:flex;align-items:center;justify-content:space-between;font-size:10px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--text3);margin-bottom:6px;}
+.scan-log-dot{width:7px;height:7px;border-radius:50%;background:var(--gold);animation:scanpulse 1s ease-in-out infinite;}
+.scan-log-dot.done{background:var(--green);animation:none;}
+.scan-log-dot.fail{background:var(--red);animation:none;}
+@keyframes scanpulse{0%,100%{opacity:.3;}50%{opacity:1;}}
+.scan-log{background:#0c0c0f;border:1px solid var(--line2);border-radius:10px;padding:10px 12px;margin:0;max-height:220px;overflow-y:auto;font-family:var(--mono);font-size:10px;line-height:1.5;color:var(--text2);white-space:pre-wrap;word-break:break-word;-webkit-overflow-scrolling:touch;}
 
 /* ═══ VIEWS ═══ */
 .view{display:none;padding-top:4px;}
@@ -808,6 +814,10 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
   <div class="sec"><span class="sec-lbl">Open Positions</span><span class="sec-line"></span></div>
   <div style="padding:0 20px;" id="swOpenPositions"><div class="spin-wrap"><div class="spinner"></div></div></div>
   <div class="sec"><span class="sec-lbl">Today's Candidates</span><span class="sec-line"></span><button class="refresh-btn" id="sw-runScanBtn" style="padding:5px 10px;font-size:10px" onclick="runSwingScan()">▶ Run Scan</button></div>
+  <div id="sw-scanLogWrap" style="display:none;padding:0 20px;margin-bottom:6px;">
+    <div class="scan-log-head"><span id="sw-scanLogTitle">Running scan…</span><span class="scan-log-dot" id="sw-scanLogDot"></span></div>
+    <pre class="scan-log" id="sw-scanLog"></pre>
+  </div>
   <div style="padding:0 20px;" id="swCandidates"><div class="spin-wrap"><div class="spinner"></div></div></div>
   <div class="sec sec-toggle" onclick="toggleClosed('swClosed','swClosedCaret')"><span class="sec-lbl">Closed Swing Trades</span><span class="sec-caret" id="swClosedCaret">▸</span><span class="sec-line"></span></div>
   <div class="closed-wrap" id="swClosed" style="display:none"><div class="spin-wrap"><div class="spinner"></div></div></div>
@@ -869,34 +879,63 @@ async function adminReset(){
 
 /* ═══ SWING — MANUAL SCAN TRIGGER ═══ */
 let _swScanPoll=null;
+function _swScanLog(text,state){
+  const wrap=document.getElementById('sw-scanLogWrap');
+  const pre=document.getElementById('sw-scanLog');
+  const dot=document.getElementById('sw-scanLogDot');
+  const title=document.getElementById('sw-scanLogTitle');
+  if(!wrap)return;
+  wrap.style.display='block';
+  if(text!=null){
+    const atBottom=pre.scrollHeight-pre.scrollTop-pre.clientHeight<30;
+    pre.textContent=text;
+    if(atBottom)pre.scrollTop=pre.scrollHeight;  // keep following the tail
+  }
+  dot.className='scan-log-dot'+(state==='done'?' done':state==='fail'?' fail':'');
+  title.textContent=state==='done'?'Scan complete':state==='fail'?'Scan failed':'Running scan…';
+}
 async function runSwingScan(){
   const btn=document.getElementById('sw-runScanBtn');
   const st=await fd('/swing/scan/status');
-  if(st?.running){_swPollScan();return;}
-  if(!confirm('Run a fresh swing scan now? Takes 3-8 minutes.'))return;
+  if(st?.running){_swScanLog(st.log,'run');_swPollScan(st.generated_at);return;}
+  if(!confirm('Run a fresh swing scan now? Takes a few minutes. Progress shows below and a Telegram is sent when done.'))return;
   btn.disabled=true;btn.textContent='⏳ Scanning…';
+  _swScanLog('Starting…','run');
   try{
     const r=await fetch(`${API}/swing/scan/trigger`,{method:'POST',headers:_postHeaders()});
     const d=await r.json();
-    if(d.status==='started'||d.status==='already_running'){_swPollScan();}
-    else{alert('⚠️ Could not start scan: '+(d.error||JSON.stringify(d)));btn.disabled=false;btn.textContent='▶ Run Scan';}
-  }catch(e){alert('⚠️ Error: '+e.message);btn.disabled=false;btn.textContent='▶ Run Scan';}
+    if(d.status==='started'||d.status==='already_running'){_swPollScan(st?.generated_at);}
+    else{_swScanLog('⚠️ Could not start scan: '+(d.error||JSON.stringify(d)),'fail');btn.disabled=false;btn.textContent='▶ Run Scan';}
+  }catch(e){_swScanLog('⚠️ Error: '+e.message,'fail');btn.disabled=false;btn.textContent='▶ Run Scan';}
 }
-function _swPollScan(){
+function _swPollScan(startGen){
   const btn=document.getElementById('sw-runScanBtn');
   btn.disabled=true;btn.textContent='⏳ Scanning…';
   const startedAt=Date.now();
   if(_swScanPoll)clearInterval(_swScanPoll);
-  _swScanPoll=setInterval(async()=>{
+  const tick=async()=>{
     const st=await fd('/swing/scan/status');
-    const timedOut=Date.now()-startedAt>12*60*1000;
-    if((!st||!st.running)||timedOut){
+    if(!st){return;}  // transient fetch error — keep polling
+    const log=st.log||'';
+    const ok=/SCAN FINISHED OK/.test(log);
+    const failed=/SCAN FAILED/.test(log);
+    const newData=st.generated_at&&st.generated_at!==startGen;
+    const timedOut=Date.now()-startedAt>15*60*1000;
+    // The reaper always writes a FINISHED/FAILED marker, so rely on those
+    // (plus fresh data / timeout) — never on the lock flag, which is briefly
+    // false right after trigger before the scanner claims the lock.
+    const done=ok||failed||newData||timedOut;
+    _swScanLog(log,failed||(timedOut&&!newData)?'fail':(done?'done':'run'));
+    if(done){
       clearInterval(_swScanPoll);_swScanPoll=null;
       btn.disabled=false;btn.textContent='▶ Run Scan';
-      if(timedOut)alert('Scan is taking longer than expected — check back shortly.');
-      else if(_cv==='swingView')loadSwing();
+      if(failed)_swScanLog(log+'\n\n⚠️ Scan failed — see log above. A Telegram alert was sent.','fail');
+      else if(timedOut&&!newData)_swScanLog(log+'\n\n⏱ Still running after 15 min — check back shortly.','fail');
+      else if(_cv==='swingView')loadSwing();  // refresh candidates with fresh data
     }
-  },15000);
+  };
+  tick();  // immediate first read
+  _swScanPoll=setInterval(tick,8000);
 }
 
 /* ═══ INIT ═══ */

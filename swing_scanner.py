@@ -1422,6 +1422,11 @@ def send_telegram_alert(candidates: list):
         lines.append(f"🛑 Set stop-loss on Kite before entering")
         msg = "\n".join(lines)
 
+    # Flag dashboard-triggered runs so the completion alert is distinguishable
+    # from the scheduled cron's alert.
+    if os.getenv("SWING_SCAN_SOURCE") == "manual":
+        msg = "🔘 *Manual run (dashboard)*\n\n" + msg
+
     # Trim to Telegram limit
     if len(msg) > 4096:
         msg = msg[:4000] + "\n\n_(truncated)_"
