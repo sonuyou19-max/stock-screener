@@ -19,7 +19,10 @@ Entry signals — continuous composite score 0–100 (replaces the old "N of 7"
 count-vote; magnitude matters now, not just pass/fail). Each signal's old
 binary threshold maps to ~50 strength, so a stock that barely cleared a
 gate scores around 50 on it, and one deep in the zone scores near 100:
-  1. RSI(14)           — 45–75 momentum-zone plateau, ramps either side
+  1. RSI(14)           — 45–75 momentum-zone plateau, ramps either side,
+                         then tilted by direction: a rising RSI keeps full
+                         strength, one rolling over (falling in-zone) is
+                         scaled down — level alone no longer suffices
   2. MACD(12,26,9)     — histogram magnitude (bps of price) + crossover recency
   3. Bollinger Bands   — %B position above the middle band (continuation,
                          not lower-band "bounces" — those were knife-catches)
@@ -102,6 +105,14 @@ VPS_SECRET = os.getenv("EXECUTOR_SECRET", "")
 RSI_PERIOD       = 14
 RSI_MIN          = 45      # confirmed upswing — not still declining from oversold
 RSI_MAX          = 75      # strong breakouts often run 70-75; don't exclude them
+# RSI direction tilt — a level in the 45-75 zone is necessary but not
+# sufficient. A rising RSI confirms momentum; an RSI rolling over (falling
+# even while still in-zone) is losing momentum and gets its strength scaled
+# down. Direction is measured as the change over RSI_SLOPE_LOOKBACK bars.
+RSI_SLOPE_LOOKBACK = 3     # bars back used to measure RSI direction
+RSI_SLOPE_DEADBAND = 1.0   # |Δ| within this = "flat" — no penalty (noise guard)
+RSI_SLOPE_FULL_DROP = 6.0  # Δ ≤ −this = full falling penalty (ramped in between)
+RSI_FALLING_FACTOR = 0.6   # strength multiplier when RSI is clearly falling
 MACD_FAST        = 12
 MACD_SLOW        = 26
 MACD_SIGNAL      = 9
@@ -303,24 +314,38 @@ def _trapezoid(x: float, a: float, b: float, c: float, d: float) -> float:
 # SIGNAL CALCULATORS
 # ─────────────────────────────────────────────
 
-def calc_rsi(closes: pd.Series, period: int = RSI_PERIOD) -> float:
-    """RSI with Wilder's smoothing — matches TradingView/Kite chart values.
-    (A plain rolling mean gives noticeably different readings near the 42/70 gates.)"""
+def _rsi_series(closes: pd.Series, period: int = RSI_PERIOD) -> pd.Series:
+    """RSI series with Wilder's smoothing — matches TradingView/Kite chart
+    values. (A plain rolling mean gives noticeably different readings near
+    the gates.)"""
     delta  = closes.diff().dropna()
     gain   = delta.clip(lower=0)
     loss   = (-delta).clip(lower=0)
     avg_g  = gain.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     avg_l  = loss.ewm(alpha=1/period, min_periods=period, adjust=False).mean()
     rs     = avg_g / avg_l.replace(0, np.nan)
-    rsi    = 100 - (100 / (1 + rs))
+    return 100 - (100 / (1 + rs))
+
+
+def calc_rsi(closes: pd.Series, period: int = RSI_PERIOD) -> float:
+    """Latest RSI value (Wilder's smoothing)."""
+    rsi = _rsi_series(closes, period).dropna()
     return round(float(rsi.iloc[-1]), 2) if not rsi.empty else 50.0
 
 
-def calc_rsi_strength(rsi: float) -> float:
-    """0-100 strength. The old binary zone (RSI_MIN-RSI_MAX) is the
-    full-strength plateau; partial credit ramps in/out over a 15-point
-    band on each side instead of a hard cliff at the old gate edges."""
-    return round(_trapezoid(rsi, RSI_MIN - 15, RSI_MIN, RSI_MAX, RSI_MAX + 15), 1)
+def calc_rsi_strength(rsi: float, slope: float = 0.0) -> float:
+    """0-100 strength. The 45-75 zone is the full-strength plateau; partial
+    credit ramps in/out over a 15-point band on each side instead of a hard
+    cliff. Direction tilt: a rising/flat RSI keeps full credit, while an RSI
+    rolling over (falling while still in-zone — losing momentum) is scaled
+    down toward RSI_FALLING_FACTOR. The penalty ramps from the deadband to a
+    full drop so there's no cliff between "flat" and "falling"."""
+    base = _trapezoid(rsi, RSI_MIN - 15, RSI_MIN, RSI_MAX, RSI_MAX + 15)
+    if slope < -RSI_SLOPE_DEADBAND:
+        drop   = min(1.0, (-slope - RSI_SLOPE_DEADBAND) /
+                          (RSI_SLOPE_FULL_DROP - RSI_SLOPE_DEADBAND))
+        base  *= 1.0 - drop * (1.0 - RSI_FALLING_FACTOR)
+    return round(base, 1)
 
 
 def calc_macd(closes: pd.Series) -> dict:
@@ -749,8 +774,17 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
     curr   = float(closes.iloc[-1])
 
     # ── Calculate all 6 technical signals ─────────────────────
-    rsi          = calc_rsi(closes)
-    rsi_strength = calc_rsi_strength(rsi)
+    # RSI with direction: the level must be in-zone (45-75) AND we measure
+    # whether it's rising or rolling over, so strength reflects momentum
+    # direction, not just where the value sits.
+    rsi_ser      = _rsi_series(closes).dropna()
+    rsi          = round(float(rsi_ser.iloc[-1]), 2) if not rsi_ser.empty else 50.0
+    rsi_prev     = (float(rsi_ser.iloc[-1 - RSI_SLOPE_LOOKBACK])
+                    if len(rsi_ser) > RSI_SLOPE_LOOKBACK else rsi)
+    rsi_slope    = round(rsi - rsi_prev, 2)
+    rsi_strength = calc_rsi_strength(rsi, rsi_slope)
+    rsi_dir      = ("rising"  if rsi_slope >  RSI_SLOPE_DEADBAND else
+                    "falling" if rsi_slope < -RSI_SLOPE_DEADBAND else "flat")
     macd    = calc_macd(closes)
     bb      = calc_bollinger(hist)
     vol     = calc_volume_surge(hist)
@@ -766,7 +800,13 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
             "value":    rsi,
             "strength": rsi_strength,
             "weight":   SIGNAL_WEIGHTS["rsi"],
-            "note":     f"RSI {rsi:.1f} ({'✅ momentum zone' if RSI_MIN <= rsi <= RSI_MAX else f'❌ outside {RSI_MIN}-{RSI_MAX}'})",
+            "note":     (
+                f"RSI {rsi:.1f} {rsi_dir} "
+                + ("✅ momentum zone" if RSI_MIN <= rsi <= RSI_MAX
+                   else f"❌ outside {RSI_MIN}-{RSI_MAX}")
+                + (" ⚠️ rolling over — momentum fading" if rsi_dir == "falling"
+                   and RSI_MIN <= rsi <= RSI_MAX else "")
+            ),
         },
         "macd": {
             "pass":     macd["bullish_cross"] or (macd["macd_above"] and macd["hist_growing"]),
@@ -965,6 +1005,7 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
         "sentiment_bucket": bucket_key or "unmapped",
         # Technical values
         "rsi":           rsi,
+        "rsi_slope":     rsi_slope,
         "macd_hist":     macd["histogram"],
         "bb_pct_b":      bb["pct_b"],
         "bb_middle":     round(bb_mid, 2),
