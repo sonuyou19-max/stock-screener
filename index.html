@@ -253,6 +253,15 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
 .a-risk{font-size:11px;color:var(--text2);line-height:1.5;padding-left:14px;position:relative;margin-bottom:4px;}
 .a-risk::before{content:'';position:absolute;left:2px;top:7px;width:4px;height:4px;border-radius:50%;background:var(--gold);}
 
+/* swing composite-score breakdown */
+.sc-sig-row{margin-bottom:9px;}
+.sc-sig-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px;}
+.sc-sig-name{font-size:11px;color:var(--text2);font-weight:500;}
+.sc-sig-contrib{font-size:11px;font-weight:600;font-family:var(--mono);white-space:nowrap;}
+.sc-sig-note{font-size:9.5px;color:var(--text3);line-height:1.4;margin-top:1px;}
+.sc-sig-bar{height:3px;border-radius:999px;background:var(--line);margin-top:4px;overflow:hidden;}
+.sc-sig-bar-fill{height:100%;border-radius:999px;}
+
 /* fundamentals grid */
 .sc-fund-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:6px;margin-top:12px;}
 .sc-fund-cell{background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:7px 6px;text-align:center;}
@@ -2965,6 +2974,7 @@ function renderSwingCandidates(){
     return;
   }
   _swCandByTicker={};candidates.forEach(c=>{_swCandByTicker[c.ticker]=c;});
+  const SIG_LABELS={momentum:'Momentum',volume:'Volume',macd:'MACD',sentiment:'Sector Sentiment',rsi:'RSI',bollinger:'Bollinger',fii:'FII/DII Flow'};
   el.innerHTML=`<div class="swing-carousel">${candidates.map((c,i)=>{
     const sigs=c.signals||{};
     const conv=c.conviction||'LOW';
@@ -2973,6 +2983,21 @@ function renderSwingCandidates(){
     const key=(c.ticker||'').replace('.','_').replace('-','_');
     const passedSigs=Object.entries(sigs).filter(([,v])=>v.pass).map(([k,v])=>({k,note:v.note}));
     const failedSigs=Object.entries(sigs).filter(([,v])=>!v.pass).map(([k,v])=>({k,note:v.note}));
+    // Composite breakdown (new weighted scoring). Fall back to the old
+    // pass/fail lists only for stale data that predates the migration.
+    const hasComposite=(c.max_score>=100)||Object.values(sigs).some(v=>v.contribution!=null||v.strength!=null);
+    const sigRows=Object.entries(sigs).map(([k,v])=>({k,...v}))
+      .sort((a,b)=>(b.contribution||0)-(a.contribution||0))
+      .map(s=>{
+        const strength=Math.max(0,Math.min(100,s.strength||0));
+        const contrib=(s.contribution!=null?s.contribution:0);
+        const col=s.pass?'var(--green)':(strength>=50?'var(--gold)':'var(--text3)');
+        return`<div class="sc-sig-row">
+          <div class="sc-sig-top"><span class="sc-sig-name">${SIG_LABELS[s.k]||s.k}</span><span class="sc-sig-contrib" style="color:${col}">+${contrib.toFixed(1)}</span></div>
+          <div class="sc-sig-bar"><div class="sc-sig-bar-fill" style="width:${strength}%;background:${col}"></div></div>
+          ${s.note?`<div class="sc-sig-note">${s.note}</div>`:''}
+        </div>`;
+      }).join('');
     return`<div class="sw-cand-card stock-card">
       <div class="sc-header">
         <div style="min-width:0">
@@ -2983,8 +3008,8 @@ function renderSwingCandidates(){
           ${stale?`<div style="font-size:9.5px;color:var(--red);margin-top:3px;">Stale scan — ${scanD}</div>`:''}
         </div>
         <div style="text-align:right;flex-shrink:0">
-          <div class="sc-score-num ${c.score>=(c.max_score||7)*.85?'high':c.score>=(c.max_score||7)*.6?'mid':'low'}">${c.score||0}<span style="font-size:10px;font-weight:400;color:var(--text3)">/${c.max_score||7}</span></div>
-          <div class="sc-score-lbl">Signals</div>
+          <div class="sc-score-num ${c.score>=(c.max_score||100)*.85?'high':c.score>=(c.max_score||100)*.6?'mid':'low'}">${c.score||0}<span style="font-size:10px;font-weight:400;color:var(--text3)">/${c.max_score||100}</span></div>
+          <div class="sc-score-lbl">Score</div>
         </div>
       </div>
 
@@ -3033,6 +3058,11 @@ function renderSwingCandidates(){
           <div><div class="sc-m-lbl">Vol surge</div><div class="sc-m-val">${(c.vol_ratio||0).toFixed(1)}×</div></div>
           <div></div>
         </div>
+        ${hasComposite?`
+        <div class="sc-why-block">
+          <div class="sc-why-title">Score breakdown · ${c.score||0}/${c.max_score||100}</div>
+          ${sigRows}
+        </div>`:`
         ${passedSigs.length?`
         <div class="sc-why-block">
           <div class="sc-why-title">Signals passed</div>
@@ -3042,7 +3072,7 @@ function renderSwingCandidates(){
         <div class="sc-why-block">
           <div class="sc-why-title">Signals failed</div>
           ${failedSigs.map(({k,note})=>`<div class="a-risk">${note||k}</div>`).join('')}
-        </div>`:''}
+        </div>`:''}`}
       </div>
 
       <div class="sc-actions">
