@@ -415,11 +415,14 @@ def get_historical():
         log.info("Historical: %s  %d rows", symbol, len(clean))
         return jsonify({"symbol": symbol, "rows": clean})
     except KiteException as e:
-        log.error("Kite historical error for %s: %s", symbol, e)
-        return jsonify({"error": str(e)}), 400
+        # Include the exception type so the caller can tell apart an expired
+        # token (TokenException) from a missing historical-data subscription
+        # (PermissionException) etc. — both otherwise read as a bare 400.
+        log.error("Kite historical error for %s: %s: %s", symbol, type(e).__name__, e)
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 400
     except Exception as e:
         log.error("get_historical error for %s: %s", symbol, e)
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
 
 
 if __name__ == "__main__":

@@ -238,23 +238,44 @@ SENTIMENT_STRENGTH = {
 # DATA FETCHER — one call per stock
 # ─────────────────────────────────────────────
 
+# Circuit breaker: if Zerodha/Kite is misconfigured (expired token, no
+# historical-data subscription, etc.) it fails for EVERY symbol. Rather than
+# hit the VPS 500 times and spam two log lines each, give up on Kite after a
+# short streak of failures and use yfinance for the rest of the run. Module
+# globals reset every run (the scanner is a fresh subprocess each time).
+_KITE_DISABLED       = False
+_KITE_FAIL_STREAK    = 0
+_KITE_FAIL_THRESHOLD = 8
+_KITE_LAST_ERR       = ""
+
+
 def fetch_ohlcv(ticker: str) -> Optional[pd.DataFrame]:
     """
     Fetch ~1 year of daily OHLCV for signal calculation.
     Tries Zerodha via Oracle VPS first (authoritative NSE feed),
     falls back to yfinance if VPS is unreachable or returns no data.
     """
+    global _KITE_DISABLED, _KITE_FAIL_STREAK
     symbol = ticker.replace(".NS", "").replace(".BO", "")
-    if VPS_URL:
+    if VPS_URL and not _KITE_DISABLED:
         df = _fetch_ohlcv_kite(symbol)
         if df is not None:
+            _KITE_FAIL_STREAK = 0
             return df
-        print(f"  ↩  {symbol}: Zerodha fetch failed — falling back to yfinance")
+        _KITE_FAIL_STREAK += 1
+        if _KITE_FAIL_STREAK >= _KITE_FAIL_THRESHOLD:
+            _KITE_DISABLED = True
+            print(f"  ⛔ Zerodha unavailable after {_KITE_FAIL_STREAK} consecutive "
+                  f"failures — {_KITE_LAST_ERR or 'unknown error'}. "
+                  f"Switching to yfinance for the rest of this scan.")
+        else:
+            print(f"  ↩  {symbol}: Zerodha fetch failed — falling back to yfinance")
     return _fetch_ohlcv_yf(ticker)
 
 
 def _fetch_ohlcv_kite(symbol: str) -> Optional[pd.DataFrame]:
     """Fetch OHLCV from Zerodha via Oracle VPS. Returns DataFrame matching yfinance format."""
+    global _KITE_LAST_ERR
     try:
         req = _urllib.Request(
             f"{VPS_URL}/get-historical?symbol={symbol}&days=400",
@@ -272,7 +293,19 @@ def _fetch_ohlcv_kite(symbol: str) -> Optional[pd.DataFrame]:
             "low":  "Low",  "close": "Close", "volume": "Volume",
         })
         return df[["Open", "High", "Low", "Close", "Volume"]]
+    except _urlerr.HTTPError as e:
+        # The VPS puts the real Kite error in the JSON body; without reading it
+        # we'd only ever see a useless "HTTP Error 400: BAD REQUEST".
+        try:
+            body = e.read().decode("utf-8", "replace")
+            msg  = json.loads(body).get("error", body[:200])
+        except Exception:
+            msg = str(e)
+        _KITE_LAST_ERR = f"HTTP {e.code}: {msg}"
+        print(f"  ⚠️  Kite OHLCV error for {symbol}: {_KITE_LAST_ERR}")
+        return None
     except Exception as e:
+        _KITE_LAST_ERR = str(e)
         print(f"  ⚠️  Kite OHLCV error for {symbol}: {e}")
         return None
 
