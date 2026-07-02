@@ -1197,7 +1197,7 @@ const IT={BFSI_IT:{min_rev:10,max_pe:35,max_pb:5,min_roe:15,max_de:2,max_peg:2.5
 const UT={TECH:{min_rev:8,max_pe:80,max_pb:20,max_de:400,max_peg:4},DEFENSIVE_DIV:{min_rev:3,max_pe:30,max_pb:8,min_roe:12,max_de:250,max_peg:2.5}};
 const IBT={BFSI_IT:'Financial Services + IT',DEFENCE_INFRA:'Capital Goods + Defence',GREEN_ENERGY_EV:'Power + Automobile',FMCG_PHARMA:'FMCG + Healthcare',top_picks:'Monthly Top Picks — Nifty 500'};
 const SENT_EMOJI={positive:'🟢',mild_positive:'🟡',neutral:'⚪',cautious:'🟠',negative:'🔴'};
-const UBT={TECH:'Technology · 80%',DEFENSIVE_DIV:'Defensive + Dividend · 20%'};
+const UBT={TECH:'Technology · Tech/Semi',DEFENSIVE_DIV:'Defensive + Dividend'};
 
 function mr(label,val,fmt,req,reqFmt,pw){
   const hv=val!==null&&val!==undefined&&val!=='N/A'&&!isNaN(parseFloat(val));
@@ -2610,8 +2610,8 @@ async function loadUsVerdict(){
     return;
   }
   renderVerdict('usVerdict',v,
-    ['TECH','DEFENSIVE_DIV'],
-    {TECH:'Technology',DEFENSIVE_DIV:'Defensive + Dividend'}
+    ['AI_CLOUD','SEMICONDUCTORS','HIGH_GROWTH_TECH','DEFENSIVE_DIV'],
+    {AI_CLOUD:'AI + Cloud',SEMICONDUCTORS:'Semiconductors',HIGH_GROWTH_TECH:'High-Growth Tech',DEFENSIVE_DIV:'Defensive + Dividend'}
   );
 }
 

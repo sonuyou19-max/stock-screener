@@ -407,7 +407,11 @@ def get_us_macro_signals() -> dict:
         print(f"  ⚠️  Market fetch failed: {e}")
 
     # ── 4. Load news signals if available ────────────────────
-    news_file = os.path.join(os.path.dirname(__file__), "us_news_signals.json")
+    # The news scanner writes to DATA_DIR; reading the script directory
+    # meant the prompt's news section was empty on every Railway run.
+    news_file = os.path.join(os.getenv("DATA_DIR", "/data"), "us_news_signals.json")
+    if not os.path.exists(news_file):
+        news_file = os.path.join(os.path.dirname(__file__), "us_news_signals.json")
     if os.path.exists(news_file):
         try:
             with open(news_file) as f:

@@ -126,6 +126,123 @@ def get_tech_universe():
     return sorted(set(tickers))
 
 
+def get_subindustry_map() -> dict:
+    """{ticker: GICS Sub-Industry} from the cached S&P 500 CSV."""
+    try:
+        sp500_df = fetch_sp500()
+        return {str(r["Symbol"]).replace(".", "-"): str(r.get("GICS Sub-Industry", ""))
+                for _, r in sp500_df.iterrows()}
+    except Exception:
+        return {}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# SENTIMENT (news scanner + weekly LLM synthesis → score adjustment)
+# ──────────────────────────────────────────────────────────────────────
+# The news scanner and LLM synthesiser ran for months producing signals
+# nothing consumed. This wires them into scoring the way the India
+# screener consumes its sentiment stack. Each stock maps to one of the
+# LLM's 4 buckets via GICS sub-industry, so the weekly verdict actually
+# differentiates within the tech universe.
+
+SUBIND_TO_LLM_BUCKET = {
+    "Semiconductors":                          "SEMICONDUCTORS",
+    "Semiconductor Materials & Equipment":     "SEMICONDUCTORS",
+    "Systems Software":                        "AI_CLOUD",
+    "Internet Services & Infrastructure":      "AI_CLOUD",
+    "IT Consulting & Other Services":          "AI_CLOUD",
+    "Data Processing & Outsourced Services":   "AI_CLOUD",
+    "Interactive Media & Services":            "AI_CLOUD",
+}
+DEFAULT_LLM_BUCKET = "HIGH_GROWTH_TECH"   # app software, hardware, EMS, ...
+
+# LLM verdict → points (scaled by confidence); news signal → points.
+LLM_VERDICT_ADJ   = {"Positive": 4.0, "Neutral": 0.0, "Cautious": -2.0, "Negative": -5.0}
+LLM_CONF_SCALE    = {"High": 1.0, "Medium": 0.75, "Low": 0.5}
+NEWS_SIGNAL_ADJ   = {"positive": 2.0, "mild_positive": 1.0, "neutral": 0.0,
+                     "cautious": -1.0, "negative": -3.0}
+LLM_MAX_AGE_DAYS  = 10   # weekly job — anything older is stale
+NEWS_MAX_AGE_DAYS = 5    # daily job
+
+
+def _signal_age_days(payload: dict) -> float | None:
+    """Age from a 'generated_at' like '2026-06-30 08:15 IST'."""
+    try:
+        gen = str(payload.get("generated_at", ""))[:10]
+        return (datetime.now() - datetime.strptime(gen, "%Y-%m-%d")).days
+    except Exception:
+        return None
+
+
+def fetch_us_sentiment() -> dict:
+    """Load LLM synthesis + news signals from DATA_DIR (fallback: the API
+    signal store). Stale or missing signals are dropped — a silent feed
+    outage must not keep steering scores."""
+    dd = os.getenv("DATA_DIR", ".")
+    out = {"llm": None, "news": None, "notes": []}
+
+    sources = {}
+    for key, fname in [("us_llm_synthesis", "us_llm_synthesis.json"),
+                       ("us_news_signals", "us_news_signals.json")]:
+        try:
+            with open(os.path.join(dd, fname)) as f:
+                sources[key] = json.load(f)
+        except Exception:
+            pass
+    missing = [k for k in ("us_llm_synthesis", "us_news_signals") if k not in sources]
+    if missing:
+        try:
+            api = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
+            with _ur.urlopen(f"{api}/signals", timeout=15) as r:
+                api_signals = json.loads(r.read())
+            for k in missing:
+                if isinstance(api_signals.get(k), dict):
+                    sources[k] = api_signals[k]
+        except Exception as e:
+            out["notes"].append(f"API signal fetch failed: {e}")
+
+    llm = sources.get("us_llm_synthesis") or {}
+    age = _signal_age_days(llm)
+    if llm.get("verdict") and age is not None and age <= LLM_MAX_AGE_DAYS:
+        out["llm"] = llm["verdict"]
+        out["notes"].append(f"LLM synthesis: {age:.0f}d old ✓")
+    elif llm:
+        out["notes"].append(f"LLM synthesis stale/unreadable (age={age}) — ignored")
+
+    news = sources.get("us_news_signals") or {}
+    age = _signal_age_days(news)
+    if news.get("signals") and age is not None and age <= NEWS_MAX_AGE_DAYS:
+        out["news"] = news["signals"]
+        out["notes"].append(f"News signals: {age:.0f}d old ✓")
+    elif news:
+        out["notes"].append(f"News signals stale/unreadable (age={age}) — ignored")
+    return out
+
+
+def sentiment_adjustment(subindustry: str, sentiment: dict) -> tuple[float, str]:
+    """(points, notes) for one stock from its LLM bucket verdict + the
+    bucket-level news signal. Bounded to roughly ±7 by construction."""
+    bucket = SUBIND_TO_LLM_BUCKET.get(subindustry, DEFAULT_LLM_BUCKET)
+    adj, notes = 0.0, []
+
+    verdicts = sentiment.get("llm") or {}
+    bv = verdicts.get(bucket)
+    if isinstance(bv, dict) and bv.get("verdict") in LLM_VERDICT_ADJ:
+        pts = LLM_VERDICT_ADJ[bv["verdict"]] * LLM_CONF_SCALE.get(bv.get("confidence"), 0.75)
+        if pts:
+            adj += pts
+            notes.append(f"LLM {bucket}: {bv['verdict']} ({pts:+.1f})")
+
+    news = sentiment.get("news") or {}
+    news_bucket = "DEFENSIVE_DIV" if bucket == "DEFENSIVE_DIV" else "TECH"
+    ns = (news.get(news_bucket) or {}).get("signal")
+    if ns in NEWS_SIGNAL_ADJ and NEWS_SIGNAL_ADJ[ns]:
+        adj += NEWS_SIGNAL_ADJ[ns]
+        notes.append(f"news {news_bucket}: {ns} ({NEWS_SIGNAL_ADJ[ns]:+.1f})")
+
+    return round(adj, 2), "; ".join(notes)
+
+
 # ──────────────────────────────────────────────────────────────────────
 # LIVE HOLDINGS FETCHER
 # ──────────────────────────────────────────────────────────────────────
@@ -727,12 +844,58 @@ def screen_universe(universe_tickers, live_extra_tickers=None):
     for col, sign in [("freshness_penalty",-1),("net_adjustment",1),("net_promoter_adj",1),("net_inst_adj",1),("circuit_penalty",-1),("net_pledge_adj",1)]:
         if col in df.columns:
             df["final_score"] = (df["final_score"] + sign * df[col]).clip(lower=0, upper=100)
+
+    # Sentiment overlay: weekly LLM bucket verdict + daily news signal
+    sentiment = fetch_us_sentiment()
+    for note in sentiment["notes"]:
+        print(f"    📰 {note}")
+    if sentiment["llm"] or sentiment["news"]:
+        subind_map = get_subindustry_map()
+        adj_notes = df["ticker"].map(
+            lambda t: sentiment_adjustment(subind_map.get(t, ""), sentiment))
+        df["sentiment_adj"]   = adj_notes.map(lambda x: x[0])
+        df["sentiment_notes"] = adj_notes.map(lambda x: x[1])
+        df["llm_bucket"]      = df["ticker"].map(
+            lambda t: SUBIND_TO_LLM_BUCKET.get(subind_map.get(t, ""), DEFAULT_LLM_BUCKET))
+        df["final_score"] = (df["final_score"] + df["sentiment_adj"]).clip(lower=0, upper=100)
+        n_adj = int((df["sentiment_adj"] != 0).sum())
+        print(f"    📰 Sentiment applied to {n_adj}/{len(df)} stocks "
+              f"(range {df['sentiment_adj'].min():+.1f} to {df['sentiment_adj'].max():+.1f})")
+    else:
+        df["sentiment_adj"], df["sentiment_notes"], df["llm_bucket"] = 0.0, "", ""
+        print("    📰 No fresh sentiment signals — scores unadjusted")
+
     return df.sort_values("final_score", ascending=False)
 
 
 # ──────────────────────────────────────────────────────────────────────
 # REBALANCER
 # ──────────────────────────────────────────────────────────────────────
+
+def _holding_crashed(ticker: str):
+    """Re-check the price filters for a holding that fell out of the scored
+    set. The falling-knife / trend filters silently DROP crashed stocks from
+    scoring, which used to earn them a soft 'TRIM — review manually' verdict
+    instead of EXIT — the worse the crash, the weaker the signal. Returns a
+    reason string if the holding fails those filters, else None."""
+    try:
+        hist = yf.Ticker(ticker).history(period="1y")
+        closes = hist["Close"].dropna()
+        if len(closes) < 66:
+            return None
+        price  = float(closes.iloc[-1])
+        mom_3m = (price / float(closes.iloc[-66]) - 1) * 100
+        mom_6m = (price / float(closes.iloc[-126 if len(closes) >= 126 else 0]) - 1) * 100
+        if mom_6m < -25:
+            return f"6M momentum {mom_6m:.0f}% — crashed through the falling-knife filter"
+        if len(closes) >= 200:
+            dma200 = float(closes.rolling(200).mean().iloc[-1])
+            if price < dma200 and mom_3m < 0:
+                return f"below 200-DMA with 3M momentum {mom_3m:.0f}% — trend broken"
+        return None
+    except Exception:
+        return None
+
 
 def run_rebalancer(live_holdings, scored_df, top7_tickers):
     if not live_holdings: return []
@@ -745,7 +908,11 @@ def run_rebalancer(live_holdings, scored_df, top7_tickers):
         if ticker in top7_tickers:
             verdict = "HOLD"; reason = "Still ranks in top 7 — hold"
         elif curr_score is None:
-            verdict = "TRIM"; reason = "Not found in current screener universe — review manually"
+            crash_reason = _holding_crashed(ticker)
+            if crash_reason:
+                verdict = "EXIT"; reason = f"{crash_reason}. Exit — do not hold an unscreenable position."
+            else:
+                verdict = "TRIM"; reason = "Not found in current screener universe — review manually"
         else:
             pct = float((curr_score > all_scores).mean() * 100)
             if pct < REBALANCER_EXIT_PERCENTILE:

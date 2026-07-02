@@ -57,10 +57,13 @@ HEADERS = {
     "Accept": "application/rss+xml, application/xml, text/xml, */*",
 }
 
-# US RSS Feeds (equiv. ET Markets / LiveMint for India)
+# US RSS Feeds (equiv. ET Markets / LiveMint for India).
+# Reuters retired its public RSS endpoints years ago — the two Reuters
+# feeds 404'd on every run, silently cutting coverage to CNBC + Yahoo.
+# Replaced with MarketWatch's Dow Jones-hosted feeds.
 RSS_FEEDS = {
-    "Reuters Business":     "https://feeds.reuters.com/reuters/businessNews",
-    "Reuters Technology":   "https://feeds.reuters.com/reuters/technologyNews",
+    "MarketWatch Top":      "https://feeds.content.dowjones.io/public/rss/mw_topstories",
+    "MarketWatch Pulse":    "https://feeds.content.dowjones.io/public/rss/mw_realtimeheadlines",
     "CNBC Top News":        "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114",
     "CNBC Technology":      "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=19854910",
     "Yahoo Finance":        "https://finance.yahoo.com/news/rssindex",
