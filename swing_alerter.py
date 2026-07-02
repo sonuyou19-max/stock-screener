@@ -193,18 +193,30 @@ def get_price(ticker: str) -> Optional[dict]:
 # TRADING DAYS COUNTER
 # ─────────────────────────────────────────────
 
+# NSE trading holidays that fall on weekdays. Without this, every holiday
+# over-counted the holding period and time exits fired a day early.
+# Update each January from NSE's trading-holiday circular.
+NSE_HOLIDAYS = {
+    # 2026 (weekday closures)
+    "2026-01-26",  # Republic Day
+    "2026-03-04",  # Holi
+    "2026-04-03",  # Good Friday
+    "2026-04-14",  # Dr. Ambedkar Jayanti
+    "2026-05-01",  # Maharashtra Day
+    "2026-10-02",  # Gandhi Jayanti
+    "2026-12-25",  # Christmas
+}
+
+
 def count_trading_days(from_date_str: str) -> int:
-    """
-    Count trading days (Mon-Fri) since entry date.
-    Simple approximation — doesn't account for public holidays.
-    """
+    """Trading days (Mon-Fri, minus NSE holidays) since entry date."""
     try:
         start = datetime.strptime(from_date_str, "%Y-%m-%d").date()
         today = date.today()
         count = 0
         current = start
         while current <= today:
-            if current.weekday() < 5:  # Mon-Fri
+            if current.weekday() < 5 and current.isoformat() not in NSE_HOLIDAYS:
                 count += 1
             current += timedelta(days=1)
         return max(0, count - 1)  # exclude entry day

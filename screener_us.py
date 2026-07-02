@@ -923,7 +923,7 @@ def run_rebalancer(live_holdings, scored_df, top7_tickers):
                 verdict = "HOLD"; reason = f"Score {curr_score:.0f} — still competitive"
         health.append({"ticker": ticker, "name": stock.get("name", ticker),
                        "rebalancer_verdict": verdict, "reason": reason,
-                       "current_score": round(curr_score, 1) if curr_score else None})
+                       "current_score": round(curr_score, 1) if curr_score is not None else None})
     return health
 
 

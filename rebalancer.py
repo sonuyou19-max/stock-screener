@@ -201,7 +201,10 @@ def decide_action(stock: dict, current_price: float) -> dict:
       urgency     : "HIGH" | "MEDIUM" | "LOW"
     """
     ticker         = stock["ticker"]
-    buy_price      = stock["price"]            # price at time of screener pick
+    # Prefer the actual fill basis (written by the fill postback) over the
+    # screener's scan-day price — gain%, stage triggers and proceeds were
+    # all computed off a price the trade never got.
+    buy_price      = stock.get("buy_price") or stock["price"]
     shares         = stock.get("approx_shares", 0)
     stop_loss      = stock.get("stop_loss_price", 0)
     buy_date_str   = stock.get("buy_date", str(date.today()))
@@ -244,9 +247,20 @@ def decide_action(stock: dict, current_price: float) -> dict:
         return result
 
     # ── Priority 2: Profit stage hit ─────────────
+    # Skip stages already recommended in a prior month (last_stage_pct is
+    # persisted onto the live record after each run) — a stock parked at
+    # +25% used to get the same "sell 30%" recommendation every single
+    # month. Only a HIGHER stage than the last one recommended re-fires.
     stage = get_profit_stage(gain_pct)
+    last_stage_pct = float(stock.get("last_stage_pct") or 0)
+    if stage and stage[0] * 100 <= last_stage_pct:
+        stage = None
+        result["reason"] = (f"+{gain_pct:.1f}% — stage up to "
+                            f"+{last_stage_pct:.0f}% already recommended; "
+                            f"next trigger is the following stage.")
     if stage:
         threshold_pct, label, fraction = stage
+        result["stage_pct"] = round(threshold_pct * 100, 1)
         if threshold_pct == 1.00 or fraction == 1.00:
             # Stage 3 — full exit
             shares_to_sell = shares
@@ -297,7 +311,9 @@ def decide_action(stock: dict, current_price: float) -> dict:
 
     result.update({
         "action":  "HOLD",
-        "reason":  (f"No action needed. P&L: {gain_pct:+.1f}% "
+        # keep the stage-already-recommended explanation if one was set
+        "reason":  result["reason"] or (
+                    f"No action needed. P&L: {gain_pct:+.1f}% "
                     f"(₹{gain_inr:+,.0f}). "
                     f"Need +{to_stage_1:.1f}% more to hit Stage 1."),
         "urgency": "LOW",
@@ -353,6 +369,12 @@ def run_rebalance(portfolio: dict) -> dict:
             decision["bucket"] = bucket_label
 
             report["actions"].append(decision)
+
+            # Persist the recommended stage onto the live record (saved
+            # back by main) so the same stage doesn't re-fire monthly.
+            if decision.get("stage_pct"):
+                stock["last_stage_pct"] = decision["stage_pct"]
+                report["stage_marks"] = report.get("stage_marks", 0) + 1
 
             if decision["action"] == "EXIT":
                 report["exits"].append(decision)
@@ -573,13 +595,15 @@ def save_report_to_api(report: dict):
 
 def is_first_working_day_of_month() -> bool:
     """
-    Returns True if today is the 1st, 2nd, or 3rd of the month AND a weekday.
-    (Handles cases where 1st falls on a weekend.)
+    Returns True on the 1st-3rd of the month, any day of the week.
+
+    The old version also required a weekday, but the cron only fires on
+    the 1st — so a month whose 1st fell on a weekend was silently
+    SKIPPED entirely (the 2nd/3rd allowance could never trigger).
+    Rebalancing doesn't need a live market: yfinance returns the last
+    close, and the report is advisory input for the screener on the 3rd.
     """
-    today = date.today()
-    if today.day > 3:
-        return False
-    return today.weekday() < 5   # Mon=0 ... Fri=4
+    return date.today().day <= 3
 
 
 # ─────────────────────────────────────────────
@@ -786,6 +810,16 @@ def main():
     # ── Step 4: Save to API (screener reads this on the 3rd) ─────────
     print("\n  Step 4: Saving report to API...")
     save_report_to_api(report)
+
+    # ── Step 5: Persist stage markers so trims don't re-fire monthly ──
+    if report.get("stage_marks"):
+        print(f"\n  Step 5: Saving {report['stage_marks']} stage marker(s) "
+              f"to live portfolio...")
+        if _api_post("/portfolio/live/upload", portfolio):
+            print("  ✅ Stage markers saved.")
+        else:
+            print("  ⚠️  Could not save stage markers (non-fatal) — "
+                  "the same stage may be recommended again next month.")
 
     print("\n  ✅ Rebalance complete. Screener will read this on the 3rd.\n")
 

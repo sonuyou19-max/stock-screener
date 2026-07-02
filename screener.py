@@ -27,6 +27,7 @@ import os as _os_tok
 _UPLOAD_AUTH = {"X-Upload-Token": _os_tok.environ["UPLOAD_TOKEN"]} if _os_tok.getenv("UPLOAD_TOKEN") else {}
 
 import json
+import re
 import time
 import logging
 import warnings
@@ -1507,7 +1508,7 @@ def build_portfolio(budget: int = BUDGET) -> tuple[dict, pd.DataFrame, pd.DataFr
     """Run screener across all 20 NSE sectors and build the top-10 portfolio."""
 
     print("\n" + "="*60)
-    print("  INDIAN STOCK SCREENER — MONTHLY TOP 7")
+    print(f"  INDIAN STOCK SCREENER — MONTHLY TOP {TOP_PICKS}")
     print(f"  Date: {datetime.now().strftime('%d %B %Y')}")
     print(f"  Budget: ₹{budget:,.0f}")
     print("="*60)
@@ -1708,16 +1709,19 @@ def rebalance_holdings(live_holdings: list, all_df: pd.DataFrame) -> list:
         h["days_held"]     = days_held
 
         # ── Mirror rebalancer.py priority order ─────────────────────────────
+        # last_stage_pct: stage already recommended in a prior run (set by
+        # rebalancer.py) — only a HIGHER stage re-fires, same as there.
+        last_stage = float(h.get("last_stage_pct") or 0)
         if stop_loss and current_price <= stop_loss:
             verdict = "EXIT"; exit_score = 100
             reason  = f"Stop-loss breached — ₹{current_price:,.2f} ≤ GTT ₹{stop_loss:,.2f}"
-        elif pnl_pct >= 50:
+        elif pnl_pct >= 50 and last_stage < 50:
             verdict = "EXIT"; exit_score = 90
             reason  = f"Stage 3 (+50%) — full exit, P&L +{pnl_pct:.0f}%"
-        elif pnl_pct >= 35:
+        elif pnl_pct >= 35 and last_stage < 35:
             verdict = "TRIM"; exit_score = 60
             reason  = f"Stage 2 (+35%) — sell 30%, P&L +{pnl_pct:.0f}%"
-        elif pnl_pct >= 20:
+        elif pnl_pct >= 20 and last_stage < 20:
             verdict = "TRIM"; exit_score = 40
             reason  = f"Stage 1 (+20%) — sell 30%, P&L +{pnl_pct:.0f}%"
         elif months_held >= 3 and pnl_pct < 5:
@@ -1806,7 +1810,7 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
                     "current_score": si["score"] if si else None,
                     "current_rank":  si["rank"]  if si else None,
                     "status": (
-                        "top7"     if si and si["rank"] <= 7  else
+                        "top7"     if si and si["rank"] <= TOP_PICKS else
                         "top15"    if si and si["rank"] <= 15 else
                         "top30"    if si and si["rank"] <= 30 else
                         "low"      if si else
@@ -1894,8 +1898,8 @@ def generate_monthly_advisory(portfolio: dict, all_df: pd.DataFrame) -> dict:
             if d is None:
                 return "holding period unknown"
             if d > 365:
-                return f"held {d}d — LTCG-eligible (10% tax)"
-            return f"held {d}d — STCG ({365 - d}d to LTCG, 15% tax)"
+                return f"held {d}d — LTCG-eligible (12.5% tax)"
+            return f"held {d}d — STCG ({365 - d}d to LTCG, 20% tax)"
 
         live_str = "\n".join(
             f"  {i+1}. {h['ticker'].replace('.NS','')} ({h['name'][:28]}) "
@@ -1948,7 +1952,7 @@ RULES:
 - Do NOT recommend exiting a stock just because it passed its 52W high or screener filtered it
 - Do NOT recommend exiting a stock with negative PnL — that locks in a loss
 - If multiple holdings have EXIT/TRIM verdict, pick the one with highest PnL
-- LTCG: holding >1 year is more tax-efficient (10% vs 15% STCG)
+- LTCG: holding >1 year is more tax-efficient (12.5% vs 20% STCG)
 - 2-3 sentences citing the specific PnL% and which stage/trigger fired
 
 Respond with ONLY valid JSON (action must be: HOLD / EXIT / EXIT_AND_ADD / ADD):
@@ -2349,7 +2353,7 @@ def assess_portfolio_volatility(portfolio: dict) -> dict:
 
 def print_portfolio_report(portfolio: dict, vol: dict = None):
     print("\n" + "="*60)
-    print("  📊 MONTHLY TOP 7 — NIFTY 500")
+    print(f"  📊 MONTHLY TOP {TOP_PICKS} — NIFTY 500")
     print("="*60)
 
     if vol:

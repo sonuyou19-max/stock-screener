@@ -21,6 +21,9 @@ TELEGRAM_CHAT   = os.environ.get("TELEGRAM_CHAT_ID", "")
 RAILWAY_HEADERS = {"X-Upload-Token": UPLOAD_TOKEN, "Content-Type": "application/json"}
 VPS_HEADERS     = {"X-Executor-Secret": EXECUTOR_SECRET}
 
+# Max daily entry attempts before an unfilled BUY is dropped for good
+MAX_RETRIES     = 3
+
 
 def _get(url, headers=None):
     r = _req.Request(url, headers={**(headers or {}), "Accept": "application/json"})
@@ -121,13 +124,28 @@ def main():
             cancel_order(order_id)
             cancelled.append(symbol)
             retry = entry.get("retry_count", 0) + 1
-            msgs.append(f"⏸ {symbol}: LIMIT order cancelled — re-queued (attempt {retry})")
-            update_queue([{
-                "ticker":       ticker,
-                "status":       "queued",
-                "retry_count":  retry,
-                "cancelled_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
-            }])
+            # Cap retries — unfilled limits used to be re-queued forever,
+            # chasing an optimal_entry computed at queue time while the
+            # stock trended away from it.
+            if retry >= MAX_RETRIES:
+                msgs.append(f"🛑 {symbol}: unfilled after {retry} attempts — "
+                            f"giving up. Re-queue from the dashboard with a "
+                            f"fresh entry price if still wanted.")
+                update_queue([{
+                    "ticker":       ticker,
+                    "status":       "cancelled",
+                    "retry_count":  retry,
+                    "cancelled_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                }])
+            else:
+                msgs.append(f"⏸ {symbol}: LIMIT order cancelled — re-queued "
+                            f"(attempt {retry}/{MAX_RETRIES})")
+                update_queue([{
+                    "ticker":       ticker,
+                    "status":       "queued",
+                    "retry_count":  retry,
+                    "cancelled_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                }])
         except Exception as e:
             errors.append(symbol)
             msgs.append(f"❌ {symbol}: cancel failed — {e}")

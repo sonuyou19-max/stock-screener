@@ -2260,9 +2260,13 @@ def kite_postback():
                                 print(f"⚠️  GTT cancel failed ({gid}): {ce}")
 
                     # Classify by fill-price proximity, not quantity equality
-                    # (even lots made qty_t1 == qty_t2 ambiguous).
+                    # (even lots made qty_t1 == qty_t2 ambiguous). After T1
+                    # the working stop is live_stop (break-even), not the
+                    # planned stop — classify against where the GTT actually
+                    # sits or a break-even stop fill would read MANUAL_EXIT.
                     exit_reason = _classify_swing_exit(
-                        fill_price, stop_loss, target1, target2)
+                        fill_price, entry.get("live_stop") or stop_loss,
+                        target1, target2)
 
                     remaining_before = int(entry.get("stop_qty") or bought_qty)
                     sold             = min(fill_qty, remaining_before)
@@ -2330,17 +2334,25 @@ def kite_postback():
                             })
                             _write_queue(q)
                     else:
-                        # Partial exit — replace the stop GTT for what's left
+                        # Partial exit — replace the stop GTT for what's left.
+                        # After T1 the stop moves to BREAK-EVEN (the alerter
+                        # always advised this; the automation used to re-place
+                        # the original stop, contradicting it) — the remaining
+                        # half can no longer turn a winner into a loser.
                         if gtt_id and gtt_id != fired:
                             _cancel_gtt(gtt_id)
+                        new_stop = float(stop_loss) if stop_loss else None
+                        if exit_reason == "TARGET1" and buy_price:
+                            new_stop = max(new_stop or 0, round(buy_price, 2))
                         new_gtt_id, new_gtt_err = (None, None)
-                        if stop_loss:
+                        if new_stop:
                             new_gtt_id, new_gtt_err = _place_sell_gtt(
-                                symbol, stop_loss, remaining_after, fill_price)
+                                symbol, new_stop, remaining_after, fill_price)
                         if t_key:
                             q[t_key].update({
-                                "stop_qty": remaining_after,
-                                "gtt_id":   new_gtt_id,
+                                "stop_qty":  remaining_after,
+                                "gtt_id":    new_gtt_id,
+                                "live_stop": new_stop,
                             })
                             if exit_reason == "TARGET1":
                                 q[t_key]["gtt_t1_id"] = None
@@ -2357,6 +2369,13 @@ def kite_postback():
                             live_positions.pop(idx)
                         else:
                             live_positions[idx]["shares"] = remaining_after
+                            if exit_reason == "TARGET1":
+                                # stops the alerter re-firing the T1 alert
+                                # daily and tells it the stop moved
+                                live_positions[idx]["target1_booked"] = True
+                            if new_stop:
+                                live_positions[idx]["stop_loss"] = new_stop
+                                live_positions[idx]["stop_loss_price"] = new_stop
                         _write_swing_live(live_positions)
 
                     # ── Telegram ─────────────────────────────────────────
@@ -2373,10 +2392,13 @@ def kite_postback():
                             f"🤖 Remaining GTTs cancelled, records updated."
                         )
                     else:
-                        sl_note = (f"New stop GTT for {remaining_after}sh at ₹{stop_loss} ✅"
+                        stop_desc = (f"₹{new_stop} (break-even)"
+                                     if exit_reason == "TARGET1" and new_stop == round(buy_price, 2)
+                                     else f"₹{new_stop}")
+                        sl_note = (f"New stop GTT for {remaining_after}sh at {stop_desc} ✅"
                                    if new_gtt_id else
                                    f"⚠️ Stop GTT re-placement FAILED ({new_gtt_err}) — "
-                                   f"manually set stop for {remaining_after}sh at ₹{stop_loss}")
+                                   f"manually set stop for {remaining_after}sh at {stop_desc}")
                         _tg(
                             f"{label}: <b>{name} ({symbol})</b>\n"
                             f"Sold {sold} of {remaining_before} shares @ "

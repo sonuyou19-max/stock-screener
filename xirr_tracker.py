@@ -35,7 +35,11 @@ import yfinance as yf
 # CONFIG
 # ─────────────────────────────────────────────
 
-PORTFOLIO_DIRS    = ["./outputs", "/mnt/user-data/outputs", "."]
+# DATA_DIR first — that's where screener.py actually saves portfolio_*.json
+# on Railway (/data); the old list never included it, so the tracker found
+# nothing when run there.
+PORTFOLIO_DIRS    = [os.getenv("DATA_DIR", "/data"), "./outputs",
+                     "/mnt/user-data/outputs", "."]
 SELLS_FILE        = os.path.join(os.path.dirname(__file__), "manual_sells.json")
 NIFTY50_TICKER    = "^NSEI"
 XIRR_TOLERANCE    = 1e-6

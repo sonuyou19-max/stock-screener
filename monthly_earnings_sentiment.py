@@ -250,7 +250,6 @@ COMPANY_NAME_MAP: dict[str, list[str]] = {
     "MCDOWELL-N.NS":  ["united spirits", "diageo india"],
     "HAVELLS.NS":     ["havells"],
     "VOLTAS.NS":      ["voltas"],
-    "TITAN.NS":       ["titan"],
     "TATACONSUM.NS":  ["tata consumer", "tata consumer products"],
     "NESTLEIND.NS":   ["nestle india"],
     "DABUR.NS":       ["dabur"],
@@ -258,7 +257,7 @@ COMPANY_NAME_MAP: dict[str, list[str]] = {
     "GODREJCP.NS":    ["godrej consumer", "gcpl"],
     "BRITANNIA.NS":   ["britannia"],
     "COLPAL.NS":      ["colgate"],
-    "PEL.NS":         ["pidilite"],
+    "PEL.NS":         ["piramal enterprises", "piramal"],
     "PIDILITIND.NS":  ["pidilite"],
     "BERGEPAINT.NS":  ["berger paints"],
     "ASIANPAINT.NS":  ["asian paints"],
@@ -284,7 +283,7 @@ COMPANY_NAME_MAP: dict[str, list[str]] = {
     "TATAPOWER.NS":   ["tata power"],
     "TORNTPOWER.NS":  ["torrent power"],
     "CESC.NS":        ["cesc"],
-    "JSW Energy":     ["jsw energy"],
+    "JSWENERGY.NS":   ["jsw energy"],
     "PIIND.NS":       ["pi industries"],
     "DEEPAKNI.NS":    ["deepak nitrite"],
     "SRF.NS":         ["srf limited"],
@@ -723,14 +722,23 @@ def score_tickers_from_rss(
     counts = {t: 0   for t in scope}
     heads  = {t: []  for t in scope}
 
+    # Word-boundary matching — plain substring matching let short aliases
+    # fire on unrelated words ("hal" in "halt", "bel" in "below", "titan"
+    # in "titanium") and feed ±15-point score adjustments to the wrong
+    # company. Patterns are compiled once per scope.
+    term_patterns = {
+        ticker: [re.compile(r"\b" + re.escape(term) + r"\b")
+                 for term in company_map.get(ticker, [])]
+        for ticker in scope
+    }
+
     for item in items:
         title_lower = item["title"].lower()
         body_lower  = item.get("body", "").lower()
         combined    = title_lower + " " + body_lower
 
         for ticker in scope:
-            terms = company_map.get(ticker, [])
-            if not any(term in combined for term in terms):
+            if not any(p.search(combined) for p in term_patterns[ticker]):
                 continue
 
             escore = _score_earnings_headline(item["title"], item.get("body", ""))
