@@ -324,7 +324,9 @@ def signals():
     for name in ["policy_signals", "news_signals", "llm_synthesis",
                   "us_news_signals", "us_llm_synthesis", "swing_candidates",
                   "swing_news_sentiment", "monthly_earnings_sentiment",
-                  "swing_sentiment_history"]:
+                  "swing_sentiment_history",
+                  # AI features (Tier 1 & 2)
+                  "ai_attribution", "ai_holdings_events", "ai_earnings"]:
         # Try in-memory cache first
         if name in _signals_cache:
             result[name] = _signals_cache[name]

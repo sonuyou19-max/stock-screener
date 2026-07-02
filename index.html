@@ -207,6 +207,23 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
 .sc-score-num.low{color:var(--text3);}
 .sc-score-lbl{font-size:8.5px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;text-align:right;margin-top:1px;}
 .sc-redteam{font-size:10px;font-weight:600;margin-top:5px;line-height:1.35;}
+/* AI insight cards (attribution / events / earnings) */
+.ai-card{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:16px 18px;margin:0 20px 12px;}
+.ai-card-hd{display:flex;align-items:center;gap:8px;font-size:11px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);margin-bottom:10px;}
+.ai-card-hd .ai-when{margin-left:auto;font-size:9.5px;letter-spacing:.04em;text-transform:none;color:var(--text3);}
+.ai-headline{font-size:14px;font-weight:600;color:var(--text);line-height:1.4;}
+.ai-sub{font-size:11.5px;color:var(--text2);margin-top:4px;line-height:1.45;}
+.ai-row{display:flex;gap:8px;align-items:flex-start;font-size:12px;color:var(--text2);padding:7px 0;border-top:1px solid var(--line);line-height:1.45;}
+.ai-row:first-of-type{border-top:none;}
+.ai-dot{flex-shrink:0;font-size:12px;line-height:1.4;}
+.ai-tkr{font-weight:700;color:var(--text);}
+.ai-lean{font-size:10px;font-weight:700;padding:1px 7px;border-radius:6px;text-transform:uppercase;letter-spacing:.04em;}
+.ai-lean.hold{background:rgba(110,168,254,.15);color:var(--blue);}
+.ai-lean.add{background:rgba(48,209,88,.15);color:var(--green);}
+.ai-lean.trim,.ai-lean.exit{background:rgba(255,98,89,.15);color:var(--red);}
+.ai-chip{display:inline-block;font-size:10px;font-weight:600;padding:2px 8px;border-radius:20px;background:var(--surface2);color:var(--text2);margin-right:5px;}
+.ai-prop{font-size:11.5px;color:var(--text2);padding:4px 0;}
+.ai-prop b{color:var(--text);}
 .sc-rb-badge{display:inline-block;font-size:8.5px;font-weight:700;letter-spacing:.08em;padding:3px 8px;border-radius:999px;margin-left:6px;vertical-align:middle;text-transform:uppercase;}
 .sc-rb-badge.HOLD{background:rgba(48,209,88,.12);color:var(--green);}
 .sc-rb-badge.ADD,.sc-rb-badge.ADD_MORE{background:rgba(110,168,254,.12);color:var(--blue);}
@@ -696,6 +713,11 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
     </button>
   </div>
 
+  <!-- AI INSIGHTS -->
+  <div class="sec" id="aiInsightsSec" style="display:none"><span class="sec-lbl">🤖 AI Insights</span><span class="sec-line"></span></div>
+  <div id="aiEventsCard"></div>
+  <div id="aiEarningsCard"></div>
+
   <!-- MARKETS -->
   <div class="sec"><span class="sec-lbl">Markets</span><span class="sec-line"></span></div>
   <div class="mkt-grid" id="mktGrid"><div class="spin-wrap" style="grid-column:1/-1"><div class="spinner"></div></div></div>
@@ -820,6 +842,8 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
     <pre class="scan-log" id="sw-scanLog"></pre>
   </div>
   <div style="padding:0 20px;" id="swCandidates"><div class="spin-wrap"><div class="spinner"></div></div></div>
+  <div class="sec" id="aiAttrSec" style="display:none"><span class="sec-lbl">🧠 AI Attribution</span><span class="sec-line"></span></div>
+  <div id="aiAttrCard"></div>
   <div class="sec sec-toggle" onclick="toggleClosed('swClosed','swClosedCaret')"><span class="sec-lbl">Closed Swing Trades</span><span class="sec-caret" id="swClosedCaret">▸</span><span class="sec-line"></span></div>
   <div class="closed-wrap" id="swClosed" style="display:none"><div class="spin-wrap"><div class="spinner"></div></div></div>
   <div class="pb"></div>
@@ -864,7 +888,7 @@ function showUS(){showView('usView');if(!_uL){loadUS();_uL=true;}else fetchUsPri
 function refreshAll(){
   _lastRefresh=Date.now();
   document.getElementById('lastUpdated').textContent='Refreshing…';
-  fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();
+  fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();loadAiInsights();
   if(_cv==='indView')loadIndia();
   else if(_cv==='usView')loadUS();
   else if(_cv==='swingView')loadSwing();
@@ -971,7 +995,7 @@ function _swPollScan(startGen){
 function initApp(){
   showView('homeView');
   document.getElementById('lastUpdated').textContent='Connecting…';
-  fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();
+  fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();loadAiInsights();
   setInterval(fetchMarket,5*60*1000);
   // Auto-retry home snaps once after 8s in case Railway was cold-starting
   setTimeout(()=>{
@@ -2524,6 +2548,7 @@ function renderIndMacro(){
 
 const _verdictCache={};
 function _escAttr(s){return String(s).replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');}
+function _esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
 
 function renderVerdict(containerId,verdict,buckets,labels){
   const el=document.getElementById(containerId);if(!verdict){el.innerHTML=`<div class="empty">No AI verdict yet.</div>`;return;}
@@ -2921,6 +2946,81 @@ async function loadSwing(){
   renderSwingClosed();
   fetchSwingPrices();
   loadSwingSnap();
+  loadAiAttribution();
+}
+
+/* ═══ AI INSIGHT CARDS (Tier 1 & 2) ═══ */
+function _aiWhen(s){
+  if(!s)return'';
+  const d=String(s).slice(0,16).replace('T',' ');
+  return d;
+}
+
+async function loadAiAttribution(){
+  const sec=document.getElementById('aiAttrSec'),card=document.getElementById('aiAttrCard');
+  if(!card)return;
+  const sig=await fd('/signals');
+  const a=sig?.ai_attribution?.analysis||sig?.ai_attribution?.payload?.analysis;
+  const n=sig?.ai_attribution?.generated_for_trades||sig?.ai_attribution?.payload?.generated_for_trades;
+  if(!a){if(sec)sec.style.display='none';card.innerHTML='';return;}
+  if(sec)sec.style.display='';
+  const conf=a.confidence||'—';
+  const findings=(a.key_findings||[]).map(f=>`<div class="ai-row"><span class="ai-dot">•</span><span>${_esc(f)}</span></div>`).join('');
+  const props=(a.weight_proposals||[]);
+  const propHtml=props.length?props.map(p=>{
+    const up=p.direction==='increase';
+    return`<div class="ai-prop">${up?'▲':'▼'} <b>${_esc(p.signal||'')}</b> ${up?'+':'−'}${Math.abs(p.suggested_delta||0)} — ${_esc(p.rationale||'')}${p._clamped?' <span style="color:var(--text3)">(capped)</span>':''}</div>`;
+  }).join(''):`<div class="ai-prop" style="color:var(--text3)">No weight changes proposed — evidence insufficient.</div>`;
+  card.innerHTML=`<div class="ai-card">
+    <div class="ai-card-hd">Attribution Analyst<span class="ai-when">${n?n+' trades':''}</span></div>
+    <div class="ai-headline">${_esc(a.headline||'')}</div>
+    <div class="ai-sub"><span class="ai-chip">Confidence: ${_esc(conf)}</span>${_esc(a.sample_caveat||'')}</div>
+    ${findings?`<div style="margin-top:10px">${findings}</div>`:''}
+    <div style="margin-top:10px;font-size:10px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:var(--text3)">Weight proposals · advisory</div>
+    ${propHtml}
+  </div>`;
+}
+
+async function loadAiInsights(){
+  const sig=await fd('/signals');
+  let any=false;
+  // — Holdings event watch —
+  const ev=sig?.ai_holdings_events?.events||sig?.ai_holdings_events?.payload?.events||[];
+  const evCard=document.getElementById('aiEventsCard');
+  if(evCard){
+    if(ev.length){
+      any=true;
+      const sevDot={critical:'🔴',notable:'🟠',minor:'🟡'};
+      const rows=ev.slice(0,6).map(e=>`<div class="ai-row">
+        <span class="ai-dot">${sevDot[e.severity]||'•'}</span>
+        <span><span class="ai-tkr">${_esc((e.ticker||'').replace('.NS',''))}</span>
+        <span class="ai-chip">${_esc(e.book||'')}</span> ${_esc(e.event_type||'')}<br>
+        ${_esc(e.summary||'')}<br><span style="color:var(--text3)">→ ${_esc(e.suggested_action||'')}</span></span></div>`).join('');
+      evCard.innerHTML=`<div class="ai-card">
+        <div class="ai-card-hd">🔔 Holdings Event Watch<span class="ai-when">${_aiWhen(sig?.ai_holdings_events?.generated_at||sig?.ai_holdings_events?.payload?.generated_at)}</span></div>
+        ${rows}</div>`;
+    }else evCard.innerHTML='';
+  }
+  // — Earnings thesis —
+  const reps=sig?.ai_earnings?.reports||sig?.ai_earnings?.payload?.reports||[];
+  const erCard=document.getElementById('aiEarningsCard');
+  if(erCard){
+    if(reps.length){
+      any=true;
+      const vEmoji={thesis_intact:'🟢',mixed:'🟠',thesis_weakening:'🟠',thesis_broken:'🔴',insufficient_data:'⚪'};
+      const rows=reps.slice(0,6).map(r=>`<div class="ai-row">
+        <span class="ai-dot">${vEmoji[r.verdict]||'•'}</span>
+        <span><span class="ai-tkr">${_esc((r.ticker||'').replace('.NS',''))}</span>
+        <span class="ai-lean ${_esc(r.lean||'hold')}">${_esc(r.lean||'')}</span>
+        <span style="color:var(--text3)">${_esc((r.verdict||'').replace(/_/g,' '))}</span><br>
+        ${_esc(r.summary||'')}</span></div>`).join('');
+      erCard.innerHTML=`<div class="ai-card">
+        <div class="ai-card-hd">📊 Earnings Thesis Check<span class="ai-when">${_aiWhen(sig?.ai_earnings?.generated_at||sig?.ai_earnings?.payload?.generated_at)}</span></div>
+        ${rows}</div>`;
+    }else erCard.innerHTML='';
+  }
+  const sec=document.getElementById('aiInsightsSec');
+  if(sec)sec.style.display=any?'':'none';
 }
 
 /* ═══ SWING HOME SNAPSHOT ═══ */
