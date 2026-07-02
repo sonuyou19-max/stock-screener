@@ -206,6 +206,7 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
 .sc-score-num.mid{color:var(--gold);}
 .sc-score-num.low{color:var(--text3);}
 .sc-score-lbl{font-size:8.5px;color:var(--text3);text-transform:uppercase;letter-spacing:.08em;text-align:right;margin-top:1px;}
+.sc-redteam{font-size:10px;font-weight:600;margin-top:5px;line-height:1.35;}
 .sc-rb-badge{display:inline-block;font-size:8.5px;font-weight:700;letter-spacing:.08em;padding:3px 8px;border-radius:999px;margin-left:6px;vertical-align:middle;text-transform:uppercase;}
 .sc-rb-badge.HOLD{background:rgba(48,209,88,.12);color:var(--green);}
 .sc-rb-badge.ADD,.sc-rb-badge.ADD_MORE{background:rgba(110,168,254,.12);color:var(--blue);}
@@ -3053,6 +3054,22 @@ function renderSwingOpen(){
 }
 
 /* ═══ SWING CANDIDATES ═══ */
+/* Pre-trade AI red-team badge — set by ai_redteam.py on each candidate */
+function _redteamBadge(rt){
+  if(!rt||!rt.flag)return'';
+  const cfg={
+    AVOID:{e:'🔴',t:'AI: AVOID',c:'var(--red)'},
+    CAUTION:{e:'🟠',t:'AI: Caution',c:'var(--gold)'},
+    CLEAR:{e:'🟢',t:'AI: Clear',c:'var(--green)'},
+    NO_NEWS:{e:'⚪',t:'AI: No news',c:'var(--text3)'},
+    ERROR:{e:'⚠️',t:'AI: n/a',c:'var(--text3)'},
+  }[rt.flag];
+  if(!cfg)return'';
+  const summary=(rt.summary||'').replace(/"/g,'&quot;');
+  const reasons=(rt.reasons||[]).length?'\n• '+rt.reasons.join('\n• '):'';
+  return`<div class="sc-redteam" style="color:${cfg.c}" title="${summary}${reasons.replace(/"/g,'&quot;')}">${cfg.e} ${cfg.t}${rt.flag==='AVOID'||rt.flag==='CAUTION'?` — ${summary}`:''}</div>`;
+}
+
 function renderSwingCandidates(){
   const el=document.getElementById('swCandidates');
   const candidates=_swCandidates?.candidates||[];
@@ -3096,6 +3113,7 @@ function renderSwingCandidates(){
           </a><span class="sc-rb-badge ${convCls}">${conv}</span>
           <div class="sc-name">${c.name||''}</div>
           ${stale?`<div style="font-size:9.5px;color:var(--red);margin-top:3px;">Stale scan — ${scanD}</div>`:''}
+          ${_redteamBadge(c.redteam)}
         </div>
         <div style="text-align:right;flex-shrink:0">
           <div class="sc-score-num ${c.score>=(c.max_score||100)*.85?'high':c.score>=(c.max_score||100)*.6?'mid':'low'}">${c.score||0}<span style="font-size:10px;font-weight:400;color:var(--text3)">/${c.max_score||100}</span></div>
