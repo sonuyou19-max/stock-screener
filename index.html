@@ -861,12 +861,40 @@ function showHome(){showView('homeView');}
 function showIndia(){showView('indView');if(!_iL){loadIndia();_iL=true;}else fetchIndPrices();}
 function showUS(){showView('usView');if(!_uL){loadUS();_uL=true;}else fetchUsPrices();}
 function refreshAll(){
+  _lastRefresh=Date.now();
   document.getElementById('lastUpdated').textContent='Refreshing…';
   fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();
   if(_cv==='indView')loadIndia();
   else if(_cv==='usView')loadUS();
   else if(_cv==='swingView')loadSwing();
 }
+
+/* ═══ AUTO-REFRESH ═══
+   The app used to fetch data only once per open; a phone keeps the page
+   alive in the background for hours, so reopening it showed stale data
+   until a manual refresh. Now: refresh automatically whenever the app
+   returns to the foreground with data older than 1 min, plus a slow
+   poll (every 3 min) while it stays open and visible. */
+let _lastRefresh=Date.now();
+const _STALE_MS=60*1000, _POLL_MS=3*60*1000;
+function _modalOpen(){return !!document.querySelector('[id$="Modal"]:not(.hidden)');}
+function _autoRefresh(){
+  if(_modalOpen())return;                              // don't re-render under an open dialog
+  if(sessionStorage.getItem('ea_v3')!=='ok')return;    // PIN gate not passed yet
+  refreshAll();
+}
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'&&Date.now()-_lastRefresh>_STALE_MS)_autoRefresh();
+});
+window.addEventListener('pageshow',e=>{                // iOS back/forward-cache restore
+  if(e.persisted&&Date.now()-_lastRefresh>_STALE_MS)_autoRefresh();
+});
+window.addEventListener('focus',()=>{
+  if(Date.now()-_lastRefresh>_STALE_MS)_autoRefresh();
+});
+setInterval(()=>{
+  if(document.visibilityState==='visible'&&Date.now()-_lastRefresh>_POLL_MS)_autoRefresh();
+},60*1000);
 async function adminReset(){
   if(!confirm('Hard reset: wipes India & Swing portfolios, P&L, trade history, picks, advisories and queues.\n\nPreserved: FII/DII, US portfolio, sentiments and LLM verdicts.\n\nContinue?'))return;
   try{

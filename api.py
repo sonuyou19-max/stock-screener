@@ -182,6 +182,9 @@ def add_cors(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type, X-Upload-Token"
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    # Live portfolio/queue/price data must never be served from any
+    # browser or intermediary cache — stale positions mislead.
+    response.headers.setdefault("Cache-Control", "no-store")
     return response
 
 
