@@ -2140,7 +2140,15 @@ def kite_postback():
                         "rr_ratio":        entry.get("rr_ratio"),
                         "conviction":      entry.get("conviction"),
                         "score":           entry.get("score"),
+                        "max_score":       entry.get("max_score", 100),
                         "atr":             entry.get("atr"),
+                        "sector":          entry.get("sector"),
+                        "sentiment_val":   entry.get("sentiment_val"),
+                        "sentiment_bucket": entry.get("sentiment_bucket"),
+                        "entry_type":      entry.get("entry_type"),
+                        "rsi":             entry.get("rsi"),
+                        "vol_ratio":       entry.get("vol_ratio"),
+                        "regime":          entry.get("regime"),
                         "entry_date":      today_str,
                         "buy_date":        today_str,
                         "shares":          fill_qty,
@@ -2262,7 +2270,12 @@ def kite_postback():
                     closed           = remaining_after <= 0
 
                     # ── History record (real exit reason, deduped by order) ──
+                    # Carries the entry-time signal snapshot so closed trades
+                    # can be attributed back to what the scanner saw, plus
+                    # the R-multiple (pnl per unit of planned risk).
                     today_str = time.strftime("%Y-%m-%d")
+                    risk = (buy_price - float(stop_loss)) \
+                        if buy_price and stop_loss and float(stop_loss) < buy_price else None
                     _append_swing_history({
                         "ticker":            ticker_ns,
                         "name":              name,
@@ -2278,6 +2291,23 @@ def kite_postback():
                         "exit_reason":       exit_reason,
                         "order_id":          order_id,
                         "auto":              True,
+                        # entry-time snapshot (attribution)
+                        "score":             entry.get("score"),
+                        "max_score":         entry.get("max_score", 100),
+                        "conviction":        entry.get("conviction"),
+                        "sector":            entry.get("sector"),
+                        "sentiment_val":     entry.get("sentiment_val"),
+                        "sentiment_bucket":  entry.get("sentiment_bucket"),
+                        "signals":           entry.get("signals"),
+                        "rr_ratio":          entry.get("rr_ratio"),
+                        "atr":               entry.get("atr"),
+                        "entry_type":        entry.get("entry_type"),
+                        "regime":            entry.get("regime"),
+                        "planned_stop":      stop_loss,
+                        "planned_t1":        target1,
+                        "planned_t2":        target2,
+                        "r_multiple":        round((fill_price - buy_price) / risk, 2)
+                                             if risk else None,
                     })
 
                     # ── GTT housekeeping ─────────────────────────────────

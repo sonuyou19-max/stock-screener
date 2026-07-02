@@ -1887,9 +1887,18 @@ async function _exSubmit(){
       if(!r.ok){_hideSpinner();alert('⚠️ Failed ('+r.status+'). Check your session.');return;}
       _uL=false;await loadUS();
     }else{
+      /* carry the entry-time signal snapshot into history + R-multiple
+         (pnl per unit of planned risk) so exits are attributable */
+      const _exStop=parseFloat(sd.stop_loss||sd.stop_loss_price||0);
+      const _exRisk=bp&&_exStop&&_exStop<bp?bp-_exStop:null;
       await fetch(`${API}/swing/history/upload`,{method:'POST',headers:_postHeaders(),
         body:JSON.stringify({ticker,name:sd.name||ticker.replace('.NS',''),buy_price:bp,sell_price:sp,shares,
-          entry_date:sd.entry_date||sd.buy_date||'',exit_date:today,realised_pnl_inr:pnl,realised_pnl_pct:pct,exit_reason:'MANUAL_EXIT'})});
+          entry_date:sd.entry_date||sd.buy_date||'',exit_date:today,realised_pnl_inr:pnl,realised_pnl_pct:pct,exit_reason:'MANUAL_EXIT',
+          score:sd.score,max_score:sd.max_score||100,conviction:sd.conviction,sector:sd.sector,
+          sentiment_val:sd.sentiment_val,sentiment_bucket:sd.sentiment_bucket,signals:sd.signals,
+          rr_ratio:sd.rr_ratio,atr:sd.atr,entry_type:sd.entry_type,regime:sd.regime,
+          planned_stop:_exStop||null,planned_t1:sd.target1||null,planned_t2:sd.target2||null,
+          r_multiple:_exRisk?parseFloat(((sp-bp)/_exRisk).toFixed(2)):null})});
       const newLive=(_swLive||[]).filter(p=>p.ticker!==ticker);
       await fetch(`${API}/swing/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(newLive)});
       _swL=false;await loadSwing();
@@ -2264,6 +2273,7 @@ async function _qswSubmit(){
   _showSpinner('Queuing '+((c.ticker||'').replace('.NS',''))+'…');
   try{
     const scanD=(_swCandidates?.scan_date||_swCandidates?.generated_at||'').split('T')[0];
+    const regime=_swCandidates?.market_regime||{};
     const entry={
       ticker:c.ticker,
       nse_symbol:(c.ticker||'').replace(/\.NS$/i,'').replace(/\.BO$/i,''),
@@ -2279,6 +2289,14 @@ async function _qswSubmit(){
       scan_date:scanD,
       trail_atr:c.trailing_stop||null,
       status:'queued',
+      /* signal snapshot — frozen at queue time so closed trades can be
+         attributed back to what the scanner saw (score bands, signals,
+         sentiment, regime) */
+      score:c.score,max_score:c.max_score||100,conviction:c.conviction,
+      sector:c.sector,sentiment_val:c.sentiment_val,sentiment_bucket:c.sentiment_bucket,
+      signals:c.signals,rr_ratio:c.rr_ratio,atr:c.atr,stop_pct:c.stop_pct,
+      rsi:c.rsi,vol_ratio:c.vol_ratio,
+      regime:regime.bullish===false?'bearish':regime.bullish===true?'bullish':null,
     };
     const r=await fetch(`${API}/swing/queue`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(entry)});
     const res=await r.json();
@@ -2314,12 +2332,17 @@ async function _eswSubmit(){
   _eswClose();
   _showSpinner('Opening swing position…');
   try{
+    const _eswRegime=_swCandidates?.market_regime||{};
     const position={
       ticker:c.ticker,name:c.name||(c.ticker||'').replace('.NS',''),
       buy_price:c.current_price,price:c.current_price,
       stop_loss:c.stop_loss,stop_loss_price:c.stop_loss,stop_pct:c.stop_pct,
       target1:c.target1,target2:c.target2,trailing_stop:c.trailing_stop||c.atr,
       rr_ratio:c.rr_ratio,conviction:c.conviction,score:c.score,atr:c.atr,
+      max_score:c.max_score||100,sector:c.sector,
+      sentiment_val:c.sentiment_val,sentiment_bucket:c.sentiment_bucket,
+      entry_type:c.entry_type,rsi:c.rsi,vol_ratio:c.vol_ratio,
+      regime:_eswRegime.bullish===false?'bearish':_eswRegime.bullish===true?'bullish':null,
       entry_date:new Date().toISOString().split('T')[0],
       buy_date:new Date().toISOString().split('T')[0],
       shares:qty,signals:c.signals,
