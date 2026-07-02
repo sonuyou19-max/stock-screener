@@ -11,6 +11,8 @@ Routes:
 
 from flask import Flask, jsonify, request
 import glob
+import hashlib
+import hmac
 import json
 import os
 import subprocess
@@ -49,6 +51,24 @@ def _require_upload_token():
     if request.headers.get("X-Upload-Token", "") != UPLOAD_TOKEN:
         return jsonify({"error": "unauthorized — missing or bad X-Upload-Token"}), 401
     return None
+
+
+# Zerodha postback authenticity. Kite signs every postback with
+# checksum = sha256(order_id + order_timestamp + api_secret). Set
+# KITE_API_SECRET (same value as the VPS .env) to enforce verification;
+# unset = accepted without verification (backwards compatible).
+KITE_API_SECRET = os.getenv("KITE_API_SECRET", "")
+
+
+def _verify_postback_checksum(data: dict) -> bool:
+    if not KITE_API_SECRET:
+        return True
+    expected = hashlib.sha256(
+        (str(data.get("order_id", "")) +
+         str(data.get("order_timestamp", "")) +
+         KITE_API_SECRET).encode()
+    ).hexdigest()
+    return hmac.compare_digest(str(data.get("checksum", "")), expected)
 
 
 @app.route("/auth/verify", methods=["POST", "OPTIONS"])
@@ -1797,6 +1817,9 @@ def kite_historical():
 def kite_place_order():
     if request.method == "OPTIONS":
         return jsonify({}), 200
+    auth_err = _require_upload_token()
+    if auth_err:
+        return auth_err
     data = request.get_json(force=True) or {}
 
     # Zerodha's API rejects bare MARKET orders ("market protection" required).
@@ -1825,6 +1848,9 @@ def kite_place_order():
 def kite_cancel_order():
     if request.method == "OPTIONS":
         return jsonify({}), 200
+    auth_err = _require_upload_token()
+    if auth_err:
+        return auth_err
     data = request.get_json(force=True) or {}
     result, status = _vps_post("/cancel-order", data)
     return jsonify(result), status
@@ -1901,6 +1927,90 @@ def kite_callback():
     """
 
 
+# ── Postback helpers: GTT placement + swing live/history sync ─────
+
+def _place_sell_gtt(symbol: str, trigger_price, qty: int, last_price=None):
+    """Place a single-leg SELL GTT via the VPS in /place-gtt's actual
+    contract: {symbol, trigger_values, last_price, orders}. Kite GTT legs
+    must be LIMIT orders — price the limit 0.5% through the trigger
+    (tick-rounded) so it fills like a market order once triggered.
+    Returns (gtt_id | None, error | None)."""
+    try:
+        trigger = round(float(trigger_price), 2)
+        if not last_price:
+            quote, _ = _vps_get(f"/get-quote?symbol={symbol}")
+            last_price = ((quote or {}).get(symbol) or {}).get("last_price")
+        if not last_price:
+            return None, "no last_price available for GTT"
+        limit_price = round(round(trigger * 0.995 / 0.05) * 0.05, 2)
+        result, status = _vps_post("/place-gtt", {
+            "symbol":         symbol,
+            "trigger_values": [trigger],
+            "last_price":     float(last_price),
+            "orders": [{
+                "transaction_type": "SELL",
+                "quantity":         int(qty),
+                "product":          "CNC",
+                "order_type":       "LIMIT",
+                "price":            limit_price,
+            }],
+        })
+        gtt_id = (result or {}).get("gtt_id")
+        if gtt_id:
+            return gtt_id, None
+        return None, (result or {}).get("error", f"HTTP {status}")
+    except Exception as e:
+        return None, str(e)
+
+
+def _read_swing_live() -> list:
+    global _swing_live_cache
+    if not _swing_live_cache:
+        loaded = _load_json(SWING_LIVE_FILE)
+        _swing_live_cache = loaded if isinstance(loaded, list) else []
+    return _swing_live_cache
+
+
+def _write_swing_live(positions: list):
+    global _swing_live_cache
+    _swing_live_cache = positions
+    _save_json(SWING_LIVE_FILE, positions)
+
+
+def _append_swing_history(rec: dict):
+    global _swing_history_cache
+    if not _swing_history_cache:
+        loaded = _load_json(SWING_HISTORY_FILE)
+        _swing_history_cache = loaded if isinstance(loaded, list) else []
+    _swing_history_cache.append(rec)
+    _swing_history_cache.sort(key=lambda r: r.get("exit_date", ""), reverse=True)
+    _save_json(SWING_HISTORY_FILE, _swing_history_cache)
+
+
+def _swing_history_has_order(order_id: str) -> bool:
+    """Dedupe guard — Zerodha can redeliver a postback for the same fill."""
+    global _swing_history_cache
+    if not _swing_history_cache:
+        loaded = _load_json(SWING_HISTORY_FILE)
+        _swing_history_cache = loaded if isinstance(loaded, list) else []
+    return any(str(t.get("order_id", "")) == str(order_id)
+               for t in _swing_history_cache)
+
+
+def _classify_swing_exit(fill_price: float, stop_loss, target1, target2) -> str:
+    """Label a SELL fill by proximity to the known exit levels. The old
+    quantity-equality test was ambiguous for even lots (qty_t1 == qty_t2).
+    Falls back to MANUAL_EXIT when the fill is >2% from every level."""
+    levels = {"STOP_LOSS": stop_loss, "TARGET1": target1, "TARGET2": target2}
+    valid = {k: float(v) for k, v in levels.items() if v}
+    if not valid or not fill_price:
+        return "MANUAL_EXIT"
+    closest = min(valid, key=lambda k: abs(fill_price - valid[k]))
+    if abs(fill_price - valid[closest]) / valid[closest] <= 0.02:
+        return closest
+    return "MANUAL_EXIT"
+
+
 @app.route("/kite/postback", methods=["POST", "OPTIONS"])
 def kite_postback():
     """
@@ -1912,6 +2022,12 @@ def kite_postback():
 
     try:
         data      = request.get_json(silent=True) or request.form.to_dict()
+
+        if not _verify_postback_checksum(data):
+            print(f"🚫 Postback rejected — bad checksum (order_id="
+                  f"{data.get('order_id', '?')})")
+            return jsonify({"error": "invalid checksum"}), 403
+
         order_id  = str(data.get("order_id", "?"))
         status    = data.get("status", "?")
         symbol    = data.get("tradingsymbol", "?")
@@ -1945,49 +2061,57 @@ def kite_postback():
                     qty_t2    = fill_qty - qty_t1
 
                     gtt_id = gtt_t1_id = gtt_t2_id = None
+                    gtt_failures = []
 
                     if stop_loss:
-                        gtt_payload = {
-                            "symbol":        symbol,
-                            "trigger_price": float(stop_loss),
-                            "quantity":      fill_qty,
-                            "side":          "SELL",
-                            "order_type":    "MARKET",
-                            "product":       "CNC",
-                        }
-                        gtt_result, _ = _vps_post("/place-gtt", gtt_payload)
-                        gtt_id = gtt_result.get("gtt_id") or gtt_result.get("trigger_id")
-                        print(f"✅ Auto-GTT stop: {symbol} ₹{stop_loss} qty={fill_qty} → id={gtt_id}")
+                        gtt_id, err = _place_sell_gtt(symbol, stop_loss, fill_qty, fill_price)
+                        if gtt_id:
+                            print(f"✅ Auto-GTT stop: {symbol} ₹{stop_loss} qty={fill_qty} → id={gtt_id}")
+                        else:
+                            gtt_failures.append(f"STOP ₹{stop_loss} × {fill_qty}sh — {err}")
 
                     if target1 and qty_t1 > 0:
-                        t1_result, _ = _vps_post("/place-gtt", {
-                            "symbol":        symbol,
-                            "trigger_price": float(target1),
-                            "quantity":      qty_t1,
-                            "side":          "SELL",
-                            "order_type":    "MARKET",
-                            "product":       "CNC",
-                        })
-                        gtt_t1_id = t1_result.get("gtt_id") or t1_result.get("trigger_id")
-                        print(f"✅ Auto-GTT T1: {symbol} ₹{target1} qty={qty_t1} → id={gtt_t1_id}")
+                        gtt_t1_id, err = _place_sell_gtt(symbol, target1, qty_t1, fill_price)
+                        if gtt_t1_id:
+                            print(f"✅ Auto-GTT T1: {symbol} ₹{target1} qty={qty_t1} → id={gtt_t1_id}")
+                        else:
+                            gtt_failures.append(f"T1 ₹{target1} × {qty_t1}sh — {err}")
 
                     if target2 and qty_t2 > 0:
-                        t2_result, _ = _vps_post("/place-gtt", {
-                            "symbol":        symbol,
-                            "trigger_price": float(target2),
-                            "quantity":      qty_t2,
-                            "side":          "SELL",
-                            "order_type":    "MARKET",
-                            "product":       "CNC",
-                        })
-                        gtt_t2_id = t2_result.get("gtt_id") or t2_result.get("trigger_id")
-                        print(f"✅ Auto-GTT T2: {symbol} ₹{target2} qty={qty_t2} → id={gtt_t2_id}")
+                        gtt_t2_id, err = _place_sell_gtt(symbol, target2, qty_t2, fill_price)
+                        if gtt_t2_id:
+                            print(f"✅ Auto-GTT T2: {symbol} ₹{target2} qty={qty_t2} → id={gtt_t2_id}")
+                        else:
+                            gtt_failures.append(f"T2 ₹{target2} × {qty_t2}sh — {err}")
+
+                    # A silent GTT failure means an unprotected position —
+                    # that exact failure mode went unnoticed for months.
+                    # Fail LOUDLY so the user can place the orders manually.
+                    if gtt_failures:
+                        fail_lines = "\n".join(f"  • {f}" for f in gtt_failures)
+                        print(f"🚨 GTT placement failed for {symbol}:\n{fail_lines}")
+                        _tg(
+                            f"🚨 <b>{symbol}: GTT placement FAILED after fill</b>\n"
+                            f"Bought {fill_qty} @ ₹{fill_price:.2f} — these exit "
+                            f"orders could NOT be placed:\n{fail_lines}\n\n"
+                            f"⚠️ Place them manually on Kite NOW — the position "
+                            f"is unprotected until you do."
+                        )
+                    else:
+                        _tg(
+                            f"✅ <b>{symbol}: swing entry filled</b>\n"
+                            f"Bought {fill_qty} @ ₹{fill_price:.2f}\n"
+                            f"🛑 Stop ₹{stop_loss} · 🎯 T1 ₹{target1} ({qty_t1}sh) "
+                            f"· T2 ₹{target2} ({qty_t2}sh)\n"
+                            f"All GTTs placed automatically."
+                        )
 
                     if t_key:
                         q[t_key].update({
                             "status":     "filled",
                             "fill_price": fill_price,
                             "fill_qty":   fill_qty,
+                            "fill_date":  time.strftime("%Y-%m-%d"),
                             "stop_qty":   fill_qty,
                             "trail_high": fill_price,
                             "order_id":   order_id,
@@ -1996,6 +2120,42 @@ def kite_postback():
                             "gtt_t2_id":  gtt_t2_id,
                         })
                         _write_queue(q)
+
+                    # Sync the fill into /swing/live so the alerter and the
+                    # dashboard see it without manual double-entry. Same
+                    # record shape the dashboard's Enter modal uses.
+                    live_positions = list(_read_swing_live())
+                    today_str = time.strftime("%Y-%m-%d")
+                    pos = {
+                        "ticker":          ticker_ns,
+                        "name":            entry.get("name", symbol),
+                        "buy_price":       fill_price,
+                        "price":           fill_price,
+                        "stop_loss":       stop_loss,
+                        "stop_loss_price": stop_loss,
+                        "stop_pct":        entry.get("stop_pct"),
+                        "target1":         target1,
+                        "target2":         target2,
+                        "trailing_stop":   entry.get("trail_atr"),
+                        "rr_ratio":        entry.get("rr_ratio"),
+                        "conviction":      entry.get("conviction"),
+                        "score":           entry.get("score"),
+                        "atr":             entry.get("atr"),
+                        "entry_date":      today_str,
+                        "buy_date":        today_str,
+                        "shares":          fill_qty,
+                        "signals":         entry.get("signals"),
+                        "order_id":        order_id,
+                        "source":          "auto_fill",
+                    }
+                    idx = next((i for i, p in enumerate(live_positions)
+                                if p.get("ticker") == ticker_ns), None)
+                    if idx is not None:
+                        live_positions[idx] = pos
+                    else:
+                        live_positions.append(pos)
+                    _write_swing_live(live_positions)
+                    print(f"✅ Swing live position synced: {ticker_ns} {fill_qty}sh")
 
                 # ── India monthly queue: auto-add to live portfolio ────
                 iq = _read_india_queue()
@@ -2031,20 +2191,20 @@ def kite_postback():
                         tsl_gtt_id = None
                         tsl_stop   = None
                         if trail_atr:
-                            try:
-                                tsl_stop = round(fill_price - float(trail_atr), 2)
-                                tsl_res, _ = _vps_post("/place-gtt", {
-                                    "symbol":        symbol,
-                                    "trigger_price": tsl_stop,
-                                    "quantity":      fill_qty,
-                                    "side":          "SELL",
-                                    "order_type":    "MARKET",
-                                    "product":       "CNC",
-                                })
-                                tsl_gtt_id = tsl_res.get("gtt_id") or tsl_res.get("trigger_id")
+                            tsl_stop = round(fill_price - float(trail_atr), 2)
+                            tsl_gtt_id, tsl_err = _place_sell_gtt(
+                                symbol, tsl_stop, fill_qty, fill_price)
+                            if tsl_gtt_id:
                                 print(f"✅ India TSL GTT: {symbol} ₹{tsl_stop} qty={fill_qty} → id={tsl_gtt_id}")
-                            except Exception as tge:
-                                print(f"⚠️  India TSL GTT failed: {tge}")
+                            else:
+                                print(f"🚨 India TSL GTT failed: {symbol} — {tsl_err}")
+                                _tg(
+                                    f"🚨 <b>{symbol}: stop GTT FAILED after fill</b>\n"
+                                    f"Bought {fill_qty} @ ₹{fill_price:.2f} but the "
+                                    f"stop-loss GTT at ₹{tsl_stop} could not be "
+                                    f"placed ({tsl_err}).\n\n"
+                                    f"⚠️ Set the GTT manually on Kite NOW."
+                                )
                         iq[i_key].update({
                             "status":     "filled",
                             "fill_price": fill_price,
@@ -2071,7 +2231,8 @@ def kite_postback():
                 entry = q.get(ticker_ns) or q.get(symbol)
                 t_key = ticker_ns if ticker_ns in q else (symbol if symbol in q else None)
 
-                if entry and entry.get("status") == "filled":
+                if entry and entry.get("status") == "filled" \
+                        and not _swing_history_has_order(order_id):
                     bought_qty = int(entry.get("fill_qty") or entry.get("quantity") or 0)
                     stop_loss  = entry.get("stop_loss")
                     target1    = entry.get("target1")
@@ -2079,10 +2240,8 @@ def kite_postback():
                     gtt_id     = entry.get("gtt_id")
                     gtt_t1_id  = entry.get("gtt_t1_id")
                     gtt_t2_id  = entry.get("gtt_t2_id")
-                    qty_t1     = bought_qty // 2
-                    qty_t2     = bought_qty - qty_t1
                     name       = entry.get("name", symbol)
-                    buy_price  = entry.get("fill_price", "?")
+                    buy_price  = float(entry.get("fill_price") or 0)
 
                     def _cancel_gtt(gid):
                         if gid:
@@ -2092,73 +2251,111 @@ def kite_postback():
                             except Exception as ce:
                                 print(f"⚠️  GTT cancel failed ({gid}): {ce}")
 
-                    if fill_qty == qty_t1 and target1:
-                        # T1 fired: cancel old stop (full qty), place new stop (remaining qty)
-                        _cancel_gtt(gtt_id)
-                        new_gtt_id = None
-                        if stop_loss and qty_t2 > 0:
-                            try:
-                                res, _ = _vps_post("/place-gtt", {
-                                    "symbol":        symbol,
-                                    "trigger_price": float(stop_loss),
-                                    "quantity":      qty_t2,
-                                    "side":          "SELL",
-                                    "order_type":    "MARKET",
-                                    "product":       "CNC",
-                                })
-                                new_gtt_id = res.get("gtt_id") or res.get("trigger_id")
-                                print(f"✅ New stop GTT: {symbol} ₹{stop_loss} qty={qty_t2} → id={new_gtt_id}")
-                            except Exception as ge:
-                                print(f"⚠️  New stop GTT failed: {ge}")
+                    # Classify by fill-price proximity, not quantity equality
+                    # (even lots made qty_t1 == qty_t2 ambiguous).
+                    exit_reason = _classify_swing_exit(
+                        fill_price, stop_loss, target1, target2)
 
+                    remaining_before = int(entry.get("stop_qty") or bought_qty)
+                    sold             = min(fill_qty, remaining_before)
+                    remaining_after  = remaining_before - sold
+                    closed           = remaining_after <= 0
+
+                    # ── History record (real exit reason, deduped by order) ──
+                    today_str = time.strftime("%Y-%m-%d")
+                    _append_swing_history({
+                        "ticker":            ticker_ns,
+                        "name":              name,
+                        "buy_price":         buy_price,
+                        "sell_price":        fill_price,
+                        "shares":            sold,
+                        "entry_date":        entry.get("fill_date")
+                                             or str(entry.get("placed_at", ""))[:10],
+                        "exit_date":         today_str,
+                        "realised_pnl_inr":  round((fill_price - buy_price) * sold, 2),
+                        "realised_pnl_pct":  round((fill_price - buy_price) / buy_price * 100, 2)
+                                             if buy_price else 0,
+                        "exit_reason":       exit_reason,
+                        "order_id":          order_id,
+                        "auto":              True,
+                    })
+
+                    # ── GTT housekeeping ─────────────────────────────────
+                    fired = {"TARGET1": gtt_t1_id, "TARGET2": gtt_t2_id,
+                             "STOP_LOSS": gtt_id}.get(exit_reason)
+
+                    if closed:
+                        # Whole position gone — cancel every GTT still standing
+                        for gid in (gtt_id, gtt_t1_id, gtt_t2_id):
+                            if gid and gid != fired:
+                                _cancel_gtt(gid)
                         if t_key:
-                            q[t_key]["gtt_id"]   = new_gtt_id
-                            q[t_key]["stop_qty"]  = qty_t2
+                            q[t_key].update({
+                                "status":    "closed",
+                                "stop_qty":  0,
+                                "exit_date": today_str,
+                                "gtt_id":    None,
+                                "gtt_t1_id": None,
+                                "gtt_t2_id": None,
+                            })
+                            _write_queue(q)
+                    else:
+                        # Partial exit — replace the stop GTT for what's left
+                        if gtt_id and gtt_id != fired:
+                            _cancel_gtt(gtt_id)
+                        new_gtt_id, new_gtt_err = (None, None)
+                        if stop_loss:
+                            new_gtt_id, new_gtt_err = _place_sell_gtt(
+                                symbol, stop_loss, remaining_after, fill_price)
+                        if t_key:
+                            q[t_key].update({
+                                "stop_qty": remaining_after,
+                                "gtt_id":   new_gtt_id,
+                            })
+                            if exit_reason == "TARGET1":
+                                q[t_key]["gtt_t1_id"] = None
+                            elif exit_reason == "TARGET2":
+                                q[t_key]["gtt_t2_id"] = None
                             _write_queue(q)
 
-                        sl_note = (f"New stop GTT placed for {qty_t2} shares at ₹{stop_loss} ✅"
+                    # ── /swing/live sync ─────────────────────────────────
+                    live_positions = list(_read_swing_live())
+                    idx = next((i for i, p in enumerate(live_positions)
+                                if p.get("ticker") in (ticker_ns, symbol)), None)
+                    if idx is not None:
+                        if closed:
+                            live_positions.pop(idx)
+                        else:
+                            live_positions[idx]["shares"] = remaining_after
+                        _write_swing_live(live_positions)
+
+                    # ── Telegram ─────────────────────────────────────────
+                    pnl = round((fill_price - buy_price) * sold, 2)
+                    pnl_txt = f"{'🟢 +' if pnl >= 0 else '🔴 −'}₹{abs(pnl):,.0f}"
+                    label = {"TARGET1": "🎯 T1 hit", "TARGET2": "🎯 T2 hit",
+                             "STOP_LOSS": "🛑 Stop hit",
+                             "MANUAL_EXIT": "👤 Manual sell"}[exit_reason]
+                    if closed:
+                        _tg(
+                            f"{label}: <b>{name} ({symbol})</b>\n"
+                            f"Sold {sold} shares @ ₹{fill_price:.2f} — {pnl_txt}\n"
+                            f"Position fully closed 🏁 (logged as {exit_reason})\n"
+                            f"🤖 Remaining GTTs cancelled, records updated."
+                        )
+                    else:
+                        sl_note = (f"New stop GTT for {remaining_after}sh at ₹{stop_loss} ✅"
                                    if new_gtt_id else
-                                   f"⚠️ Could not auto-place new stop — manually set stop for {qty_t2} shares at ₹{stop_loss}")
+                                   f"⚠️ Stop GTT re-placement FAILED ({new_gtt_err}) — "
+                                   f"manually set stop for {remaining_after}sh at ₹{stop_loss}")
                         _tg(
-                            f"🎯 <b>T1 hit: {name} ({symbol})</b>\n"
-                            f"Sold {fill_qty} of {bought_qty} shares @ ₹{fill_price:.2f}\n"
-                            f"T1 = ₹{target1} ✅\n\n"
-                            f"🤖 <b>Auto-adjusted:</b>\n"
-                            f"Old stop GTT (qty {bought_qty}) cancelled.\n"
-                            f"{sl_note}\n\n"
-                            f"T2 ({qty_t2} shares) still live at ₹{target2}"
+                            f"{label}: <b>{name} ({symbol})</b>\n"
+                            f"Sold {sold} of {remaining_before} shares @ "
+                            f"₹{fill_price:.2f} — {pnl_txt}\n"
+                            f"{remaining_after} shares still held.\n"
+                            f"🤖 {sl_note}"
                         )
-                        print(f"📨 Telegram: T1 auto-adjust sent for {symbol}")
-
-                    elif fill_qty == qty_t2 and target2:
-                        # T2 fired: cancel remaining stop GTT, position fully closed
-                        _cancel_gtt(gtt_id)
-                        if t_key:
-                            q[t_key]["gtt_id"] = None
-                            _write_queue(q)
-                        _tg(
-                            f"🎯 <b>T2 hit: {name} ({symbol})</b>\n"
-                            f"Sold final {fill_qty} shares @ ₹{fill_price:.2f}\n"
-                            f"T2 = ₹{target2} ✅\n\n"
-                            f"🤖 Stop GTT cancelled automatically.\n"
-                            f"Position fully closed. 🏁"
-                        )
-                        print(f"📨 Telegram: T2 sent for {symbol}")
-
-                    elif fill_qty == bought_qty and stop_loss:
-                        # Stop fired: cancel T1 and T2 GTTs
-                        _cancel_gtt(gtt_t1_id)
-                        _cancel_gtt(gtt_t2_id)
-                        if t_key:
-                            q[t_key].update({"gtt_t1_id": None, "gtt_t2_id": None})
-                            _write_queue(q)
-                        _tg(
-                            f"🛑 <b>Stop hit: {name} ({symbol})</b>\n"
-                            f"Sold {fill_qty} shares @ ₹{fill_price:.2f}\n"
-                            f"Stop = ₹{stop_loss} triggered.\n\n"
-                            f"🤖 T1 + T2 GTTs cancelled automatically."
-                        )
-                        print(f"📨 Telegram: stop sent for {symbol}")
+                    print(f"📨 Swing exit processed: {symbol} {exit_reason} "
+                          f"sold={sold} remaining={remaining_after}")
 
         # ── India SELL fills: remove/reduce shares in live portfolio ──
         if status == "COMPLETE" and side == "SELL" and avg_price:
@@ -2304,7 +2501,10 @@ def admin_reset():
     """
     if request.method == "OPTIONS":
         return jsonify({}), 200
-    auth_err = _enforce_upload_token()
+    # _enforce_upload_token() is a no-op here — "/admin/reset" matches no
+    # _WRITE_PATH_MARKERS entry, so the explicit path-independent check is
+    # what actually protects this endpoint.
+    auth_err = _require_upload_token()
     if auth_err:
         return auth_err
 

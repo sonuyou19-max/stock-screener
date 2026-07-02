@@ -75,17 +75,30 @@ def cancel_gtt(gtt_id) -> bool:
         return False
 
 
-def place_gtt(symbol: str, trigger_price: float, qty: int) -> str | None:
+def place_gtt(symbol: str, trigger_price: float, qty: int, last_price: float) -> str | None:
+    """Place a SELL GTT in /place-gtt's actual contract:
+    {symbol, trigger_values, last_price, orders}. Kite GTT legs must be
+    LIMIT orders — price the limit 0.5% through the trigger (tick-rounded)
+    so it fills like a market order once triggered."""
+    trigger = round(trigger_price, 2)
+    limit_price = round(round(trigger * 0.995 / 0.05) * 0.05, 2)
     try:
         res = _post(f"{VPS_URL}/place-gtt", {
-            "symbol":        symbol,
-            "trigger_price": round(trigger_price, 2),
-            "quantity":      qty,
-            "side":          "SELL",
-            "order_type":    "MARKET",
-            "product":       "CNC",
+            "symbol":         symbol,
+            "trigger_values": [trigger],
+            "last_price":     float(last_price),
+            "orders": [{
+                "transaction_type": "SELL",
+                "quantity":         int(qty),
+                "product":          "CNC",
+                "order_type":       "LIMIT",
+                "price":            limit_price,
+            }],
         }, VPS_HEADERS)
-        return res.get("gtt_id") or res.get("trigger_id")
+        gtt_id = res.get("gtt_id")
+        if not gtt_id:
+            print(f"  ⚠️  GTT place failed: {res.get('error', res)}")
+        return gtt_id
     except Exception as e:
         print(f"  ⚠️  GTT place failed: {e}")
         return None
@@ -142,7 +155,7 @@ def process_queue(entries: list, queue_type: str, update_fn) -> list:
         print(f"  → new high! stop ₹{old_stop} → ₹{new_stop} (₹{live:.2f} − ₹{atr_dist:.2f} ATR)")
 
         cancel_gtt(gtt_id)
-        new_gtt_id = place_gtt(symbol, new_stop, stop_qty)
+        new_gtt_id = place_gtt(symbol, new_stop, stop_qty, live)
 
         update_fn([{
             "ticker":     ticker,

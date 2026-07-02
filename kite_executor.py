@@ -14,6 +14,7 @@ Endpoints:
   GET  /get-pnl           — positions + holdings + aggregate P&L
   GET  /get-orders        — today's order list
   POST /place-gtt         — place a GTT stop-loss order
+  POST /cancel-gtt        — delete a GTT trigger by id
   GET  /get-quote         — live LTP for one or more NSE symbols
   GET  /get-historical    — daily OHLCV history for an NSE symbol (from Zerodha)
 """
@@ -338,6 +339,27 @@ def place_gtt():
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/cancel-gtt", methods=["POST"])
+def cancel_gtt():
+    """Delete a GTT trigger by id. Body: {"gtt_id": 123456}"""
+    err = _check_auth()
+    if err:
+        return err
+    data = request.get_json(force=True) or {}
+    gtt_id = data.get("gtt_id")
+    if not gtt_id:
+        return jsonify({"error": "gtt_id required"}), 400
+    try:
+        kite = _get_kite()
+        kite.delete_gtt(trigger_id=int(gtt_id))
+        log.info("🗑 GTT cancelled: %s", gtt_id)
+        return jsonify({"status": "cancelled", "gtt_id": gtt_id})
+    except KiteException as e:
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 400
+    except Exception as e:
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
 
 
 # ── Instrument token cache ────────────────────────────────────────────────────
