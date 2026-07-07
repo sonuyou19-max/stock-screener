@@ -2318,6 +2318,32 @@ function _qswCalcValue(){
 
 function _qswClose(){document.getElementById('queueSwModal').classList.add('hidden');_qswCandidate=null;}
 
+/* Accurately tell the user WHEN a queued order will actually be placed.
+   The entry cron runs once at 9:00 AM IST on trading days — anything
+   queued after that waits until the next trading day. The old message
+   always said "tomorrow morning", which was wrong before 9 AM and hid
+   the real gotcha: queue after 9 AM and nothing happens until the next
+   session. */
+function _nextEntryMsg(){
+  // current time in IST regardless of device timezone
+  const istNow=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Kolkata'}));
+  const day=istNow.getDay();                 // 0 Sun … 6 Sat
+  const mins=istNow.getHours()*60+istNow.getMinutes();
+  const beforeCron=mins<540;                 // 9:00 AM = 540 min
+  const isTradingDay=day>=1&&day<=5;
+  if(isTradingDay&&beforeCron){
+    return '⏱ It will be placed automatically at 9:00 AM IST today.';
+  }
+  // otherwise: next trading morning
+  let d=new Date(istNow);
+  d.setDate(d.getDate()+1);
+  while(d.getDay()===0||d.getDay()===6){ d.setDate(d.getDate()+1); }
+  const label=d.toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'short'});
+  return '⏱ The 9:00 AM IST entry window has already passed for today.\n'
+    +'It will be placed at 9:00 AM on '+label+'.\n\n'
+    +'Want it in TODAY’s session? Tap “Enter Now” on the card to place it immediately.';
+}
+
 async function _qswSubmit(){
   const qty=parseFloat(document.getElementById('qswQty').value);
   if(!qty||isNaN(qty)||qty<=0){alert('Enter a valid quantity.');return;}
@@ -2357,7 +2383,7 @@ async function _qswSubmit(){
     if(res.status==='ok'){
       _swQueue[c.ticker]=entry;
       renderSwingCandidates();
-      alert('✅ '+(c.ticker||'').replace('.NS','')+' queued for 9:00 AM entry.\nQuantity: '+Math.round(qty)+' shares\n\nThe cron will place the order tomorrow morning.');
+      alert('✅ '+(c.ticker||'').replace('.NS','')+' queued.\nQuantity: '+Math.round(qty)+' shares\n\n'+_nextEntryMsg());
     }else{alert('Error: '+JSON.stringify(res));}
   }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
 }
