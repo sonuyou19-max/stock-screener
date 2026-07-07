@@ -1554,6 +1554,45 @@ def swing_history_get():
     })
 
 
+# ── POST /swing/history/remove ───────────────────────────────────
+# Path contains "/remove" so the before_request token gate protects it.
+@app.route("/swing/history/remove", methods=["POST", "OPTIONS"])
+def swing_history_remove():
+    """Delete closed-trade record(s) matching ticker (+ optional exit_date /
+    sell_price). Used to scrub bad/phantom entries. Does NOT touch Zerodha."""
+    global _swing_history_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        data = request.get_json(force=True) or {}
+        ticker = data.get("ticker")
+        if not ticker:
+            return jsonify({"error": "ticker required"}), 400
+        exit_date  = data.get("exit_date")
+        sell_price = data.get("sell_price")
+        if not _swing_history_cache:
+            loaded = _load_json(SWING_HISTORY_FILE)
+            _swing_history_cache = loaded if isinstance(loaded, list) else []
+
+        def _matches(t):
+            if t.get("ticker") != ticker:
+                return False
+            if exit_date and t.get("exit_date") != exit_date:
+                return False
+            if sell_price not in (None, "") and \
+                    round(float(t.get("sell_price") or 0), 2) != round(float(sell_price), 2):
+                return False
+            return True
+
+        before = len(_swing_history_cache)
+        _swing_history_cache = [t for t in _swing_history_cache if not _matches(t)]
+        removed = before - len(_swing_history_cache)
+        _save_json(SWING_HISTORY_FILE, _swing_history_cache)
+        return jsonify({"ok": True, "removed": removed, "total": len(_swing_history_cache)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ── POST /swing/history/upload ───────────────────────────────────
 @app.route("/swing/history/upload", methods=["POST", "OPTIONS"])
 def swing_history_upload():
@@ -1867,6 +1906,48 @@ def kite_get_pnl():
         return jsonify({}), 200
     result, status = _vps_get("/get-pnl")
     return jsonify(result), status
+
+
+# Live broker connectivity: a real quote proves both the VPS is reachable
+# AND the Zerodha token is valid (the VPS /health only checks a token file
+# exists, not that it still works). Cached 60s so dashboard polling doesn't
+# hammer Zerodha.
+_broker_status = {"ts": 0.0, "data": None}
+
+
+@app.route("/kite/broker-status", methods=["GET", "OPTIONS"])
+def kite_broker_status():
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    now = time.time()
+    if _broker_status["data"] and now - _broker_status["ts"] < 60:
+        return jsonify(_broker_status["data"])
+
+    result, status = _vps_get("/get-quote?symbol=RELIANCE")
+    data = {"checked_at": time.strftime("%H:%M:%S")}
+    px = None
+    if isinstance(result, dict):
+        px = (result.get("RELIANCE") or {}).get("last_price")
+
+    if status == 200 and px:
+        data.update({"connected": True, "reason": "Live quote OK", "last_price": px})
+    else:
+        err = ""
+        if isinstance(result, dict):
+            err = str(result.get("error", "")).lower()
+        if any(k in err for k in ("token", "api_key", "invalid", "forbidden", "expired")) \
+                or status in (401, 403):
+            reason = "Token expired — re-login to Kite"
+        elif status in (0, 502, 503) or "not configured" in err \
+                or "refused" in err or "timed out" in err or "unreachable" in err:
+            reason = "VPS unreachable"
+        else:
+            reason = (result.get("error") if isinstance(result, dict) else None) \
+                or f"No live quote (HTTP {status})"
+        data.update({"connected": False, "reason": reason})
+
+    _broker_status.update({"ts": now, "data": data})
+    return jsonify(data)
 
 
 @app.route("/kite/callback", methods=["GET", "OPTIONS"])

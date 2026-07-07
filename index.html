@@ -224,6 +224,14 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
 .ai-chip{display:inline-block;font-size:10px;font-weight:600;padding:2px 8px;border-radius:20px;background:var(--surface2);color:var(--text2);margin-right:5px;}
 .ai-prop{font-size:11.5px;color:var(--text2);padding:4px 0;}
 .ai-prop b{color:var(--text);}
+/* Broker connectivity pill (header) */
+.broker-dot{font-size:10.5px;font-weight:700;cursor:pointer;padding:3px 8px;border-radius:20px;background:var(--surface2);border:1px solid var(--line);letter-spacing:.02em;white-space:nowrap;}
+.broker-dot.ok{color:var(--green);}
+.broker-dot.bad{color:var(--red);border-color:rgba(255,98,89,.35);}
+.broker-dot.unknown{color:var(--text3);}
+/* Delete button on closed-trade rows */
+.cc-del{background:none;border:none;color:var(--text3);font-size:13px;cursor:pointer;padding:6px;opacity:.55;line-height:1;}
+.cc-del:hover{opacity:1;color:var(--red);}
 .sc-rb-badge{display:inline-block;font-size:8.5px;font-weight:700;letter-spacing:.08em;padding:3px 8px;border-radius:999px;margin-left:6px;vertical-align:middle;text-transform:uppercase;}
 .sc-rb-badge.HOLD{background:rgba(48,209,88,.12);color:var(--green);}
 .sc-rb-badge.ADD,.sc-rb-badge.ADD_MORE{background:rgba(110,168,254,.12);color:var(--blue);}
@@ -651,6 +659,7 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
     </div>
   </div>
   <div class="hdr-right">
+    <span class="broker-dot unknown" id="brokerDot" title="Checking broker…" onclick="loadBrokerStatus(true)">● Broker</span>
     <span class="upd-badge" id="lastUpdated">Loading…</span>
     <button class="refresh-btn" onclick="refreshAll()">
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
@@ -888,7 +897,7 @@ function showUS(){showView('usView');if(!_uL){loadUS();_uL=true;}else fetchUsPri
 function refreshAll(){
   _lastRefresh=Date.now();
   document.getElementById('lastUpdated').textContent='Refreshing…';
-  fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();loadAiInsights();
+  fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();loadAiInsights();loadBrokerStatus();
   if(_cv==='indView')loadIndia();
   else if(_cv==='usView')loadUS();
   else if(_cv==='swingView')loadSwing();
@@ -995,7 +1004,7 @@ function _swPollScan(startGen){
 function initApp(){
   showView('homeView');
   document.getElementById('lastUpdated').textContent='Connecting…';
-  fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();loadAiInsights();
+  fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();loadAiInsights();loadBrokerStatus();
   setInterval(fetchMarket,5*60*1000);
   // Auto-retry home snaps once after 8s in case Railway was cold-starting
   setTimeout(()=>{
@@ -3019,6 +3028,24 @@ async function loadAiAttribution(){
   </div>`;
 }
 
+/* ═══ BROKER CONNECTIVITY ═══ */
+async function loadBrokerStatus(userTap){
+  const el=document.getElementById('brokerDot');
+  if(!el)return;
+  const d=await fd('/kite/broker-status');
+  if(!d){el.className='broker-dot unknown';el.title='Broker status unavailable';return;}
+  if(d.connected){
+    el.className='broker-dot ok';
+    el.title='Zerodha connected · checked '+(d.checked_at||'')+(d.last_price?' · RELIANCE ₹'+d.last_price:'');
+  }else{
+    el.className='broker-dot bad';
+    el.title='⚠️ Broker NOT connected: '+(d.reason||'')+' — tap to recheck';
+    if(userTap)alert('⚠️ Broker not connected\n\n'+(d.reason||'')+'\n\nChecked at '+(d.checked_at||'')
+      +(/token/i.test(d.reason||'')?'\n\nFix: open your Kite login link to refresh the session.':''));
+  }
+  if(userTap&&d.connected)alert('✅ Broker connected\nZerodha session is live (RELIANCE ₹'+(d.last_price||'?')+').');
+}
+
 async function loadAiInsights(){
   const sig=await fd('/signals');
   let any=false;
@@ -3353,8 +3380,26 @@ function renderSwingClosed(){
       <div class="cc-dates">${t.entry_date||t.buy_date||'—'} → ${t.exit_date||t.sell_date||'—'}</div>
       ${t.exit_reason?`<div class="cc-reason">${t.exit_reason.replace(/_/g,' ')}</div>`:''}
     </div>
-    <div><div class="cc-pnl ${c}">${s}₹${Math.abs(p).toLocaleString('en-IN',{maximumFractionDigits:0})}</div><div class="cc-pct">${s}${(t.realised_pnl_pct||0).toFixed(2)}%</div></div>
+    <div style="display:flex;align-items:center;gap:6px">
+      <div style="text-align:right"><div class="cc-pnl ${c}">${s}₹${Math.abs(p).toLocaleString('en-IN',{maximumFractionDigits:0})}</div><div class="cc-pct">${s}${(t.realised_pnl_pct||0).toFixed(2)}%</div></div>
+      <button class="cc-del" title="Remove this record (does not affect Zerodha)" onclick="deleteSwingTrade('${_escAttr(t.ticker||'')}','${_escAttr(t.exit_date||'')}',${t.sell_price||0},event)">🗑</button>
+    </div>
   </div>`;}).join('')}`;
+}
+
+async function deleteSwingTrade(ticker,exitDate,sellPrice,ev){
+  if(ev)ev.stopPropagation();
+  const sym=(ticker||'').replace('.NS','');
+  if(!confirm('Remove this closed-trade record for '+sym+'?\n\nThis only deletes the dashboard history entry — it does NOT affect Zerodha.'))return;
+  _showSpinner('Removing record…');
+  try{
+    const r=await fetch(`${API}/swing/history/remove`,{method:'POST',headers:_postHeaders(),
+      body:JSON.stringify({ticker,exit_date:exitDate,sell_price:sellPrice})});
+    const d=await r.json();
+    _hideSpinner();
+    if(d.ok){_swL=false;await loadSwing();}
+    else alert('⚠️ Failed: '+(d.error||JSON.stringify(d)));
+  }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
 }
 
 /* ═══ SWING LIVE PRICES ═══ */
