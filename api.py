@@ -190,16 +190,18 @@ def add_cors(response):
 
 @app.route("/portfolio/latest", methods=["GET", "OPTIONS"])
 def latest_portfolio():
-    # 1. Try in-memory cache first (most recent run)
-    if _portfolio_cache:
-        return jsonify(_sanitise(_portfolio_cache))
-
-    # 2. Try reading from disk
+    # 1. Disk first (2 workers) — glob picks the newest portfolio file so a
+    #    fresh monthly run shows on every refresh, not just the worker that
+    #    ran the upload.
     path = _find_latest_portfolio()
     if path:
         data = _load_json(path)
         if data:
             return jsonify(_sanitise(data))
+
+    # 2. Fall back to in-memory cache
+    if _portfolio_cache:
+        return jsonify(_sanitise(_portfolio_cache))
 
     return jsonify({"error": "No portfolio found. Run screener.py first."}), 404
 
@@ -327,11 +329,11 @@ def signals():
                   "swing_sentiment_history",
                   # AI features (Tier 1 & 2)
                   "ai_attribution", "ai_holdings_events", "ai_earnings"]:
-        # Try in-memory cache first
-        if name in _signals_cache:
-            result[name] = _signals_cache[name]
-            continue
-        # Try disk locations
+        # Disk first — with 2 gunicorn workers the in-memory cache goes
+        # stale on whichever worker didn't receive the upload, so a signal
+        # written by the scanner/AI crons must be re-read from the shared
+        # disk file or the dashboard shows old data on ~half its refreshes.
+        found = False
         for path in [
             os.path.join(DATA_DIR, f"{name}.json"),
             f"{name}.json",
@@ -340,7 +342,13 @@ def signals():
             data = _load_json(path)
             if data:
                 result[name] = data
+                _signals_cache[name] = data
+                found = True
                 break
+        # Fall back to in-memory only if nothing on disk (e.g. first run
+        # before anything was persisted)
+        if not found and name in _signals_cache:
+            result[name] = _signals_cache[name]
     return jsonify(result)
 
 
@@ -458,13 +466,14 @@ def picks_portfolio():
     global _picks_cache
     if request.method == "OPTIONS":
         return jsonify({}), 200
-    if _picks_cache:
-        return jsonify(_sanitise(_picks_cache))
+    # Disk first (2 workers) so a fresh monthly run shows on every refresh
     path = os.path.join(DATA_DIR, "portfolio_picks.json")
     data = _load_json(path)
     if data:
         _picks_cache = data
         return jsonify(_sanitise(data))
+    if _picks_cache:
+        return jsonify(_sanitise(_picks_cache))
     return jsonify({"error": "No picks found. Run screener.py first."}), 404
 
 
@@ -624,12 +633,12 @@ def get_advisory():
     if request.method == "OPTIONS":
         return jsonify({}), 200
     global _advisory_cache
-    if _advisory_cache:
-        return jsonify(_sanitise(_advisory_cache))
-    data = _load_json(ADVISORY_FILE)
+    data = _load_json(ADVISORY_FILE)   # disk first (2 workers)
     if data:
         _advisory_cache = data
         return jsonify(_sanitise(data))
+    if _advisory_cache:
+        return jsonify(_sanitise(_advisory_cache))
     return jsonify({"error": "No advisory yet. Run screener.py first."}), 404
 
 
@@ -655,12 +664,12 @@ def get_rebalance_report():
     if request.method == "OPTIONS":
         return jsonify({}), 200
     global _rebalance_cache
-    if _rebalance_cache:
-        return jsonify(_sanitise(_rebalance_cache))
-    data = _load_json(REBALANCE_FILE)
+    data = _load_json(REBALANCE_FILE)   # disk first (2 workers)
     if data:
         _rebalance_cache = data
         return jsonify(_sanitise(data))
+    if _rebalance_cache:
+        return jsonify(_sanitise(_rebalance_cache))
     return jsonify({"error": "No rebalance report yet. Run rebalancer.py first."}), 404
 
 
@@ -847,9 +856,8 @@ def market():
 def portfolio_history_get():
     """Returns all closed/realised trade records."""
     global _history_cache
-    if not _history_cache:
-        loaded = _load_json(HISTORY_FILE)
-        _history_cache = loaded if isinstance(loaded, list) else []
+    loaded = _load_json(HISTORY_FILE)   # disk = source of truth (2 workers)
+    _history_cache = loaded if isinstance(loaded, list) else []
     return jsonify({"trades": _sanitise(_history_cache), "count": len(_history_cache)})
 
 
@@ -894,9 +902,8 @@ def performance_get():
     Each record: { date, portfolio_pct, nifty50_pct, nifty500_pct }
     """
     global _perf_cache
-    if not _perf_cache:
-        loaded = _load_json(PERF_FILE)
-        _perf_cache = loaded if isinstance(loaded, list) else []
+    loaded = _load_json(PERF_FILE)   # disk = source of truth (2 workers)
+    _perf_cache = loaded if isinstance(loaded, list) else []
     return jsonify({"history": _sanitise(_perf_cache), "count": len(_perf_cache)})
 
 
@@ -1025,9 +1032,8 @@ def us_portfolio_picks_get():
     global _us_picks_cache
     if request.method == "OPTIONS":
         return jsonify({}), 200
-    if not _us_picks_cache:
-        loaded = _load_json(US_PICKS_FILE)
-        _us_picks_cache = loaded if isinstance(loaded, dict) else {}
+    loaded = _load_json(US_PICKS_FILE)   # disk = source of truth (2 workers)
+    _us_picks_cache = loaded if isinstance(loaded, dict) else {}
     return jsonify(_sanitise(_us_picks_cache))
 
 
@@ -1105,12 +1111,12 @@ def us_advisory_get():
     if request.method == "OPTIONS":
         return jsonify({}), 200
     global _us_advisory_cache
-    if _us_advisory_cache:
-        return jsonify(_sanitise(_us_advisory_cache))
-    data = _load_json(US_ADVISORY_FILE)
+    data = _load_json(US_ADVISORY_FILE)   # disk first (2 workers)
     if data:
         _us_advisory_cache = data
         return jsonify(_sanitise(data))
+    if _us_advisory_cache:
+        return jsonify(_sanitise(_us_advisory_cache))
     return jsonify({"error": "No US advisory yet. Run screener_us.py first."}), 404
 
 
@@ -1203,9 +1209,8 @@ def us_prices():
 @app.route("/us/performance", methods=["GET"])
 def us_performance_get():
     global _us_perf_cache
-    if not _us_perf_cache:
-        loaded = _load_json(US_PERF_FILE)
-        _us_perf_cache = loaded if isinstance(loaded, list) else []
+    loaded = _load_json(US_PERF_FILE)   # disk = source of truth (2 workers)
+    _us_perf_cache = loaded if isinstance(loaded, list) else []
     return jsonify({"history": _sanitise(_us_perf_cache), "count": len(_us_perf_cache)})
 
 
@@ -1234,9 +1239,8 @@ def us_performance_upload():
 @app.route("/us/portfolio/history", methods=["GET"])
 def us_portfolio_history_get():
     global _us_history_cache
-    if not _us_history_cache:
-        loaded = _load_json(US_HISTORY_FILE)
-        _us_history_cache = loaded if isinstance(loaded, list) else []
+    loaded = _load_json(US_HISTORY_FILE)   # disk = source of truth (2 workers)
+    _us_history_cache = loaded if isinstance(loaded, list) else []
     return jsonify({"trades": _sanitise(_us_history_cache), "count": len(_us_history_cache)})
 
 
@@ -1305,10 +1309,13 @@ def swing_candidates_get():
     global _swing_candidates_cache
     if request.method == "OPTIONS":
         return jsonify({}), 200
-    if not _swing_candidates_cache:
-        loaded = _load_json(SWING_CANDIDATES_FILE)
-        if loaded:
-            _swing_candidates_cache = loaded
+    # Always read from disk — with 2 gunicorn workers, an upload updates
+    # one worker's memory + the shared disk file, so the other worker must
+    # re-read disk or it serves stale candidates forever (the "refresh
+    # shows yesterday's picks" bug).
+    loaded = _load_json(SWING_CANDIDATES_FILE)
+    if loaded:
+        _swing_candidates_cache = loaded
     return jsonify(_sanitise(_swing_candidates_cache or {
         "candidates": [],
         "generated_at": None,
@@ -1470,10 +1477,9 @@ def swing_scan_status():
     age = _swing_scan_lock_age()
     running = age is not None and age < SWING_SCAN_TIMEOUT_SEC
     global _swing_candidates_cache
-    if not _swing_candidates_cache:
-        loaded = _load_json(SWING_CANDIDATES_FILE)
-        if loaded:
-            _swing_candidates_cache = loaded
+    loaded = _load_json(SWING_CANDIDATES_FILE)   # disk = source of truth
+    if loaded:
+        _swing_candidates_cache = loaded
     return jsonify({
         "running": running,
         "generated_at": (_swing_candidates_cache or {}).get("generated_at"),
@@ -1488,9 +1494,8 @@ def swing_live_get():
     global _swing_live_cache
     if request.method == "OPTIONS":
         return jsonify({}), 200
-    if not _swing_live_cache:
-        loaded = _load_json(SWING_LIVE_FILE)
-        _swing_live_cache = loaded if isinstance(loaded, list) else []
+    loaded = _load_json(SWING_LIVE_FILE)   # disk = source of truth (2 workers)
+    _swing_live_cache = loaded if isinstance(loaded, list) else []
     return jsonify(_sanitise(_swing_live_cache))
 
 
@@ -1543,9 +1548,8 @@ def swing_history_get():
     global _swing_history_cache
     if request.method == "OPTIONS":
         return jsonify({}), 200
-    if not _swing_history_cache:
-        loaded = _load_json(SWING_HISTORY_FILE)
-        _swing_history_cache = loaded if isinstance(loaded, list) else []
+    loaded = _load_json(SWING_HISTORY_FILE)   # disk = source of truth (2 workers)
+    _swing_history_cache = loaded if isinstance(loaded, list) else []
     return jsonify({
         "trades":       _sanitise(_swing_history_cache),
         "total_trades": len(_swing_history_cache),
