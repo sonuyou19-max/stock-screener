@@ -84,7 +84,15 @@ def place_order(symbol: str, qty: int, side: str, order_type: str, price: float 
     }
     if price and order_type == "LIMIT":
         payload["price"] = round(price, 2)
-    return _post(f"{VPS_URL}/place-order", payload, VPS_HEADERS)
+    try:
+        return _post(f"{VPS_URL}/place-order", payload, VPS_HEADERS)
+    except urllib.error.HTTPError as e:
+        # Surface the real Zerodha rejection instead of a bare "400".
+        try:
+            detail = json.loads(e.read()).get("error", "")
+        except Exception:
+            detail = ""
+        raise RuntimeError(f"HTTP {e.code} — {detail or e.reason}")
 
 
 def update_queue(updates: list):
