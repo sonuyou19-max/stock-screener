@@ -94,7 +94,16 @@ def update_queue(updates: list):
 
 def main():
     print(f"=== Swing Entry 9:00 AM {'[DRY RUN]' if DRY_RUN else '[LIVE]'} ===")
-    queue = get_queue()
+    try:
+        queue = get_queue()
+    except Exception as e:
+        # A crash here (Railway cold-start, network blip, bad token) used to
+        # kill the whole run with NO alert — queued orders silently never
+        # placed. Fail loudly so it can never be invisible again.
+        print(f"🚨 Could not fetch the swing queue: {e}")
+        _tg(f"🚨 <b>Swing Entry 9:00 AM FAILED</b>\nCould not read the queue: {e}\n"
+            f"Queued orders were NOT placed — check the VPS / run manually.")
+        raise
     if not queue:
         print("No queued swing entries.")
         _tg("⏸ <b>Swing Entry 9:00 AM</b>\nNo entries queued.")
@@ -177,4 +186,15 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        # Last-resort guard: any uncaught error gets surfaced to Telegram
+        # instead of dying quietly in the cron log.
+        print(f"🚨 Swing entry crashed: {e}")
+        try:
+            _tg(f"🚨 <b>Swing Entry 9:00 AM crashed</b>\n{e}\n"
+                f"Queued orders may NOT have been placed — check the VPS.")
+        except Exception:
+            pass
+        raise
