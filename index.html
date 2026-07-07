@@ -2287,7 +2287,7 @@ function queueSwingTrade(ticker){
   const c=_swCandByTicker[ticker]||{ticker};
   _qswCandidate=c;
   const sym=(c.ticker||'').replace('.NS','').replace('.BO','');
-  document.getElementById('qswTitle').textContent='Queue '+sym+' for 9:00 AM';
+  document.getElementById('qswTitle').textContent='Queue '+sym+' for '+SWING_ENTRY_LABEL;
   document.getElementById('qswSub').textContent=
     'Stop ₹'+(c.stop_loss||'—')+' · T1 ₹'+(c.target1||'—')+(c.rr_ratio?' · RR '+(c.rr_ratio||'').toFixed?.(1):'');
   const entryType=c.entry_type||'momentum-dip';
@@ -2324,24 +2324,36 @@ function _qswClose(){document.getElementById('queueSwModal').classList.add('hidd
    always said "tomorrow morning", which was wrong before 9 AM and hid
    the real gotcha: queue after 9 AM and nothing happens until the next
    session. */
+/* The swing entry cron runs once a day at this IST time (kept in sync with
+   the VPS crontab — moved from 9:00 to 9:20 so orders land after the 9:15
+   market open instead of being rejected in pre-open). */
+const SWING_ENTRY_LABEL='9:20 AM IST';
+const SWING_ENTRY_MIN=560;                    // 9:20 = 9*60+20
+/* IST wall-clock parts via Intl (deterministic across engines — do NOT
+   round-trip through new Date(string); iOS Safari misparses that). */
+function _istNowParts(){
+  const p={};
+  new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Kolkata',hour12:false,
+    weekday:'short',hour:'2-digit',minute:'2-digit'})
+    .formatToParts(new Date()).forEach(x=>{p[x.type]=x.value;});
+  const h=parseInt(p.hour,10)%24, m=parseInt(p.minute,10);
+  const dow={Sun:0,Mon:1,Tue:2,Wed:3,Thu:4,Fri:5,Sat:6}[p.weekday];
+  return {mins:h*60+m, dow:(dow==null?1:dow)};
+}
 function _nextEntryMsg(){
-  // current time in IST regardless of device timezone
-  const istNow=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Kolkata'}));
-  const day=istNow.getDay();                 // 0 Sun … 6 Sat
-  const mins=istNow.getHours()*60+istNow.getMinutes();
-  const beforeCron=mins<540;                 // 9:00 AM = 540 min
-  const isTradingDay=day>=1&&day<=5;
-  if(isTradingDay&&beforeCron){
-    return '⏱ It will be placed automatically at 9:00 AM IST today.';
+  const {mins,dow}=_istNowParts();
+  const trading=dow>=1&&dow<=5;
+  if(trading&&mins<SWING_ENTRY_MIN){
+    return '⏱ It will be placed automatically at '+SWING_ENTRY_LABEL+' today.';
   }
-  // otherwise: next trading morning
-  let d=new Date(istNow);
-  d.setDate(d.getDate()+1);
-  while(d.getDay()===0||d.getDay()===6){ d.setDate(d.getDate()+1); }
-  const label=d.toLocaleDateString('en-IN',{weekday:'long',day:'numeric',month:'short'});
-  return '⏱ The 9:00 AM IST entry window has already passed for today.\n'
-    +'It will be placed at 9:00 AM on '+label+'.\n\n'
-    +'Want it in TODAY’s session? Tap “Enter Now” on the card to place it immediately.';
+  // find the next trading day (skip Sat/Sun)
+  const names=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'];
+  let d=dow;
+  do{ d=(d+1)%7; }while(d===0||d===6);
+  const when=(trading&&d===(dow%7)+1)?'tomorrow ('+names[d]+')':names[d];
+  return '⏱ Today’s '+SWING_ENTRY_LABEL+' entry window has already passed.\n'
+    +'It will be placed at '+SWING_ENTRY_LABEL+' on '+when+'.\n\n'
+    +'Want it in the current session instead? Tap “Enter Now” on the card while the market is open.';
 }
 
 async function _qswSubmit(){
