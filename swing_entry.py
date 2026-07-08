@@ -122,6 +122,18 @@ def main():
         _tg("⏸ <b>Swing Entry 9:00 AM</b>\nNo entries queued.")
         return
 
+    # Tickers already held — a stock entered manually ("Enter Now") stays in
+    # the queue, so without this guard the cron would BUY A SECOND LOT of a
+    # position you already own. Skip anything already in /swing/live.
+    held = set()
+    try:
+        live = _get(f"{RAILWAY_URL}/swing/live", RAILWAY_HEADERS)
+        for p in (live if isinstance(live, list) else []):
+            if p.get("ticker"):
+                held.add(p["ticker"])
+    except Exception as e:
+        print(f"⚠️  Could not fetch live positions for dedupe: {e}")
+
     placed, skipped, errors = [], [], []
     dry_tag = " 🧪 <i>DRY RUN — no real orders</i>" if DRY_RUN else ""
     msgs = [f"🔔 <b>Swing Entry 9:00 AM</b> ({len(queue)} queued){dry_tag}"]
@@ -136,6 +148,16 @@ def main():
         if qty <= 0:
             print(f"⚠️  {symbol}: qty=0, skipping")
             errors.append(symbol)
+            continue
+
+        if ticker in held:
+            # Already an open position (e.g. entered manually) — don't double-buy.
+            msg = f"⏭ {symbol}: already an open position — skipped (no double-buy)"
+            print(msg)
+            skipped.append(symbol)
+            msgs.append(msg)
+            update_queue([{"ticker": ticker, "status": "skipped",
+                           "skip_reason": "already_held"}])
             continue
 
         try:
