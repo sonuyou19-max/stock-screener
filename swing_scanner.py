@@ -1369,6 +1369,23 @@ def _run_scan_impl(test_mode: bool = False, single_ticker: str = None) -> list:
 # SAVE + POST TO API
 # ─────────────────────────────────────────────
 
+def _scanner_tg(html_msg: str):
+    """Minimal Telegram sender for scanner-level alerts (e.g. upload failed)."""
+    token   = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
+    if not token or not chat_id:
+        return
+    try:
+        body = json.dumps({"chat_id": chat_id, "text": html_msg,
+                           "parse_mode": "HTML"}).encode()
+        req = _urllib.Request(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            data=body, headers={"Content-Type": "application/json"}, method="POST")
+        _urllib.urlopen(req, timeout=10)
+    except Exception as e:
+        print(f"  ⚠️  Scanner Telegram failed: {e}")
+
+
 def save_candidates(candidates: list, regime: dict = None):
     """Save candidates to disk and POST to API."""
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -1385,25 +1402,50 @@ def save_candidates(candidates: list, regime: dict = None):
         json.dump(output, f, indent=2, default=str)
     print(f"\n  ✅ Candidates saved: {CANDIDATES_FILE}")
 
-    # POST to API
+    # POST to API — retry a few times, and if it ultimately fails, alert on
+    # Telegram. Previously a failed upload only printed to a log nobody
+    # watches, so the scan would Telegram fresh candidates while the
+    # dashboard silently kept serving the last successful upload.
     upload_url = f"{API_URL}/swing/candidates/upload"
     print(f"  📤 POSTing {len(candidates)} candidates to: {upload_url}")
-    try:
-        payload = json.dumps(
-            {"type": "swing_candidates", "payload": output},
-            default=str
-        ).encode("utf-8")
-        req1 = _urllib.Request(
-            upload_url,
-            data=payload,
-            headers={"Content-Type": "application/json", **_UPLOAD_AUTH},
-            method="POST"
-        )
-        with _urllib.urlopen(req1, timeout=15) as r:
-            print(f"  ✅ Candidates POSTed to API: {r.read().decode()}")
-    except Exception as e:
-        print(f"  ⚠️  Could not POST candidates to {upload_url} ({e}) — "
-              f"dashboard will not see today's scan results")
+    if not _UPLOAD_AUTH:
+        print("  ⚠️  UPLOAD_TOKEN not set — the API will reject this upload (401).")
+    payload = json.dumps(
+        {"type": "swing_candidates", "payload": output}, default=str
+    ).encode("utf-8")
+    last_err = None
+    for attempt in range(3):
+        try:
+            req1 = _urllib.Request(
+                upload_url, data=payload,
+                headers={"Content-Type": "application/json", **_UPLOAD_AUTH},
+                method="POST",
+            )
+            with _urllib.urlopen(req1, timeout=15) as r:
+                print(f"  ✅ Candidates POSTed to API: {r.read().decode()}")
+            return
+        except _urlerr.HTTPError as e:
+            try:
+                body = e.read().decode()
+            except Exception:
+                body = ""
+            last_err = f"HTTP {e.code} {body[:120]}"
+            # Auth/permission errors won't fix themselves on retry
+            if e.code in (401, 403):
+                break
+        except Exception as e:
+            last_err = str(e)
+        time.sleep(2 ** attempt)
+
+    print(f"  🚨 Could not POST candidates to {upload_url} ({last_err}) — "
+          f"dashboard will NOT see today's scan results")
+    _scanner_tg(
+        f"🚨 <b>Swing scan upload FAILED</b>\n"
+        f"Found {len(candidates)} candidates but could not send them to the "
+        f"dashboard ({last_err}).\n"
+        f"The dashboard is still showing the previous scan. Fix: check "
+        f"UPLOAD_TOKEN / API_URL on the VPS, or tap “Run Scan” on the dashboard."
+    )
 
 
 # ─────────────────────────────────────────────
