@@ -155,14 +155,24 @@ def _sanitise(obj):
     return obj
 
 
+_last_save_error = None   # real reason the most recent _save_json failed
+
+
 def _save_json(path: str, data):
+    global _last_save_error
     try:
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        with open(path, "w") as f:
+        # Write to a temp file then atomically replace, so a failure (e.g. a
+        # full volume) can't truncate the previous good file to nothing.
+        tmp = f"{path}.tmp"
+        with open(tmp, "w") as f:
             json.dump(data, f, indent=2, default=str)
+        os.replace(tmp, path)
+        _last_save_error = None
         return True
     except Exception as e:
-        print(f"⚠️  Could not save {path}: {e}")
+        _last_save_error = str(e)
+        print(f"🚨 Could not save {path}: {e}")
         return False
 
 
@@ -1335,9 +1345,14 @@ def swing_candidates_upload():
         # Accept direct payload or signals-style {type, payload}
         if "type" in data and "payload" in data:
             data = data["payload"]
-        _swing_candidates_cache = data
-        _save_json(SWING_CANDIDATES_FILE, data)
         count = len(data.get("candidates", []))
+        # Verify the write actually landed on disk. Previously this returned
+        # "ok" even when the volume was full, so the scanner thought it
+        # succeeded while the dashboard kept serving the last saved scan.
+        if not _save_json(SWING_CANDIDATES_FILE, data):
+            return jsonify({"error": f"disk write failed: {_last_save_error}",
+                            "candidates_received": count}), 507
+        _swing_candidates_cache = data
         return jsonify({"status": "ok", "candidates": count})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
