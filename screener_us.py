@@ -1074,18 +1074,10 @@ def post_advisory(top7_rows, advisory):
     except Exception as e:
         print(f"  ⚠️  Could not POST picks: {e}")
 
-    # Seed live portfolio only if it's empty
-    try:
-        with _ur.urlopen(f"{api}/us/portfolio/live", timeout=10) as r:
-            existing = json.loads(r.read())
-        has = any(len(v.get("stocks", [])) > 0 for v in existing.values() if isinstance(v, dict))
-        if not has:
-            body = _post(f"{api}/us/portfolio/live/upload", json.dumps(picks_data, default=str).encode())
-            print(f"  ✅ Live portfolio seeded")
-        else:
-            print(f"  ℹ️  Live portfolio exists — not overwriting")
-    except Exception as e:
-        print(f"  ⚠️  Could not seed live: {e}")
+    # Live portfolio is intentionally NOT seeded from picks — holdings must
+    # reflect only positions actually bought, never the screener's
+    # recommendations. Recommendations live separately under
+    # /us/portfolio/picks.
 
 
 # ──────────────────────────────────────────────────────────────────────

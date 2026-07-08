@@ -2572,16 +2572,12 @@ def save_results(portfolio: dict, all_df: pd.DataFrame):
     except Exception:
         pass
 
-    try:
-        with _urllib.urlopen(f"{API_URL}/portfolio/live", timeout=8) as r:
-            existing_live = r.read().decode()
-        if '"error"' in existing_live:
-            body = _post(f"{API_URL}/portfolio/live/upload", payload)
-            print(f"  ✅ Live portfolio seeded from picks (first run): {body}")
-        else:
-            print(f"  ℹ️  Live portfolio already exists — not overwriting")
-    except Exception as e:
-        print(f"  ⚠️  Could not check/seed live portfolio (non-fatal): {e}")
+    # NOTE: the live portfolio is intentionally NOT seeded from picks.
+    # "Holdings" must reflect ONLY stocks actually executed on Kite —
+    # populated by real fills (the fill postback + india_cancel backstop),
+    # never by the screener's recommendations. Seeding here would show
+    # unbought picks as holdings, which is wrong. The recommendations live
+    # separately under /portfolio/picks.
 
     return portfolio_path
 
