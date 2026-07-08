@@ -1597,6 +1597,7 @@ def swing_arm_exits():
             return jsonify({"error": "symbol and quantity required"}), 400
 
         # Only arm once the buy has actually filled.
+        fill_price = None
         if order_id:
             orders, _ = _vps_get("/get-orders")
             olist = (orders or {}).get("orders") or []
@@ -1604,6 +1605,15 @@ def swing_arm_exits():
             if o and str(o.get("status", "")).upper() != "COMPLETE":
                 return jsonify({"status": "pending",
                                 "message": "buy not filled yet — exits will arm on fill"}), 200
+            # Capture the ACTUAL fill price so the position's cost basis is
+            # real, not the scan-time price the dashboard stamped on entry.
+            if o:
+                try:
+                    fp = float(o.get("average_price") or 0)
+                    if fp > 0:
+                        fill_price = fp
+                except (TypeError, ValueError):
+                    pass
 
         qty_t1 = qty // 2
         qty_t2 = qty - qty_t1
@@ -1629,11 +1639,17 @@ def swing_arm_exits():
         live = list(_read_swing_live())
         idx = next((i for i, p in enumerate(live) if p.get("ticker") == ticker_ns), None)
         if idx is not None:
-            live[idx].update({"gtt_id": results.get("stop_gtt_id"),
-                              "gtt_t1_id": results.get("t1_gtt_id"),
-                              "gtt_t2_id": results.get("t2_gtt_id"),
-                              "stop_qty": qty})
+            upd = {"gtt_id": results.get("stop_gtt_id"),
+                   "gtt_t1_id": results.get("t1_gtt_id"),
+                   "gtt_t2_id": results.get("t2_gtt_id"),
+                   "stop_qty": qty}
+            if fill_price:   # correct the cost basis to the real fill
+                upd["buy_price"] = fill_price
+                upd["price"] = fill_price
+            live[idx].update(upd)
             _write_swing_live(live)
+            if fill_price:
+                results["fill_price"] = fill_price
 
         if failures:
             fail_lines = "\n".join(f"  • {f}" for f in failures)

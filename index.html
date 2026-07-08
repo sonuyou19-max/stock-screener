@@ -2929,7 +2929,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
 /* ═══ EDIT BUY PRICE ═══ */
 async function editBuyPrice(ticker, prefix, bucket, currentBp){
-  const cur=prefix==='ind'?'₹':'$';
+  const cur=prefix==='us'?'$':'₹';
   const newPrice=prompt(
     `Edit buy price for ${ticker.replace('.NS','')}\n`+
     `Current recorded: ${cur}${currentBp}\n\n`+
@@ -2938,6 +2938,19 @@ async function editBuyPrice(ticker, prefix, bucket, currentBp){
   if(newPrice===null)return; // cancelled
   const parsed=parseFloat(newPrice);
   if(!parsed||isNaN(parsed)||parsed<=0){alert('Invalid price. Please enter a number.');return;}
+
+  // Swing positions live in a LIST (/swing/live); update the one record.
+  if(prefix==='sw'){
+    const arr=await fd('/swing/live');
+    const pos=(Array.isArray(arr)?arr:[]).find(p=>p.ticker===ticker);
+    if(!pos){alert(`${ticker.replace('.NS','')} not found in open positions`);return;}
+    const updated={...pos,buy_price:parsed,price:parsed};
+    const r=await fetch(`${API}/swing/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(updated)});
+    const res=await r.json();
+    if(res.status==='ok'){alert(`✅ Buy price updated!\n${ticker.replace('.NS','')} → ₹${parsed.toFixed(2)}`);_swL=false;loadSwing();}
+    else alert('Error updating: '+JSON.stringify(res));
+    return;
+  }
 
   const ep=prefix==='ind'?'/portfolio/live':'/us/portfolio/live';
   const live=await fd(ep);
@@ -3238,6 +3251,7 @@ function renderSwingOpen(){
       </div>
 
       <div class="sc-actions">
+        <button class="sc-act-btn" onclick="editBuyPrice('${p.ticker}','sw','',${bp})">Edit buy price</button>
         <button class="sc-act-btn sc-act-exit" onclick="exitSwingTrade('${p.ticker}','${bp}')">Mark Exited</button>
       </div>
     </div>`;
