@@ -2470,9 +2470,26 @@ async function _eswSubmit(){
           product:'CNC',tag:'sw-advisor'
         })});
         const kiteData=await kiteRes.json();
-        _hideSpinner();
-        if(kiteData.order_id){alert('✅ Swing position added & Zerodha order placed!\nOrder ID: '+kiteData.order_id);}
-        else{alert('Swing position added.\n⚠️ Zerodha order failed: '+(kiteData.error||JSON.stringify(kiteData)));}
+        if(kiteData.order_id){
+          // Arm the stop/T1/T2 GTTs directly (don't rely on the postback).
+          // The endpoint verifies the buy filled before placing exits.
+          let armMsg='';
+          try{
+            const armRes=await fetch(`${API}/swing/arm-exits`,{method:'POST',headers:_postHeaders(),
+              body:JSON.stringify({symbol:nseSymbol,order_id:kiteData.order_id,quantity:Math.round(qty),
+                stop_loss:c.stop_loss,target1:c.target1,target2:c.target2})});
+            const armData=await armRes.json();
+            if(armData.status==='ok')armMsg='\n🛡 Stop + targets (GTT) placed automatically.';
+            else if(armData.status==='pending')armMsg='\n⏳ Order not filled yet — stop/targets will arm on fill.';
+            else if(armData.status==='partial')armMsg='\n⚠️ Some exit GTTs failed — check Telegram & place manually.';
+          }catch(_){armMsg='\n⚠️ Could not confirm exit GTTs — verify on Kite (Orders → GTT).';}
+          _hideSpinner();
+          _swL=false;await loadSwing();
+          alert('✅ Swing position added & Zerodha order placed!\nOrder ID: '+kiteData.order_id+armMsg);
+        }else{
+          _hideSpinner();
+          alert('Swing position added.\n⚠️ Zerodha order failed: '+(kiteData.error||JSON.stringify(kiteData)));
+        }
       }else{_hideSpinner();}
     }else{_hideSpinner();alert('Error: '+JSON.stringify(res));}
   }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}

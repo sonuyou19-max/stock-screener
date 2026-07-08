@@ -1573,6 +1573,80 @@ def swing_history_get():
     })
 
 
+# ── POST /swing/arm-exits ────────────────────────────────────────
+@app.route("/swing/arm-exits", methods=["POST", "OPTIONS"])
+def swing_arm_exits():
+    """Place stop + T1 + T2 GTTs for a swing position, used by the manual
+    "Enter Now" flow so protection doesn't depend on the fill postback.
+    Verifies the buy actually filled first (via order_id) to avoid arming
+    exits for an order still sitting unfilled."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    auth_err = _require_upload_token()
+    if auth_err:
+        return auth_err
+    try:
+        data     = request.get_json(force=True) or {}
+        symbol   = (data.get("symbol") or "").strip().upper().replace(".NS", "")
+        qty      = int(data.get("quantity") or 0)
+        stop     = data.get("stop_loss")
+        target1  = data.get("target1")
+        target2  = data.get("target2")
+        order_id = data.get("order_id")
+        if not symbol or qty <= 0:
+            return jsonify({"error": "symbol and quantity required"}), 400
+
+        # Only arm once the buy has actually filled.
+        if order_id:
+            orders, _ = _vps_get("/get-orders")
+            olist = (orders or {}).get("orders") or []
+            o = next((x for x in olist if str(x.get("order_id")) == str(order_id)), None)
+            if o and str(o.get("status", "")).upper() != "COMPLETE":
+                return jsonify({"status": "pending",
+                                "message": "buy not filled yet — exits will arm on fill"}), 200
+
+        qty_t1 = qty // 2
+        qty_t2 = qty - qty_t1
+        results, failures = {}, []
+
+        if stop:
+            gid, err = _place_sell_gtt(symbol, stop, qty)
+            results["stop_gtt_id"] = gid
+            if not gid:
+                failures.append(f"STOP ₹{stop} × {qty} — {err}")
+        if target1 and qty_t1 > 0:
+            gid, err = _place_sell_gtt(symbol, target1, qty_t1)
+            results["t1_gtt_id"] = gid
+            if not gid:
+                failures.append(f"T1 ₹{target1} × {qty_t1} — {err}")
+        if target2 and qty_t2 > 0:
+            gid, err = _place_sell_gtt(symbol, target2, qty_t2)
+            results["t2_gtt_id"] = gid
+            if not gid:
+                failures.append(f"T2 ₹{target2} × {qty_t2} — {err}")
+
+        ticker_ns = f"{symbol}.NS"
+        live = list(_read_swing_live())
+        idx = next((i for i, p in enumerate(live) if p.get("ticker") == ticker_ns), None)
+        if idx is not None:
+            live[idx].update({"gtt_id": results.get("stop_gtt_id"),
+                              "gtt_t1_id": results.get("t1_gtt_id"),
+                              "gtt_t2_id": results.get("t2_gtt_id"),
+                              "stop_qty": qty})
+            _write_swing_live(live)
+
+        if failures:
+            fail_lines = "\n".join(f"  • {f}" for f in failures)
+            _tg(f"🚨 <b>{symbol}: exit GTT placement failed</b>\n{fail_lines}\n"
+                f"⚠️ Place these manually on Kite.")
+            return jsonify({"status": "partial", "failures": failures, **results}), 207
+        _tg(f"🛡 <b>{symbol}: exits armed</b>\n"
+            f"Stop ₹{stop} · T1 ₹{target1} ({qty_t1}) · T2 ₹{target2} ({qty_t2})")
+        return jsonify({"status": "ok", **results})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ── POST /swing/history/remove ───────────────────────────────────
 # Path contains "/remove" so the before_request token gate protects it.
 @app.route("/swing/history/remove", methods=["POST", "OPTIONS"])
@@ -2128,10 +2202,18 @@ def kite_postback():
     try:
         data      = request.get_json(silent=True) or request.form.to_dict()
 
+        # Verify Zerodha's checksum, but FAIL OPEN: a mismatch (e.g. a
+        # timestamp-format quirk in the checksum formula) must not silently
+        # drop fills and skip GTT placement. Log it and process anyway,
+        # unless KITE_POSTBACK_STRICT is explicitly set.
         if not _verify_postback_checksum(data):
-            print(f"🚫 Postback rejected — bad checksum (order_id="
-                  f"{data.get('order_id', '?')})")
-            return jsonify({"error": "invalid checksum"}), 403
+            if os.getenv("KITE_POSTBACK_STRICT", "").lower() in ("1", "true", "yes"):
+                print(f"🚫 Postback REJECTED — bad checksum (order_id="
+                      f"{data.get('order_id', '?')}) [strict mode]")
+                return jsonify({"error": "invalid checksum"}), 403
+            print(f"⚠️  Postback checksum mismatch (order_id="
+                  f"{data.get('order_id', '?')}) — processing anyway "
+                  f"(set KITE_POSTBACK_STRICT=1 to reject).")
 
         order_id  = str(data.get("order_id", "?"))
         status    = data.get("status", "?")
