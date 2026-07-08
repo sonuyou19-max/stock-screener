@@ -83,7 +83,9 @@ def place_order(symbol: str, qty: int, side: str, order_type: str, price: float 
         "product": "CNC", "tag": "ind-auto",
     }
     if price and order_type == "LIMIT":
-        payload["price"] = round(price, 2)
+        # Snap to the NSE ₹0.05 tick — an unaligned LIMIT price is rejected
+        # by Zerodha as HTTP 400 (this one worked by luck at a round price).
+        payload["price"] = round(round(price / 0.05) * 0.05, 2)
     try:
         return _post(f"{VPS_URL}/place-order", payload, VPS_HEADERS)
     except urllib.error.HTTPError as e:

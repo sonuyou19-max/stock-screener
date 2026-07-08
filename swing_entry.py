@@ -84,7 +84,11 @@ def place_order(symbol: str, qty: int, order_type: str, price: float = None) -> 
         "tag": "sw-auto",
     }
     if price and order_type == "LIMIT":
-        payload["price"] = round(price, 2)
+        # NSE tick size is ₹0.05 — a LIMIT price that isn't a multiple of
+        # 0.05 is rejected by Zerodha with "HTTP 400 BAD REQUEST". The
+        # scanner's optimal_entry is rounded to 2 decimals, not to the tick,
+        # so every LIMIT entry was failing. Snap to the nearest tick.
+        payload["price"] = round(round(price / 0.05) * 0.05, 2)
     try:
         return _post(f"{VPS_URL}/place-order", payload, VPS_HEADERS)
     except urllib.error.HTTPError as e:

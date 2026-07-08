@@ -154,6 +154,23 @@ def place_order():
             except Exception as ltp_err:
                 log.warning("LTP fetch failed (%s) — attempting bare MARKET order", ltp_err)
 
+        # Server-side safety net: snap any LIMIT/SL price to the NSE ₹0.05
+        # tick. Zerodha rejects unaligned prices with a 400, and callers
+        # don't always round — catch it here so no order path can trip it.
+        if price is not None:
+            try:
+                price = round(round(float(price) / 0.05) * 0.05, 2)
+            except (TypeError, ValueError):
+                pass
+        trig = data.get("trigger_price")
+        if trig is not None:
+            try:
+                trig = round(round(float(trig) / 0.05) * 0.05, 2)
+            except (TypeError, ValueError):
+                trig = data.get("trigger_price")
+        else:
+            trig = data.get("trigger_price")
+
         order_id = kite.place_order(
             variety=data.get("variety", kite.VARIETY_REGULAR),
             exchange=exchange,
@@ -167,7 +184,7 @@ def place_order():
             product=data.get("product", kite.PRODUCT_CNC),
             order_type=order_type,
             price=price,
-            trigger_price=data.get("trigger_price"),
+            trigger_price=trig,
             tag=(data.get("tag", "eq-advisor") or "eq-advisor")[:20],
         )
         log.info(
