@@ -68,6 +68,19 @@ def update_queue(updates: list):
     _post(f"{RAILWAY_URL}/india/queue/update", updates, RAILWAY_HEADERS)
 
 
+def add_to_live(stock: dict):
+    """Backstop: ensure a filled monthly buy shows under 'stock picks'.
+    The postback normally does this on fill, but if it misfires the stock
+    would fill on Kite yet never appear in the live portfolio. /live/add is
+    deduped server-side, so calling it here is safe even if the postback
+    already added it."""
+    try:
+        res = _post(f"{RAILWAY_URL}/portfolio/live/add", stock, RAILWAY_HEADERS)
+        print(f"  📌 live/add {stock.get('ticker')}: {res.get('status')}")
+    except Exception as e:
+        print(f"  ⚠️  Could not add {stock.get('ticker')} to live picks: {e}")
+
+
 def main():
     print("=== India Cancel 3:15 PM ===")
     queue = get_placed_queue()
@@ -106,9 +119,22 @@ def main():
             continue
 
         if kite_status == "COMPLETE":
+            fill_price = float(avg_price or 0)
+            fill_qty   = int((order or {}).get("filled_quantity") or entry.get("quantity") or 0)
             msgs.append(f"✅ {symbol}: filled @ ₹{avg_price}")
             filled.append(symbol)
-            update_queue([{"ticker": ticker, "status": "filled", "fill_price": float(avg_price or 0)}])
+            update_queue([{"ticker": ticker, "status": "filled", "fill_price": fill_price}])
+            # Backstop the postback: make sure it lands in 'stock picks'
+            if fill_price > 0 and fill_qty > 0:
+                add_to_live({
+                    "ticker":         ticker,
+                    "name":           entry.get("name", symbol),
+                    "buy_price":      fill_price,
+                    "price":          fill_price,
+                    "approx_shares":  fill_qty,
+                    "allocation_inr": round(fill_price * fill_qty, 2),
+                    "buy_date":       time.strftime("%Y-%m-%d"),
+                })
             continue
 
         if kite_status in ("CANCELLED", "REJECTED"):
