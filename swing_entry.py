@@ -179,9 +179,15 @@ def main():
             continue
 
         if opt > 0 and live <= opt:
-            order_type = "MARKET"
-            place_price = None
-            print(f"  → MARKET (live {live:.2f} ≤ optimal {opt:.2f})")
+            # Stock already at/below the pullback level — buy now. Use a
+            # LIMIT priced 0.5% through live (place_order snaps it to the
+            # ₹0.05 tick) so it fills immediately like a market order WITHOUT
+            # the "market orders need protection" API rejection. Never send a
+            # bare MARKET — the executor's MARKET→LIMIT conversion depends on
+            # a live-price fetch that can fail.
+            order_type = "LIMIT"
+            place_price = live * 1.005
+            print(f"  → LIMIT immediate @ ₹{place_price:.2f} (live {live:.2f} ≤ optimal {opt:.2f})")
         else:
             order_type = "LIMIT"
             place_price = opt if opt > 0 else live

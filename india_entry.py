@@ -132,9 +132,12 @@ def process_buys(msgs: list) -> tuple:
             update_queue([{"ticker": ticker, "status": "skipped", "skip_price": live}])
             continue
 
-        order_type  = "MARKET" if (opt > 0 and live <= opt) else "LIMIT"
-        place_price = None if order_type == "MARKET" else (opt if opt > 0 else live)
-        disp        = f"MARKET ~₹{live:.0f}" if order_type == "MARKET" else f"LIMIT ₹{place_price:.0f}"
+        # Always LIMIT — a bare MARKET is rejected by the API ("market
+        # protection required"). When live has already reached the entry,
+        # price the LIMIT 0.5% through live so it fills immediately.
+        order_type  = "LIMIT"
+        place_price = (live * 1.005) if (opt > 0 and live <= opt) else (opt if opt > 0 else live)
+        disp        = f"LIMIT ₹{place_price:.0f}"
 
         if DRY_RUN:
             print(f"  [DRY RUN] would place BUY {order_type} {qty}sh @ {disp}")
@@ -178,13 +181,23 @@ def process_sells(msgs: list) -> tuple:
             msgs.append(f"❌ SELL {symbol}: qty=0 — too small to sell ({pct}% of held shares)")
             continue
 
+        # LIMIT 0.5% below live (fills immediately) rather than a bare MARKET
+        # that the API rejects for "market protection".
+        try:
+            live_s = get_live_price(symbol)
+        except Exception:
+            live_s = 0
+        sell_price = round(live_s * 0.995, 2) if live_s > 0 else None
+        disp_s = f"LIMIT ₹{sell_price:.0f}" if sell_price else "LIMIT (live unavailable)"
+
         if DRY_RUN:
-            print(f"  [DRY RUN] would place SELL MARKET {qty}sh {symbol} ({action} {pct}%)")
+            print(f"  [DRY RUN] would place SELL {disp_s} {qty}sh {symbol} ({action} {pct}%)")
             placed.append(symbol)
-            msgs.append(f"🧪 SELL {symbol}: would sell {qty}sh MARKET ({action} {pct}%)")
+            msgs.append(f"🧪 SELL {symbol}: would sell {qty}sh {disp_s} ({action} {pct}%)")
         else:
             try:
-                result   = place_order(symbol, qty, "SELL", "MARKET")
+                result   = place_order(symbol, qty, "SELL", "LIMIT", sell_price) \
+                           if sell_price else place_order(symbol, qty, "SELL", "MARKET")
                 order_id = result.get("order_id")
                 if not order_id:
                     raise ValueError(f"No order_id: {result}")
