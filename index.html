@@ -3261,7 +3261,7 @@ function renderSwingOpen(){
 /* ═══ SWING CANDIDATES ═══ */
 /* Pre-trade AI red-team badge — set by ai_redteam.py on each candidate */
 function _redteamBadge(rt){
-  if(!rt||!rt.flag)return'';
+  if(!rt||!rt.flag)return`<div class="sc-redteam" style="color:var(--text3)" title="AI red-team hasn't run on this scan yet — the verdict appears after the nightly AI check (or run ai_redteam.py).">⏳ AI: pending</div>`;
   const cfg={
     AVOID:{e:'🔴',t:'AI: AVOID',c:'var(--red)'},
     CAUTION:{e:'🟠',t:'AI: Caution',c:'var(--gold)'},
