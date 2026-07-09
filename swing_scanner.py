@@ -1362,6 +1362,20 @@ def _run_scan_impl(test_mode: bool = False, single_ticker: str = None) -> list:
         save_candidates(top, regime)
         send_telegram_alert(top)
 
+        # ── Step 7: Chain the AI red-team so verdicts ALWAYS accompany a
+        # fresh scan, instead of waiting for a separate cron (which left a
+        # window where candidates showed no AI verdict). Non-fatal: a scan
+        # must never fail because the red-team did. Needs ANTHROPIC_API_KEY.
+        if os.getenv("ANTHROPIC_API_KEY"):
+            try:
+                print("\n  🛡  Running AI red-team on the fresh candidates...")
+                import ai_redteam
+                ai_redteam.main(dry_run=False)
+            except Exception as e:
+                print(f"  ⚠️  Red-team chaining failed (non-fatal): {e}")
+        else:
+            print("  ℹ️  ANTHROPIC_API_KEY not set — skipping red-team chaining.")
+
     return top
 
 
