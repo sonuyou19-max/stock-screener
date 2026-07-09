@@ -3327,7 +3327,7 @@ function renderSwingCandidates(){
       </div>
 
       <div class="sc-metrics" style="margin-top:14px">
-        <div><div class="sc-m-lbl">Entry</div><div class="sc-m-val">₹${(c.current_price||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</div></div>
+        <div><div class="sc-m-lbl">Entry (limit)</div><div class="sc-m-val">₹${((c.optimal_entry||c.current_price)||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</div><div style="font-size:9px;color:var(--text3);margin-top:1px">now ₹${(c.current_price||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</div></div>
         <div><div class="sc-m-lbl">Max entry</div><div class="sc-m-val" style="color:var(--blue)">${limitP?'₹'+limitP.toLocaleString('en-IN',{maximumFractionDigits:0}):'—'}</div></div>
         <div><div class="sc-m-lbl">R/R</div><div class="sc-m-val">${(c.rr_ratio||0).toFixed(1)}×</div></div>
       </div>
