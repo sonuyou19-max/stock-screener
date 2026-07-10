@@ -3067,6 +3067,7 @@ function renderSwingQueue(){
   if(sec)sec.style.display='';
   el.innerHTML=pending.map(e=>{
     const sym=(e.ticker||'').replace('.NS','');
+    const key=(e.ticker||'').replace(/[^a-zA-Z0-9]/g,'_');
     const qty=Math.round(e.quantity||0);
     const entry=parseFloat(e.optimal_entry||e.current_price||0);
     const gate=parseFloat(e.limit_price||0);
@@ -3077,13 +3078,32 @@ function renderSwingQueue(){
     const statCls=placed?'placed':'queued';
     return`<div class="qrow">
       <div class="qrow-main">
-        <div class="qrow-tkr">${_esc(sym)}<span class="qrow-name"> · ${_esc(e.name||'')}</span></div>
+        <div class="qrow-tkr"><a href="https://finance.yahoo.com/quote/${encodeURIComponent(e.ticker||'')}" target="_blank" rel="noopener" style="color:inherit;text-decoration:none">${_esc(sym)} ↗</a><span class="qrow-name"> · ${_esc(e.name||'')}</span></div>
         <div class="qrow-meta">${qty} sh &nbsp;·&nbsp; entry ≤ ₹${entry.toLocaleString('en-IN',{maximumFractionDigits:2})}${gate?` &nbsp;·&nbsp; skip &gt; ₹${gate.toLocaleString('en-IN',{maximumFractionDigits:0})}`:''}</div>
+        <div class="qrow-meta" style="margin-top:2px">now <span class="qrow-px" id="qpx-${key}" style="color:var(--text3)">…</span></div>
         <div class="qrow-stat ${statCls}">${statTxt}</div>
       </div>
       <button class="qrow-del" onclick="dequeueSwingTrade('${_escAttr(e.ticker)}')">Remove</button>
     </div>`;
   }).join('');
+  fetchQueuePrices();
+}
+
+/* Live price for each pending-queue row (fills the "now ₹…" slot). */
+async function fetchQueuePrices(){
+  const data=await fd('/swing/queue/prices');
+  if(!data?.prices)return;
+  Object.values(_swQueue||{}).forEach(e=>{
+    if(!['queued','order_placed'].includes(e.status))return;
+    const key=(e.ticker||'').replace(/[^a-zA-Z0-9]/g,'_');
+    const cell=document.getElementById('qpx-'+key);
+    const info=data.prices[e.ticker];
+    if(!cell||!info)return;
+    const chg=info.change_pct||0;
+    const col=chg>0?'var(--green)':chg<0?'var(--red)':'var(--text2)';
+    cell.style.color=col;
+    cell.textContent='₹'+Number(info.price).toLocaleString('en-IN',{maximumFractionDigits:2})+' ('+(chg>=0?'+':'')+chg.toFixed(2)+'%)';
+  });
 }
 
 /* ═══ AI INSIGHT CARDS (Tier 1 & 2) ═══ */

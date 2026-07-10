@@ -1873,6 +1873,43 @@ def swing_prices():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/swing/queue/prices", methods=["GET", "OPTIONS"])
+def swing_queue_prices():
+    """Live prices for pending queue tickers (status queued/order_placed),
+    so the dashboard can show a current price next to the target entry."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        q = _read_queue()
+        tickers = list({v["ticker"] for v in q.values()
+                        if v.get("ticker") and v.get("status") in ("queued", "order_placed")})
+        if not tickers:
+            return jsonify({"prices": {}})
+
+        import yfinance as yf
+        import math
+        prices = {}
+        for ticker in tickers:
+            try:
+                fi = yf.Ticker(ticker).fast_info
+                price = getattr(fi, "last_price", None) or getattr(fi, "regular_market_price", None)
+                prev  = getattr(fi, "previous_close", None)
+                chg   = getattr(fi, "regular_market_change_percent", None)
+                if price and not math.isnan(float(price)):
+                    p = float(price)
+                    if (not chg or math.isnan(float(chg)) or float(chg) == 0) and prev:
+                        chg = (p - float(prev)) / float(prev) * 100
+                    prices[ticker] = {
+                        "price":      round(p, 2),
+                        "change_pct": round(float(chg) if chg and not math.isnan(float(chg)) else 0, 2),
+                    }
+            except Exception:
+                pass
+        return jsonify({"prices": _sanitise(prices)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 
 
 # ════════════════════════════════════════════════════════════════
