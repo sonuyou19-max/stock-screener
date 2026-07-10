@@ -232,6 +232,16 @@ header{display:flex;align-items:center;justify-content:space-between;padding:18p
 /* Delete button on closed-trade rows */
 .cc-del{background:none;border:none;color:var(--text3);font-size:13px;cursor:pointer;padding:6px;opacity:.55;line-height:1;}
 .cc-del:hover{opacity:1;color:var(--red);}
+/* Pending-entry queue rows */
+.qrow{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px 14px;margin-bottom:8px;}
+.qrow-main{flex:1;min-width:0;}
+.qrow-tkr{font-size:14px;font-weight:700;color:var(--text);}
+.qrow-name{font-size:11px;color:var(--text3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.qrow-meta{font-size:11.5px;color:var(--text2);margin-top:4px;}
+.qrow-stat{display:inline-block;font-size:9.5px;font-weight:700;padding:2px 7px;border-radius:20px;letter-spacing:.03em;margin-top:5px;}
+.qrow-stat.queued{background:rgba(212,167,83,.15);color:var(--gold);}
+.qrow-stat.placed{background:rgba(110,168,254,.15);color:var(--blue);}
+.qrow-del{background:rgba(255,98,89,.08);border:1px solid rgba(255,98,89,.3);color:var(--red);font-size:11px;font-weight:600;padding:7px 12px;border-radius:9px;cursor:pointer;flex-shrink:0;}
 .sc-rb-badge{display:inline-block;font-size:8.5px;font-weight:700;letter-spacing:.08em;padding:3px 8px;border-radius:999px;margin-left:6px;vertical-align:middle;text-transform:uppercase;}
 .sc-rb-badge.HOLD{background:rgba(48,209,88,.12);color:var(--green);}
 .sc-rb-badge.ADD,.sc-rb-badge.ADD_MORE{background:rgba(110,168,254,.12);color:var(--blue);}
@@ -845,6 +855,8 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
   </div>
   <div class="sec"><span class="sec-lbl">Open Positions</span><span class="sec-line"></span></div>
   <div style="padding:0 20px;" id="swOpenPositions"><div class="spin-wrap"><div class="spinner"></div></div></div>
+  <div class="sec" id="swQueueSec" style="display:none"><span class="sec-lbl">⏳ Pending Entry (Queue)</span><span class="sec-line"></span></div>
+  <div style="padding:0 20px;" id="swQueueList"></div>
   <div class="sec"><span class="sec-lbl">Today's Candidates</span><span class="sec-line"></span><button class="refresh-btn" id="sw-runScanBtn" style="padding:5px 10px;font-size:10px" onclick="runSwingScan()">▶ Run Scan</button></div>
   <div id="sw-scanLogWrap" style="display:none;padding:0 20px;margin-bottom:6px;">
     <div class="scan-log-head"><span id="sw-scanLogTitle">Running scan…</span><span class="scan-log-dot" id="sw-scanLogDot"></span></div>
@@ -2403,6 +2415,7 @@ async function _qswSubmit(){
     _hideSpinner();
     if(res.status==='ok'){
       _swQueue[c.ticker]=entry;
+      renderSwingQueue();
       renderSwingCandidates();
       alert('✅ '+(c.ticker||'').replace('.NS','')+' queued.\nQuantity: '+Math.round(qty)+' shares\n\n'+_nextEntryMsg());
     }else{alert('Error: '+JSON.stringify(res));}
@@ -2416,7 +2429,7 @@ async function dequeueSwingTrade(ticker){
     const r=await fetch(`${API}/swing/queue/remove`,{method:'POST',headers:_postHeaders(),body:JSON.stringify({ticker})});
     const res=await r.json();
     _hideSpinner();
-    if(res.status==='ok'){delete _swQueue[ticker];renderSwingCandidates();}
+    if(res.status==='ok'){delete _swQueue[ticker];renderSwingQueue();renderSwingCandidates();}
     else{alert('Error: '+JSON.stringify(res));}
   }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
 }
@@ -3025,14 +3038,52 @@ async function loadSwing(){
   _swCandidates = cands;
   _swHistory = hist;
   _swQueue = {};
-  (qData?.queue || []).forEach(e => { _swQueue[e.ticker] = e; });
+  // Keyed by ticker → inherently de-duplicated (one entry per stock).
+  (qData?.queue || []).forEach(e => { if(e && e.ticker) _swQueue[e.ticker] = e; });
   renderSwingStats();
   renderSwingOpen();
+  renderSwingQueue();
   renderSwingCandidates();
   renderSwingClosed();
   fetchSwingPrices();
   loadSwingSnap();
   loadAiAttribution();
+}
+
+/* ═══ PENDING ENTRY (QUEUE) ═══
+   Shows stocks queued and waiting to be placed / filled on Kite.
+   Only pending statuses (queued = waiting for 9:20 entry, order_placed =
+   order live on Kite waiting to fill). Terminal statuses (skipped/filled/
+   cancelled/closed) are excluded. Backed by /swing/queue, keyed by ticker
+   so there are never duplicates; Remove hits /swing/queue/remove. */
+function renderSwingQueue(){
+  const sec=document.getElementById('swQueueSec');
+  const el=document.getElementById('swQueueList');
+  if(!el)return;
+  const held=new Set((_swLive||[]).map(p=>p.ticker));
+  const pending=Object.values(_swQueue||{})
+    .filter(e=>['queued','order_placed'].includes(e.status));
+  if(!pending.length){ if(sec)sec.style.display='none'; el.innerHTML=''; return; }
+  if(sec)sec.style.display='';
+  el.innerHTML=pending.map(e=>{
+    const sym=(e.ticker||'').replace('.NS','');
+    const qty=Math.round(e.quantity||0);
+    const entry=parseFloat(e.optimal_entry||e.current_price||0);
+    const gate=parseFloat(e.limit_price||0);
+    const placed=e.status==='order_placed';
+    const alsoHeld=held.has(e.ticker);
+    const statTxt=placed?'Order placed · waiting to fill'
+      :(alsoHeld?'Queued · already held (will skip)':'Queued · places 9:20 AM if in range');
+    const statCls=placed?'placed':'queued';
+    return`<div class="qrow">
+      <div class="qrow-main">
+        <div class="qrow-tkr">${_esc(sym)}<span class="qrow-name"> · ${_esc(e.name||'')}</span></div>
+        <div class="qrow-meta">${qty} sh &nbsp;·&nbsp; entry ≤ ₹${entry.toLocaleString('en-IN',{maximumFractionDigits:2})}${gate?` &nbsp;·&nbsp; skip &gt; ₹${gate.toLocaleString('en-IN',{maximumFractionDigits:0})}`:''}</div>
+        <div class="qrow-stat ${statCls}">${statTxt}</div>
+      </div>
+      <button class="qrow-del" onclick="dequeueSwingTrade('${_escAttr(e.ticker)}')">Remove</button>
+    </div>`;
+  }).join('');
 }
 
 /* ═══ AI INSIGHT CARDS (Tier 1 & 2) ═══ */
