@@ -154,22 +154,13 @@ def place_order():
             except Exception as ltp_err:
                 log.warning("LTP fetch failed (%s) — attempting bare MARKET order", ltp_err)
 
-        # Server-side safety net: snap any LIMIT/SL price to the NSE ₹0.05
-        # tick. Zerodha rejects unaligned prices with a 400, and callers
-        # don't always round — catch it here so no order path can trip it.
-        if price is not None:
-            try:
-                price = round(round(float(price) / 0.05) * 0.05, 2)
-            except (TypeError, ValueError):
-                pass
-        trig = data.get("trigger_price")
-        if trig is not None:
-            try:
-                trig = round(round(float(trig) / 0.05) * 0.05, 2)
-            except (TypeError, ValueError):
-                trig = data.get("trigger_price")
-        else:
-            trig = data.get("trigger_price")
+        # Server-side safety net: snap any LIMIT/SL price to the script's
+        # ACTUAL tick size (0.05 for most NSE equities, but 0.10/0.20/0.50
+        # for some — e.g. SHRIRAMFIN is 0.10). Zerodha rejects any price
+        # that isn't a multiple of the script's tick with a 400.
+        _ensure_instruments(kite)          # make sure tick sizes are loaded
+        price = _round_to_tick(symbol, price)
+        trig  = _round_to_tick(symbol, data.get("trigger_price"))
 
         order_id = kite.place_order(
             variety=data.get("variety", kite.VARIETY_REGULAR),
@@ -342,13 +333,24 @@ def place_gtt():
         return jsonify({"error": f"Missing required fields: {missing}"}), 400
     try:
         kite = _get_kite()
+        sym = data["symbol"].strip().upper()
+        # Snap trigger(s) and each order's LIMIT price to the script's real
+        # tick size, or Zerodha 400s on non-0.05-tick scripts (e.g. 0.10).
+        _ensure_instruments(kite)
+        triggers = [_round_to_tick(sym, t) for t in data["trigger_values"]]
+        orders = []
+        for o in data["orders"]:
+            o = dict(o)
+            if o.get("price") is not None:
+                o["price"] = _round_to_tick(sym, o["price"])
+            orders.append(o)
         gtt_id = kite.place_gtt(
             trigger_type=data.get("trigger_type", kite.GTT_TYPE_SINGLE),
-            tradingsymbol=data["symbol"].strip().upper(),
+            tradingsymbol=sym,
             exchange=data.get("exchange", "NSE"),
-            trigger_values=data["trigger_values"],
+            trigger_values=triggers,
             last_price=float(data["last_price"]),
-            orders=data["orders"],
+            orders=orders,
         )
         log.info("✅ GTT placed: gtt_id=%s  symbol=%s", gtt_id, data["symbol"])
         return jsonify({"gtt_id": gtt_id, "status": "placed"})
@@ -385,11 +387,12 @@ def cancel_gtt():
 
 _inst_lock       = threading.Lock()
 _inst_cache: dict = {}      # "RELIANCE" → instrument_token (int)
+_tick_cache: dict = {}      # "RELIANCE" → tick_size (float, e.g. 0.05 / 0.10)
 _inst_cache_date = None
 
 
 def _ensure_instruments(kite: KiteConnect):
-    global _inst_cache, _inst_cache_date
+    global _inst_cache, _tick_cache, _inst_cache_date
     today = date.today()
     with _inst_lock:
         if _inst_cache_date == today and _inst_cache:
@@ -397,8 +400,24 @@ def _ensure_instruments(kite: KiteConnect):
         log.info("Refreshing NSE instruments cache…")
         instruments = kite.instruments("NSE")
         _inst_cache = {i["tradingsymbol"]: i["instrument_token"] for i in instruments}
+        _tick_cache = {i["tradingsymbol"]: float(i.get("tick_size") or 0.05)
+                       for i in instruments}
         _inst_cache_date = today
         log.info("Instrument cache: %d symbols", len(_inst_cache))
+
+
+def _round_to_tick(symbol: str, price):
+    """Snap a price to the symbol's ACTUAL tick size (0.05 for most NSE
+    equities, but 0.10 / 0.20 / 0.50 for some). Zerodha rejects any price
+    that isn't a multiple of the script's tick. Falls back to 0.05 if the
+    tick isn't cached yet."""
+    if price is None:
+        return None
+    try:
+        tick = _tick_cache.get((symbol or "").strip().upper(), 0.05) or 0.05
+        return round(round(float(price) / tick) * tick, 2)
+    except (TypeError, ValueError):
+        return price
 
 
 # ── Historical OHLCV ──────────────────────────────────────────────────────────

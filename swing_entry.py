@@ -32,6 +32,10 @@ RAILWAY_HEADERS = {
 }
 VPS_HEADERS = {"X-Executor-Secret": EXECUTOR_SECRET}
 
+# Give up on a queued entry after this many failed placement attempts,
+# so a persistently-failing order doesn't retry forever.
+MAX_ENTRY_FAILS = 3
+
 
 def _get(url, headers=None):
     r = _req.Request(url, headers={**(headers or {}), "Accept": "application/json"})
@@ -216,7 +220,20 @@ def main():
             except Exception as e:
                 print(f"⚠️  Order failed for {symbol}: {e}")
                 errors.append(symbol)
-                msgs.append(f"❌ {symbol}: order failed — {e}")
+                # A failed order used to stay "queued" and retry every
+                # morning forever (e.g. a tick-size bug that fails daily).
+                # Count failures; after MAX_ENTRY_FAILS give up — mark
+                # "failed" (terminal), so it drops out of the pending queue.
+                fails = int(entry.get("fail_count", 0)) + 1
+                if fails >= MAX_ENTRY_FAILS:
+                    update_queue([{"ticker": ticker, "status": "failed",
+                                   "fail_count": fails, "last_error": str(e)}])
+                    msgs.append(f"🛑 {symbol}: order failed {fails}× — {e}\n"
+                                f"Giving up — removed from queue. Re-queue if still wanted.")
+                else:
+                    update_queue([{"ticker": ticker, "fail_count": fails,
+                                   "last_error": str(e)}])
+                    msgs.append(f"❌ {symbol}: order failed ({fails}/{MAX_ENTRY_FAILS}) — {e}")
 
         time.sleep(0.5)
 
