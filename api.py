@@ -1596,12 +1596,25 @@ def swing_arm_exits():
         if not symbol or qty <= 0:
             return jsonify({"error": "symbol and quantity required"}), 400
 
-        # Only arm once the buy has actually filled.
+        # Only arm once the buy has actually filled. Poll a few times —
+        # an immediate market/through-live LIMIT fills in <2s, but Zerodha's
+        # order status can still read OPEN for a moment right after placing.
+        # A single check used to catch that OPEN and bail, so the fill went
+        # through with no GTTs. Poll ~7s before giving up.
         fill_price = None
+        o = None
         if order_id:
-            orders, _ = _vps_get("/get-orders")
-            olist = (orders or {}).get("orders") or []
-            o = next((x for x in olist if str(x.get("order_id")) == str(order_id)), None)
+            for _attempt in range(5):
+                orders, _ = _vps_get("/get-orders")
+                olist = (orders or {}).get("orders") or []
+                o = next((x for x in olist if str(x.get("order_id")) == str(order_id)), None)
+                st = str((o or {}).get("status", "")).upper()
+                if st == "COMPLETE":
+                    break
+                if st in ("REJECTED", "CANCELLED"):
+                    return jsonify({"status": st.lower(),
+                                    "message": f"order {st.lower()} — no exits armed"}), 200
+                time.sleep(1.5)
             if o and str(o.get("status", "")).upper() != "COMPLETE":
                 return jsonify({"status": "pending",
                                 "message": "buy not filled yet — exits will arm on fill"}), 200
@@ -2404,6 +2417,35 @@ def kite_postback():
                         live_positions.append(pos)
                     _write_swing_live(live_positions)
                     print(f"✅ Swing live position synced: {ticker_ns} {fill_qty}sh")
+
+                elif not entry:
+                    # Backstop for "Enter Now" fills: no queue entry, but if a
+                    # /swing/live position exists for this symbol WITHOUT exit
+                    # GTTs (e.g. arm-exits ran before the fill registered), arm
+                    # them now from the fill notification.
+                    live_positions = list(_read_swing_live())
+                    lp = next((p for p in live_positions
+                               if p.get("ticker") in (ticker_ns, symbol)), None)
+                    if lp and not lp.get("gtt_id"):
+                        s_stop = lp.get("stop_loss") or lp.get("stop_loss_price")
+                        s_t1   = lp.get("target1")
+                        s_t2   = lp.get("target2")
+                        qty_t1 = fill_qty // 2
+                        qty_t2 = fill_qty - qty_t1
+                        g_stop, e1 = _place_sell_gtt(symbol, s_stop, fill_qty, fill_price) if s_stop else (None, "no stop")
+                        g_t1, e2   = _place_sell_gtt(symbol, s_t1, qty_t1, fill_price) if (s_t1 and qty_t1) else (None, None)
+                        g_t2, e3   = _place_sell_gtt(symbol, s_t2, qty_t2, fill_price) if (s_t2 and qty_t2) else (None, None)
+                        lp.update({"gtt_id": g_stop, "gtt_t1_id": g_t1,
+                                   "gtt_t2_id": g_t2, "stop_qty": fill_qty})
+                        _write_swing_live(live_positions)
+                        if s_stop and not g_stop:
+                            _tg(f"🚨 <b>{symbol}: stop GTT FAILED after fill</b>\n"
+                                f"Bought {fill_qty} @ ₹{fill_price:.2f} — place a stop "
+                                f"at ₹{s_stop} manually on Kite. ({e1})")
+                        else:
+                            _tg(f"🛡 <b>{symbol}: exits armed on fill</b>\n"
+                                f"Stop ₹{s_stop} · T1 ₹{s_t1} · T2 ₹{s_t2}")
+                        print(f"✅ Enter-Now backstop armed GTTs: {symbol}")
 
                 # ── India monthly queue: auto-add to live portfolio ────
                 iq = _read_india_queue()
