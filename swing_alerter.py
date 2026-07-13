@@ -346,10 +346,20 @@ def check_position(pos: dict, price_info: dict) -> Optional[dict]:
         }
 
     # ── Priority 5: Trailing stop update ──────────────────────
-    # If price moved up significantly, suggest raising stop
+    # A trailing stop RATCHETS UP ONLY. Base it on the high-water mark
+    # (highest price seen), NOT the current price — otherwise it drops when
+    # the stock pulls back and you get "raise to 321" then "raise to 318".
+    # Compare to the EFFECTIVE current stop (which may already have been
+    # trailed up / moved to break-even), not the original stop.
     if trail_dist and curr_price > buy_price * 1.02:
-        new_trail_stop = round(curr_price - trail_dist, 2)
-        if stop_loss and new_trail_stop > stop_loss * 1.01:  # >1% improvement
+        high_water     = max(float(pos.get("trail_high") or 0), curr_price)
+        effective_stop = max(float(stop_loss or 0),
+                             float(pos.get("live_stop") or 0),
+                             float(pos.get("tsl_stop") or 0))
+        new_trail_stop = round(high_water - trail_dist, 2)
+        # Only suggest when the high-water-based stop is a real improvement
+        # ABOVE the current stop → monotonic, never a lower number.
+        if effective_stop and new_trail_stop > effective_stop * 1.01:
             return {
                 "ticker":      ticker,
                 "name":        name,
@@ -358,15 +368,15 @@ def check_position(pos: dict, price_info: dict) -> Optional[dict]:
                 "emoji":       "📈",
                 "title":       f"UPDATE TRAILING STOP — {ticker.replace('.NS','')}",
                 "message":     (
-                    f"Stock is up {gain_pct:+.1f}% — raise your stop.\n"
-                    f"Old stop: ₹{stop_loss:.2f}\n"
-                    f"New stop: ₹{new_trail_stop:.2f} ({trail_dist:.2f} below current)\n"
+                    f"High so far ₹{high_water:.2f} (P&L {gain_pct:+.1f}%) — raise your stop.\n"
+                    f"Old stop: ₹{effective_stop:.2f}\n"
+                    f"New stop: ₹{new_trail_stop:.2f} ({trail_dist:.2f} below the high)\n"
                     f"Update GTT on Kite."
                 ),
                 "buy_price":   buy_price,
                 "curr_price":  curr_price,
                 "gain_pct":    gain_pct,
-                "old_stop":    stop_loss,
+                "old_stop":    effective_stop,
                 "new_stop":    new_trail_stop,
                 "trading_days":trading_days,
             }
