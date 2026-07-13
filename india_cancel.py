@@ -81,6 +81,25 @@ def add_to_live(stock: dict):
         print(f"  ⚠️  Could not add {stock.get('ticker')} to live picks: {e}")
 
 
+def place_sell_gtt(symbol: str, trigger, qty: int, last_price: float):
+    """Place the monthly trailing-stop GTT via the VPS. The executor snaps
+    the trigger/limit to the script's real tick size. Returns gtt_id/None."""
+    trigger = round(float(trigger), 2)
+    try:
+        res = _post(f"{VPS_URL}/place-gtt", {
+            "symbol":         symbol,
+            "trigger_values": [trigger],
+            "last_price":     float(last_price),
+            "orders": [{"transaction_type": "SELL", "quantity": int(qty),
+                        "product": "CNC", "order_type": "LIMIT",
+                        "price": round(trigger * 0.995, 2)}],
+        }, VPS_HEADERS)
+        return res.get("gtt_id")
+    except Exception as e:
+        print(f"  ⚠️  GTT place failed for {symbol}: {e}")
+        return None
+
+
 def main():
     print("=== India Cancel 3:15 PM ===")
     queue = get_placed_queue()
@@ -135,6 +154,22 @@ def main():
                     "allocation_inr": round(fill_price * fill_qty, 2),
                     "buy_date":       time.strftime("%Y-%m-%d"),
                 })
+                # Backstop the stop-loss GTT too — the postback normally places
+                # it on fill; if it missed (no gtt_id yet), place it here so the
+                # monthly position is never left unprotected.
+                trail_atr = entry.get("trail_atr")
+                if trail_atr and not entry.get("gtt_id"):
+                    tsl_stop = round(fill_price - float(trail_atr), 2)
+                    gid = place_sell_gtt(symbol, tsl_stop, fill_qty, fill_price)
+                    if gid:
+                        update_queue([{"ticker": ticker, "gtt_id": gid,
+                                       "tsl_stop": tsl_stop, "trail_high": fill_price,
+                                       "stop_qty": fill_qty}])
+                        msgs.append(f"🛡 {symbol}: stop GTT placed @ ₹{tsl_stop}")
+                    else:
+                        msgs.append(f"🚨 {symbol}: stop GTT FAILED — set manually at ₹{tsl_stop}")
+                elif not trail_atr:
+                    msgs.append(f"⚠️ {symbol}: no trail_atr — set a stop manually on Kite")
             continue
 
         if kite_status in ("CANCELLED", "REJECTED"):
