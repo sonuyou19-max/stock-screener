@@ -177,25 +177,31 @@ def protect_fill(entry: dict, symbol: str, fill_price: float, fill_qty: int) -> 
     return f"stop+targets GTTs placed for {fill_qty}sh ✅"
 
 
-def main():
-    print("=== Swing Cancel 2:00 PM ===")
+def main(reconcile_only=False):
+    # reconcile_only: process FILLS (move to positions + arm GTTs) but leave
+    # unfilled orders alone — safe to run every 30 min so a fill doesn't sit
+    # stuck as "order placed" / unprotected until the 2 PM cancel run. The
+    # full 2 PM run also cancels the still-unfilled limits.
+    label = "Swing Fill Reconcile" if reconcile_only else "Swing Cancel 2:00 PM"
+    print(f"=== {label} ===")
     queue = get_placed_queue()
     if not queue:
-        print("No order_placed entries — nothing to cancel.")
-        _tg("⏸ <b>Swing Cancel 2:00 PM</b>\nNo open orders to cancel.")
+        print("No order_placed entries.")
+        if not reconcile_only:            # stay quiet on the frequent runs
+            _tg(f"⏸ <b>{label}</b>\nNo open orders to cancel.")
         return
 
     try:
         open_orders = get_open_orders()
         print(f"Fetched {len(open_orders)} orders from Zerodha")
     except Exception as e:
-        msg = f"❌ <b>Swing Cancel 2:00 PM</b>\nCould not fetch orders: {e}"
+        msg = f"❌ <b>{label}</b>\nCould not fetch orders: {e}"
         print(f"⚠️  {msg}")
         _tg(msg)
         return
 
     cancelled, filled, errors = [], [], []
-    msgs = [f"⏸ <b>Swing Cancel 2:00 PM</b> ({len(queue)} to check)"]
+    msgs = [f"⏸ <b>{label}</b> ({len(queue)} to check)"]
 
     for entry in queue:
         ticker   = entry.get("ticker", "")
@@ -208,6 +214,8 @@ def main():
 
         order = open_orders.get(order_id)
         if not order:
+            if reconcile_only:
+                continue   # can't confirm fill without the order — wait for 2 PM
             # Not in today's order book — might have been filled earlier
             msg = f"ℹ️ {symbol}: order #{order_id} not found — may have filled already"
             print(msg)
@@ -240,6 +248,11 @@ def main():
             msg = f"ℹ️ {symbol}: status={kite_status}, leaving as-is"
             print(msg)
             msgs.append(msg)
+            continue
+
+        # Still unfilled. On the frequent reconcile runs, leave it be —
+        # only the 2 PM run cancels unfilled limits.
+        if reconcile_only:
             continue
 
         try:
@@ -275,9 +288,17 @@ def main():
                f"✅ {len(filled)} filled/not-found · "
                f"❌ {len(errors)} errors")
     msgs.append(summary)
-    _tg("\n".join(msgs))
+    # On reconcile runs, only ping Telegram if something actually filled —
+    # otherwise stay silent (it runs every 30 min).
+    if not reconcile_only or filled:
+        _tg("\n".join(msgs))
     print(summary)
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+    ap = argparse.ArgumentParser(description="Swing order cancel / fill reconcile")
+    ap.add_argument("--reconcile", action="store_true",
+                    help="process fills only (arm GTTs, move to positions); don't cancel unfilled")
+    args = ap.parse_args()
+    main(reconcile_only=args.reconcile)
