@@ -107,6 +107,7 @@ _us_history_cache:  list = []
 _swing_candidates_cache: dict = {}   # today's scan candidates
 _swing_live_cache:       list = []   # open swing positions
 _swing_history_cache:    list = []   # closed swing trades
+_swing_us_candidates_cache: dict = {}   # US swing scan candidates (manual execution)
 
 PERF_FILE      = os.path.join(os.getenv("DATA_DIR", "/data"), "performance_history.json")
 HISTORY_FILE   = os.path.join(os.getenv("DATA_DIR", "/data"), "trade_history.json")
@@ -122,6 +123,7 @@ REBALANCE_FILE        = os.path.join(os.getenv("DATA_DIR", "/data"), "rebalance_
 _rebalance_cache: dict = {}
 
 SWING_CANDIDATES_FILE = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_candidates.json")
+SWING_US_CANDIDATES_FILE = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_candidates_us.json")
 SWING_LIVE_FILE       = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_live.json")
 SWING_HISTORY_FILE    = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_history.json")
 SWING_QUEUE_FILE      = os.path.join(os.getenv("DATA_DIR", "/data"), "swing_queue.json")
@@ -1353,6 +1355,47 @@ def swing_candidates_upload():
             return jsonify({"error": f"disk write failed: {_last_save_error}",
                             "candidates_received": count}), 507
         _swing_candidates_cache = data
+        return jsonify({"status": "ok", "candidates": count})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── GET /swing/us/candidates ─────────────────────────────────────
+@app.route("/swing/us/candidates", methods=["GET", "OPTIONS"])
+def swing_us_candidates_get():
+    """Today's US swing trade candidates from swing_scanner_us.py
+    (manual execution — recommendations only, no queue/order plumbing)."""
+    global _swing_us_candidates_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    # Always read from disk — same 2-worker cache-coherence rule as the
+    # India candidates endpoint.
+    loaded = _load_json(SWING_US_CANDIDATES_FILE)
+    if loaded:
+        _swing_us_candidates_cache = loaded
+    return jsonify(_sanitise(_swing_us_candidates_cache or {
+        "candidates": [],
+        "generated_at": None,
+        "total_candidates": 0,
+    }))
+
+
+# ── POST /swing/us/candidates/upload ─────────────────────────────
+@app.route("/swing/us/candidates/upload", methods=["POST", "OPTIONS"])
+def swing_us_candidates_upload():
+    """swing_scanner_us.py posts today's candidates here."""
+    global _swing_us_candidates_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        data = request.get_json(force=True)
+        if "type" in data and "payload" in data:
+            data = data["payload"]
+        count = len(data.get("candidates", []))
+        if not _save_json(SWING_US_CANDIDATES_FILE, data):
+            return jsonify({"error": f"disk write failed: {_last_save_error}",
+                            "candidates_received": count}), 507
+        _swing_us_candidates_cache = data
         return jsonify({"status": "ok", "candidates": count})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

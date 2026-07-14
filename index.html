@@ -730,6 +730,18 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
       </div>
       <span class="snap-arrow">›</span>
     </button>
+    <button class="snap-card swing" onclick="showSwingUS()">
+      <span class="snap-emoji">🌊</span>
+      <div style="flex:1;min-width:0">
+        <div class="snap-mkt">US Swing</div>
+        <div class="snap-day" id="snapSwingUsScan">Waiting for scan…</div>
+      </div>
+      <div style="text-align:right">
+        <div class="snap-pnl neu" id="snapSwingUsTop">—</div>
+        <div class="snap-pct neu">Manual execution</div>
+      </div>
+      <span class="snap-arrow">›</span>
+    </button>
   </div>
 
   <!-- AI INSIGHTS -->
@@ -870,6 +882,24 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
   <div class="pb"></div>
 </div>
 
+<!-- ══════════ US SWING VIEW (manual execution) ══════════ -->
+<div id="swingUsView" class="view">
+  <div class="back-bar">
+    <button class="back-btn" onclick="showHome()">‹</button>
+    <span style="font-size:18px;">🌊</span>
+    <span class="back-ttl">Swing Trading — US S&P 500</span>
+  </div>
+  <div class="stats-row">
+    <div class="stat-c"><div class="stat-lbl">Today's Picks</div><div class="stat-val" id="swus-candCount">—</div><div class="stat-sub" id="swus-scanTime">Run scanner first</div></div>
+    <div class="stat-c"><div class="stat-lbl">Market Regime</div><div class="stat-val" id="swus-regime">—</div><div class="stat-sub" id="swus-regimeSub">S&P 500 vs 50-DMA</div></div>
+    <div class="stat-c"><div class="stat-lbl">Targets</div><div class="stat-val">+10/15%</div><div class="stat-sub">≤ 10 trading days</div></div>
+  </div>
+  <div style="padding:10px 20px 0;font-size:11.5px;color:var(--text3);line-height:1.5;">✍️ <b>Manual execution.</b> Nothing is auto-placed for US swings — when you enter, set the stop-loss and both targets on your broker yourself (sell 50% at T1, rest at T2, hard stop below).</div>
+  <div class="sec"><span class="sec-lbl">Today's Candidates</span><span class="sec-line"></span></div>
+  <div style="padding:0 20px;" id="swUsCandidates"><div class="spin-wrap"><div class="spinner"></div></div></div>
+  <div class="pb"></div>
+</div>
+
 </div><!-- #app -->
 
 <script>
@@ -899,7 +929,7 @@ async function fd(ep,retries=1){
 /* ═══ ROUTING ═══ */
 let _cv='home';
 function showView(id){
-  ['homeView','indView','usView','swingView'].forEach(v=>{const el=document.getElementById(v);if(el)el.classList.remove('active');});
+  ['homeView','indView','usView','swingView','swingUsView'].forEach(v=>{const el=document.getElementById(v);if(el)el.classList.remove('active');});
   const el=document.getElementById(id);el.classList.add('active');
   _cv=id;window.scrollTo(0,0);
 }
@@ -909,10 +939,11 @@ function showUS(){showView('usView');if(!_uL){loadUS();_uL=true;}else fetchUsPri
 function refreshAll(){
   _lastRefresh=Date.now();
   document.getElementById('lastUpdated').textContent='Refreshing…';
-  fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();loadAiInsights();loadBrokerStatus();
+  fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();loadSwingUsSnap();loadAiInsights();loadBrokerStatus();
   if(_cv==='indView')loadIndia();
   else if(_cv==='usView')loadUS();
   else if(_cv==='swingView')loadSwing();
+  else if(_cv==='swingUsView')loadSwingUS();
 }
 
 /* ═══ AUTO-REFRESH ═══
@@ -1016,7 +1047,7 @@ function _swPollScan(startGen){
 function initApp(){
   showView('homeView');
   document.getElementById('lastUpdated').textContent='Connecting…';
-  fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();loadAiInsights();loadBrokerStatus();
+  fetchMarket();fetchIndSnap();fetchUsSnap();loadSwingSnap();loadSwingUsSnap();loadAiInsights();loadBrokerStatus();
   setInterval(fetchMarket,5*60*1000);
   // Auto-retry home snaps once after 8s in case Railway was cold-starting
   setTimeout(()=>{
@@ -3016,7 +3047,7 @@ function prevBizDay(d){
 
 /* ═══ SWING ROUTING ═══ */
 function showSwing(){
-  ['homeView','indView','usView','swingView'].forEach(v=>{
+  ['homeView','indView','usView','swingView','swingUsView'].forEach(v=>{
     const el=document.getElementById(v);
     if(el) el.classList.remove('active');
   });
@@ -3024,6 +3055,10 @@ function showSwing(){
   el.classList.add('active');
   _cv='swingView'; window.scrollTo(0,0);
   loadSwing();  // always reload — candidates change daily
+}
+function showSwingUS(){
+  showView('swingUsView');
+  loadSwingUS();  // always reload — candidates change daily
 }
 
 /* ═══ SWING DATA LOADER ═══ */
@@ -3465,6 +3500,149 @@ function renderSwingCandidates(){
           : `<button class="sc-act-btn" style="background:transparent;border:1.5px solid var(--green);color:var(--green)" onclick="queueSwingTrade('${c.ticker}')">Queue 9AM</button>`
         }
         <button class="sc-act-btn sc-act-enter" onclick="enterSwingTrade('${c.ticker}')">Enter Now</button>
+      </div>
+    </div>`;
+  }).join('')}</div>`;
+}
+
+/* ═══ US SWING (manual execution) ═══
+   Recommendations only — no queue, no auto entry, no GTTs. The user
+   places the order + stop + targets on their broker themselves. */
+let _swUsCandidates=null;
+async function loadSwingUS(){
+  _swUsCandidates=await fd('/swing/us/candidates');
+  renderSwingUsStats();
+  renderSwingUsCandidates();
+}
+async function loadSwingUsSnap(){
+  const cands=await fd('/swing/us/candidates');
+  const list=cands?.candidates||[];
+  const count=cands?.total_candidates||list.length||0;
+  const scanDate=cands?.scan_date||cands?.generated_at||'';
+  const scanEl=document.getElementById('snapSwingUsScan');
+  if(scanEl)scanEl.textContent=
+    `${count>0?count+' picks':'No picks'}${scanDate?' · '+scanDate.split(' ')[0].split('T')[0]:''}`;
+  const topEl=document.getElementById('snapSwingUsTop');
+  if(topEl)topEl.textContent=list.length?list[0].ticker:'—';
+}
+function renderSwingUsStats(){
+  const count=_swUsCandidates?.total_candidates||_swUsCandidates?.candidates?.length||0;
+  document.getElementById('swus-candCount').textContent=count||'—';
+  const scanAt=_swUsCandidates?.generated_at||_swUsCandidates?.scan_date||'';
+  const scanDate=scanAt?scanAt.split(' ')[0].split('T')[0]:'';
+  const today=new Date().toISOString().split('T')[0];
+  const isStale=scanDate&&scanDate!==today&&scanDate!==prevBizDay(new Date());
+  document.getElementById('swus-scanTime').textContent=
+    scanDate?`${isStale?'⚠️ Stale — ':''}Scanned ${scanDate}`:'Run scanner first';
+  document.getElementById('swus-candCount').style.color=isStale?'var(--red)':'';
+  const reg=_swUsCandidates?.market_regime||{};
+  const regEl=document.getElementById('swus-regime');
+  if(reg.bullish===true){regEl.textContent='🟢 Bull';}
+  else if(reg.bullish===false){regEl.textContent='🔴 Bear';}
+  else{regEl.textContent='—';}
+  if(reg.pct_above_dma!=null)
+    document.getElementById('swus-regimeSub').textContent=
+      `S&P 500 ${reg.pct_above_dma>=0?'+':''}${reg.pct_above_dma}% vs 50-DMA`;
+}
+function renderSwingUsCandidates(){
+  const el=document.getElementById('swUsCandidates');
+  const candidates=_swUsCandidates?.candidates||[];
+  const scanD=(_swUsCandidates?.scan_date||_swUsCandidates?.generated_at||'').split(' ')[0].split('T')[0];
+  const todayD=new Date().toISOString().split('T')[0];
+  const stale=scanD&&scanD!==todayD&&scanD!==prevBizDay(new Date());
+  if(!candidates.length){
+    el.innerHTML=`<div class="empty" style="padding:0 20px">No US candidates today.<br><span style="font-size:11px;color:var(--text3)">Run swing_scanner_us.py after US market close.</span></div>`;
+    return;
+  }
+  const SIG_LABELS={momentum:'Momentum',volume:'Volume',macd:'MACD',sentiment:'Sector Sentiment',rsi:'RSI',bollinger:'Bollinger',market:'Market Trend'};
+  const usd=(v,d=2)=>'$'+(v||0).toLocaleString('en-US',{minimumFractionDigits:d,maximumFractionDigits:d});
+  el.innerHTML=`<div class="swing-carousel">${candidates.map((c,i)=>{
+    const sigs=c.signals||{};
+    const conv=c.conviction||'LOW';
+    const convCls=conv==='HIGH'?'HOLD':conv==='MEDIUM'?'TRIM':'';
+    const limitP=c.limit_price;
+    const key=(c.ticker||'').replace('.','_').replace('-','_');
+    const sigRows=Object.entries(sigs).map(([k,v])=>({k,...v}))
+      .sort((a,b)=>(b.contribution||0)-(a.contribution||0))
+      .map(s=>{
+        const strength=Math.max(0,Math.min(100,s.strength||0));
+        const contrib=(s.contribution!=null?s.contribution:0);
+        const col=s.pass?'var(--green)':(strength>=50?'var(--gold)':'var(--text3)');
+        return`<div class="sc-sig-row">
+          <div class="sc-sig-top"><span class="sc-sig-name">${SIG_LABELS[s.k]||s.k}</span><span class="sc-sig-contrib" style="color:${col}">+${contrib.toFixed(1)}</span></div>
+          <div class="sc-sig-bar"><div class="sc-sig-bar-fill" style="width:${strength}%;background:${col}"></div></div>
+          ${s.note?`<div class="sc-sig-note">${s.note}</div>`:''}
+        </div>`;
+      }).join('');
+    return`<div class="sw-cand-card stock-card">
+      <div class="sc-header">
+        <div style="min-width:0">
+          <a href="https://finance.yahoo.com/quote/${c.ticker}" target="_blank" rel="noopener" style="text-decoration:none;">
+            <span class="sc-tkr">${c.ticker||''}</span>
+          </a><span class="sc-rb-badge ${convCls}">${conv}</span>
+          <div class="sc-name">${c.name||''}</div>
+          ${stale?`<div style="font-size:9.5px;color:var(--red);margin-top:3px;">Stale scan — ${scanD}</div>`:''}
+        </div>
+        <div style="text-align:right;flex-shrink:0">
+          <div class="sc-score-num ${c.score>=(c.max_score||100)*.85?'high':c.score>=(c.max_score||100)*.6?'mid':'low'}">${c.score||0}<span style="font-size:10px;font-weight:400;color:var(--text3)">/${c.max_score||100}</span></div>
+          <div class="sc-score-lbl">Score</div>
+        </div>
+      </div>
+
+      <div class="sc-metrics" style="margin-top:14px">
+        <div><div class="sc-m-lbl">Entry (limit)</div><div class="sc-m-val">${usd(c.optimal_entry||c.current_price)}</div><div style="font-size:9px;color:var(--text3);margin-top:1px">scan ${usd(c.current_price)}</div></div>
+        <div><div class="sc-m-lbl">Max entry</div><div class="sc-m-val" style="color:var(--blue)">${limitP?usd(limitP):'—'}</div></div>
+        <div><div class="sc-m-lbl">R/R</div><div class="sc-m-val">${(c.rr_ratio||0).toFixed(1)}×</div></div>
+      </div>
+
+      <div class="sc-key-levels">
+        <div class="sc-kl stop"><div class="sc-kl-lbl">Stop · −${c.stop_pct||0}%</div><div class="sc-kl-val">${usd(c.stop_loss)}</div></div>
+        <div class="sc-kl tgt"><div class="sc-kl-lbl">Target 1 · +10%</div><div class="sc-kl-val">${c.target1?usd(c.target1):'—'}</div></div>
+      </div>
+
+      <button class="sc-details-btn" onclick="toggleScDetails('det-swusc-${key}',this)">Details <span class="sc-details-caret">▾</span></button>
+      <div class="sc-details" id="det-swusc-${key}">
+        ${c.sector?`<div class="sc-sector-tag">${(c.sector||'').slice(0,30)}</div>`:''}
+        <div class="sc-levels-block">
+          ${limitP?`<div class="sc-level-row">
+            <div style="flex:1">
+              <div class="sc-level-lbl">Entry limit — skip if gaps above</div>
+              <div class="sc-level-val" style="color:var(--blue)">${usd(limitP)}</div>
+            </div>
+          </div>`:''}
+          <div class="sc-level-row stop-row">
+            <div style="flex:1">
+              <div class="sc-level-lbl">Stop-Loss (structural) — set on broker</div>
+              <div class="sc-level-val stop-val">${usd(c.stop_loss)} <span class="sc-level-pct">−${c.stop_pct||0}%</span></div>
+            </div>
+          </div>
+          ${c.target1?`<div class="sc-level-row t1-row">
+            <div style="flex:1">
+              <div class="sc-level-lbl">Target 1 — sell 50%</div>
+              <div class="sc-level-val t-val">${usd(c.target1)} <span class="sc-level-pct">+10%</span></div>
+            </div>
+          </div>`:''}
+          ${c.target2?`<div class="sc-level-row t2-row">
+            <div style="flex:1">
+              <div class="sc-level-lbl">Target 2 — sell 50%</div>
+              <div class="sc-level-val t-val">${usd(c.target2)} <span class="sc-level-pct">+15%</span></div>
+            </div>
+          </div>`:''}
+        </div>
+        <div class="sc-metrics">
+          <div><div class="sc-m-lbl">RSI(14)</div><div class="sc-m-val">${(c.rsi||0).toFixed(0)}</div></div>
+          <div><div class="sc-m-lbl">Vol surge</div><div class="sc-m-val">${(c.vol_ratio||0).toFixed(1)}×</div></div>
+          <div><div class="sc-m-lbl">ATR</div><div class="sc-m-val">${(c.atr_pct||0).toFixed(1)}%</div></div>
+        </div>
+        <div class="sc-why-block">
+          <div class="sc-why-title">Score breakdown · ${c.score||0}/${c.max_score||100}</div>
+          ${sigRows}
+        </div>
+        ${c.entry_note?`<div style="font-size:10.5px;color:var(--text3);margin-top:8px;line-height:1.4;">${c.entry_note}</div>`:''}
+      </div>
+
+      <div class="sc-actions">
+        <span style="font-size:11px;font-weight:600;color:var(--text3);padding:0 4px">✍️ Manual — place order + stop + targets on your broker</span>
       </div>
     </div>`;
   }).join('')}</div>`;
