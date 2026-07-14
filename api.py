@@ -2266,7 +2266,28 @@ def kite_postback():
         return jsonify({}), 200
 
     try:
-        data      = request.get_json(silent=True) or request.form.to_dict()
+        # Zerodha POSTs a JSON body, but the parse used to rely on
+        # get_json(silent=True), which returns None unless the Content-Type is
+        # exactly application/json. Kite's postbacks arrived with a different
+        # (or missing) Content-Type, so every field fell back to its "?"
+        # default and `status == "COMPLETE"` never matched → fills were never
+        # processed. Force-parse the body regardless of Content-Type, then
+        # fall back to raw-body JSON and finally form-encoded.
+        data = request.get_json(force=True, silent=True)
+        if not data and request.data:
+            try:
+                data = json.loads(request.data.decode("utf-8"))
+            except Exception:
+                data = None
+        if not data:
+            data = request.form.to_dict()
+        if not isinstance(data, dict):
+            data = {}
+
+        if not data:
+            print(f"⚠️  Postback with unparseable body — "
+                  f"Content-Type={request.content_type!r} "
+                  f"raw={request.data[:200]!r}")
 
         # Verify Zerodha's checksum, but FAIL OPEN: a mismatch (e.g. a
         # timestamp-format quirk in the checksum formula) must not silently
