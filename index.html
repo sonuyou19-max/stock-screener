@@ -2385,7 +2385,13 @@ function queueSwingTrade(ticker){
   const opt=c.optimal_entry||c.current_price||0;
   const gate=c.limit_price||(opt*1.02);
   const trailRs=(c.trailing_stop||0).toFixed?.(2)||(c.trailing_stop||'—');
+  // Scan provenance — at 9:35 PM the visible scan is still LAST night's
+  // (tonight's 11 PM cron hasn't run), so its close can differ from
+  // today's close. Show the date so that's never a surprise.
+  const qswScanD=(_swCandidates?.scan_date||_swCandidates?.generated_at||'').split(' ')[0].split('T')[0];
+  const qswToday=new Date().toISOString().split('T')[0];
   document.getElementById('qswEntryInfo').innerHTML=
+    (qswScanD?`<strong>Scan:</strong> ${qswScanD}${qswScanD===qswToday?'':' (prices are that day’s close — new scan tonight 11 PM)'}<br>`:'')+
     `<strong>Optimal entry:</strong> ₹${parseFloat(opt).toFixed(2)}<br>`+
     `<strong>Entry basis:</strong> ${basisLabel}<br>`+
     `<strong>Max entry gate:</strong> ₹${parseFloat(gate).toFixed(2)} (skip if gap above)<br>`+
