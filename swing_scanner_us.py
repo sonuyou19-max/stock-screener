@@ -205,24 +205,75 @@ NEWS_MAX_AGE_DAYS = 5    # daily job
 # ─────────────────────────────────────────────
 # DATA FETCHER — yfinance only (no Zerodha for US)
 # ─────────────────────────────────────────────
+# Real-money rule: a stock is scored ONLY on validated data. Anything
+# less is classified, counted and reported — and if too much of the
+# universe fails data-quality, the whole scan refuses to publish
+# (see the health gate in run_scan) instead of quietly presenting a
+# thin candidate list as if the market simply had no setups.
+#
+# Failure classes:
+#   placeholder — yfinance's all-NaN candle for the not-yet-traded next
+#                 session (appears on every ticker after midnight UTC).
+#                 Not real data; dropping it is exact, not lossy: signals
+#                 then compute on the last COMPLETED trading day, which
+#                 is what an after-close scan is defined on anyway.
+#   corrupt     — NaN inside real price history. Indicators computed
+#                 across a hole cannot be trusted, and inventing prices
+#                 (interpolation) to force a score would fabricate the
+#                 very signals real money rides on → never scored.
+#   stale       — ticker's last bar is older than the market's last
+#                 trading day (feed lag/halt) → the "current price" the
+#                 levels would be anchored to isn't current → not scored.
+#   fetch_fail  — network/API error or empty response.
+#   short_hist  — <60 bars (recent IPOs); benign, listed separately.
+
+_DATA_STATS: dict = {}
+
+def _reset_data_stats():
+    global _DATA_STATS
+    _DATA_STATS = {"placeholder_rows": 0, "corrupt": [], "stale": [],
+                   "fetch_fail": [], "short_hist": []}
+
+_reset_data_stats()
+
+PRICE_COLS = ["Open", "High", "Low", "Close"]
+
 
 def fetch_ohlcv(ticker: str) -> Optional[pd.DataFrame]:
-    """Fetch ~1 year of daily OHLCV for signal calculation."""
+    """Fetch ~1 year of daily OHLCV, validated. Returns None (and records
+    the reason in _DATA_STATS) unless every bar we score on is real."""
     try:
         hist = yf.Ticker(ticker).history(period="1y")
-        if hist.empty:
-            return None
-        # yfinance can append a trailing row with NaN prices (an empty
-        # placeholder for the next session, seen after midnight UTC). A
-        # single NaN close poisons MACD/Bollinger for the whole scan and
-        # NaN comparisons silently pass the hard gates — drop such rows
-        # so signals always compute on the last REAL trading day.
-        hist = hist.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
-        if len(hist) < 60:
-            return None
-        return hist
-    except Exception:
+    except Exception as e:
+        _DATA_STATS["fetch_fail"].append(ticker)
+        print(f"  ⚠️  {ticker}: fetch failed — {e}")
         return None
+    if hist is None or hist.empty:
+        _DATA_STATS["fetch_fail"].append(ticker)
+        return None
+
+    # 1. Placeholder rows: ALL price fields NaN (no trade data at all).
+    all_nan = hist[PRICE_COLS].isna().all(axis=1)
+    if all_nan.any():
+        _DATA_STATS["placeholder_rows"] += int(all_nan.sum())
+        hist = hist[~all_nan]
+
+    # 2. Corrupt rows: partial NaN inside real history — refuse to score.
+    if hist[PRICE_COLS].isna().any().any():
+        _DATA_STATS["corrupt"].append(ticker)
+        print(f"  ⚠️  {ticker}: NaN inside price history — data unusable, not scored")
+        return None
+    # Volume feeds the surge signal + liquidity gate from the last ~30
+    # bars; a hole there corrupts both.
+    if hist["Volume"].iloc[-30:].isna().any():
+        _DATA_STATS["corrupt"].append(ticker)
+        print(f"  ⚠️  {ticker}: NaN volume in last 30 bars — not scored")
+        return None
+
+    if len(hist) < 60:
+        _DATA_STATS["short_hist"].append(ticker)
+        return None
+    return hist
 
 
 # ─────────────────────────────────────────────
@@ -457,10 +508,10 @@ def fetch_market_regime() -> dict:
     the macro-tailwind role FII/DII flow plays in the India scanner."""
     try:
         hist = yf.Ticker("^GSPC").history(period="6mo")
-        # yfinance can return a trailing row with NaN Close (partial/holiday
-        # session); a NaN here poisons every stock's composite score — and
-        # NaN < floor is False, so NaN-scored stocks then BYPASS the score
-        # gate entirely. Drop NaNs and verify finiteness before using.
+        # Same validation as fetch_ohlcv: drop the all-NaN placeholder
+        # candle and verify finiteness — a NaN here would poison every
+        # stock's composite score, and NaN < floor is False, so NaN
+        # scores would BYPASS the score gate entirely.
         closes = hist["Close"].dropna() if not hist.empty else hist
         if len(closes) < 50:
             raise ValueError("insufficient index history")
@@ -475,10 +526,13 @@ def fetch_market_regime() -> dict:
             "bullish":    close > dma50,
             "pct_above_dma": round(pct_above, 2),
             "strength":   round(_ramp(pct_above, -4, 4), 1),
+            # The market's last completed trading day — the freshness
+            # reference every ticker is checked against.
+            "last_bar":   str(closes.index[-1].date()),
         }
     except Exception as e:
         return {"spx_close": None, "dma_50": None, "bullish": True,
-                "pct_above_dma": 0.0, "strength": 50.0,
+                "pct_above_dma": 0.0, "strength": 50.0, "last_bar": None,
                 "note": f"regime check failed ({e}) — defaulting to bullish/neutral"}
 
 
@@ -688,6 +742,18 @@ def analyse_stock(ticker: str, market: dict, sentiment: dict,
     hist = fetch_ohlcv(ticker)
     if hist is None:
         return None
+
+    # Freshness: the last bar must be the market's last trading day.
+    # Recommending an entry anchored to a price from an older session is
+    # exactly the kind of silent error a real-money system cannot carry.
+    ref_day = market.get("last_bar")
+    if ref_day:
+        last_bar = str(hist.index[-1].date())
+        if last_bar < ref_day:
+            _DATA_STATS["stale"].append(ticker)
+            print(f"  ⚠️  {ticker}: last bar {last_bar} older than market "
+                  f"day {ref_day} — stale feed, not scored")
+            return None
 
     liquid, _liq_reason = passes_liquidity(hist)
     if not liquid:
@@ -951,8 +1017,12 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
                 print(f"    LLM {bkt}: {v.get('verdict')} ({v.get('confidence','?')}){excl}")
 
     # ── Step 3: Scan ──────────────────────────
+    _reset_data_stats()
     candidates, scanned, sig_fail = [], 0, 0
     print(f"\n  OHLCV source: yfinance")
+    if regime.get("last_bar"):
+        print(f"  Market last trading day: {regime['last_bar']} "
+              f"(freshness reference for every ticker)")
     print(f"  Scanning {len(tickers)} stocks...\n")
 
     for ticker in tickers:
@@ -997,11 +1067,45 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
         if len(top) >= max_candidates:
             break
 
-    # ── Step 5: Report ────────────────────────
+    # ── Step 5: Report — including data-quality accounting, so "no
+    # candidates" is never ambiguous between "no setups" and "bad feed" ──
+    ds = _DATA_STATS
+    dq_failed = len(ds["corrupt"]) + len(ds["stale"]) + len(ds["fetch_fail"])
     print(f"\n{'='*58}")
     print(f"  SCAN COMPLETE")
     print(f"  Scanned: {scanned} | Candidates: {len(candidates)} | Showing: {len(top)}")
+    print(f"  Data quality: {dq_failed} tickers unusable "
+          f"(corrupt {len(ds['corrupt'])}, stale {len(ds['stale'])}, "
+          f"fetch-fail {len(ds['fetch_fail'])}) | "
+          f"short-history {len(ds['short_hist'])} | "
+          f"placeholder rows dropped {ds['placeholder_rows']}")
+    for cls in ("corrupt", "stale", "fetch_fail"):
+        if ds[cls]:
+            sample = ", ".join(ds[cls][:8]) + ("…" if len(ds[cls]) > 8 else "")
+            print(f"    {cls}: {sample}")
     print(f"{'='*58}")
+
+    # ── Health gate: if a large share of the universe failed on DATA
+    # (not on signals), the feed is broken — publishing a thin list would
+    # misrepresent "broken feed" as "market has no setups". Keep
+    # yesterday's candidates on the dashboard (already marked stale
+    # there) and alert loudly instead.
+    universe_n = max(len(tickers), 1)
+    feed_unhealthy = dq_failed > 0.30 * universe_n
+    if feed_unhealthy:
+        msg = (f"data feed unhealthy: {dq_failed}/{universe_n} tickers "
+               f"unusable (corrupt {len(ds['corrupt'])}, stale {len(ds['stale'])}, "
+               f"fetch-fail {len(ds['fetch_fail'])})")
+        print(f"\n  🚨 {msg}")
+        print(f"  🚨 NOT publishing this scan — fix the data source and re-run.")
+        if not test_mode:
+            _scanner_tg(
+                f"🚨 <b>US swing scan NOT published</b>\n{msg}\n"
+                f"The dashboard keeps the previous scan (marked stale). "
+                f"Re-run after checking yfinance on the VPS:\n"
+                f"<code>./run_swing_scanner_us.sh --test</code>"
+            )
+        return top
 
     for i, c in enumerate(top, 1):
         print(f"\n  {'─'*54}")
@@ -1023,9 +1127,12 @@ def run_scan(test_mode: bool = False, single_ticker: str = None) -> list:
                   f"= {sig.get('contribution', 0):.1f}   {sig['note']}")
 
     # ── Step 6: Save + alert ──────────────────
+    dq_note = (f"Data: {scanned}/{len(tickers)} scored cleanly"
+               + (f", {dq_failed} unusable" if dq_failed else "")
+               + (f", {len(ds['short_hist'])} short-history" if ds['short_hist'] else ""))
     if not test_mode:
         save_candidates(top, regime)
-        send_telegram_alert(top)
+        send_telegram_alert(top, dq_note)
 
     return top
 
@@ -1111,7 +1218,7 @@ def save_candidates(candidates: list, regime: dict = None):
 # TELEGRAM ALERT
 # ─────────────────────────────────────────────
 
-def send_telegram_alert(candidates: list):
+def send_telegram_alert(candidates: list, dq_note: str = ""):
     """Send daily US swing scan summary to Telegram."""
     token   = os.getenv("TELEGRAM_BOT_TOKEN", "")
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -1125,6 +1232,7 @@ def send_telegram_alert(candidates: list):
             f"🇺🇸 *US Swing Scanner — {date.today().strftime('%d %b %Y')}*\n\n"
             f"No swing candidates found today.\n"
             f"Market conditions may not be favourable."
+            + (f"\n\n_{dq_note}_" if dq_note else "")
         )
     else:
         lines = [f"🇺🇸 *US Swing Candidates — {date.today().strftime('%d %b %Y')}*\n"]
@@ -1152,6 +1260,8 @@ def send_telegram_alert(candidates: list):
 
         lines.append(f"\n⏱ Hold up to {SWING_MAX_DAYS} trading days")
         lines.append("✍️ MANUAL: place the order, stop and targets on your broker yourself")
+        if dq_note:
+            lines.append(f"_{dq_note}_")
         msg = "\n".join(lines)
 
     if len(msg) > 4096:
