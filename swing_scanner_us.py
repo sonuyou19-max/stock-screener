@@ -210,7 +210,15 @@ def fetch_ohlcv(ticker: str) -> Optional[pd.DataFrame]:
     """Fetch ~1 year of daily OHLCV for signal calculation."""
     try:
         hist = yf.Ticker(ticker).history(period="1y")
-        if hist.empty or len(hist) < 60:
+        if hist.empty:
+            return None
+        # yfinance can append a trailing row with NaN prices (an empty
+        # placeholder for the next session, seen after midnight UTC). A
+        # single NaN close poisons MACD/Bollinger for the whole scan and
+        # NaN comparisons silently pass the hard gates — drop such rows
+        # so signals always compute on the last REAL trading day.
+        hist = hist.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+        if len(hist) < 60:
             return None
         return hist
     except Exception:
