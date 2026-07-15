@@ -645,7 +645,7 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
         <span>Entry Price (₹)</span>
         <span id="qswWheelVal" style="font-size:15px;font-weight:700;color:var(--green);text-transform:none;letter-spacing:0"></span>
       </div>
-      <div class="pw-row">
+      <div class="pw-row" id="qswWheelRow">
         <button class="pw-btn" type="button" onclick="_qswNudge(-1)">−</button>
         <div class="pw-outer">
           <div class="price-wheel" id="qswWheel"><div class="pw-track" id="qswWheelTrack"></div></div>
@@ -654,7 +654,7 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
         </div>
         <button class="pw-btn" type="button" onclick="_qswNudge(1)">+</button>
       </div>
-      <div class="pw-limits"><span>◀ Optimal ₹<span id="qswWheelMin"></span></span><span>Scan close ₹<span id="qswWheelMax"></span> ▶</span></div>
+      <div class="pw-limits" id="qswWheelLimits"><span>◀ Optimal ₹<span id="qswWheelMin"></span></span><span>Scan close ₹<span id="qswWheelMax"></span> ▶</span></div>
       <div id="qswWheelNote" style="font-size:11px;color:var(--text3);margin-top:3px;min-height:15px"></div>
     </div>
     <div class="modal-lbl">Quantity (shares)</div>
@@ -2414,15 +2414,26 @@ function _qswInitWheel(c){
   if(_qswMax<_qswMin){const t=_qswMin;_qswMin=_qswMax;_qswMax=t;}
   _qswPrice=_qswMin;
   const wrap=document.getElementById('qswWheelWrap');
+  const row=document.getElementById('qswWheelRow');
+  const limits=document.getElementById('qswWheelLimits');
   document.getElementById('qswWheelMin').textContent=_qswMin.toFixed(2);
   document.getElementById('qswWheelMax').textContent=_qswMax.toFixed(2);
   if(_qswMax-_qswMin<PW_TICK){
-    // optimal == scan close (entry capped at close) — nothing to choose
-    wrap.style.display='none';
+    // Optimal entry == scan close: the scanner capped the entry at the
+    // close (typical for breakout setups that closed at the broken
+    // level), so the selectable range [optimal … scan close] is empty.
+    // Show the fixed price + the reason instead of vanishing silently.
+    wrap.style.display='block';
+    if(row)row.style.display='none';
+    if(limits)limits.style.display='none';
     _qswSetPrice(_qswMin,false);
+    const note=document.getElementById('qswWheelNote');
+    if(note)note.textContent='Fixed — optimal entry equals the scan close for this setup, so there is no range to choose.';
     return;
   }
   wrap.style.display='block';
+  if(row)row.style.display='flex';
+  if(limits)limits.style.display='flex';
   const wheel=document.getElementById('qswWheel');
   const track=document.getElementById('qswWheelTrack');
   const steps=Math.round((_qswMax-_qswMin)/PW_TICK);
