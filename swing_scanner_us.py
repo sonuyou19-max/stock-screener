@@ -449,11 +449,18 @@ def fetch_market_regime() -> dict:
     the macro-tailwind role FII/DII flow plays in the India scanner."""
     try:
         hist = yf.Ticker("^GSPC").history(period="6mo")
-        if hist.empty or len(hist) < 50:
+        # yfinance can return a trailing row with NaN Close (partial/holiday
+        # session); a NaN here poisons every stock's composite score — and
+        # NaN < floor is False, so NaN-scored stocks then BYPASS the score
+        # gate entirely. Drop NaNs and verify finiteness before using.
+        closes = hist["Close"].dropna() if not hist.empty else hist
+        if len(closes) < 50:
             raise ValueError("insufficient index history")
-        close = float(hist["Close"].iloc[-1])
-        dma50 = float(hist["Close"].rolling(50).mean().iloc[-1])
-        pct_above = (close / dma50 - 1) * 100 if dma50 else 0.0
+        close = float(closes.iloc[-1])
+        dma50 = float(closes.rolling(50).mean().iloc[-1])
+        if not (np.isfinite(close) and np.isfinite(dma50)) or dma50 <= 0:
+            raise ValueError("index data contains NaN")
+        pct_above = (close / dma50 - 1) * 100
         return {
             "spx_close":  round(close, 1),
             "dma_50":     round(dma50, 1),
@@ -773,11 +780,20 @@ def analyse_stock(ticker: str, market: dict, sentiment: dict,
 
     tech_score = sum(1 for s in signals.values() if s["pass"])
 
+    # A NaN strength from any signal (bad index fetch, data glitch) makes
+    # the composite NaN — and since NaN < floor is False, such stocks used
+    # to sail PAST the score gate. Never score a stock on corrupt inputs.
+    bad_sigs = [k for k, s in signals.items()
+                if not np.isfinite(float(s.get("strength") or 0.0))]
+    if bad_sigs:
+        print(f"  ⚠️  {ticker}: non-finite strength in {', '.join(bad_sigs)} — skipped")
+        return None
+
     score = sum(sig["strength"] * sig["weight"] for sig in signals.values())
     for sig in signals.values():
         sig["contribution"] = round(sig["strength"] * sig["weight"], 1)
 
-    if score < min_composite:
+    if not np.isfinite(score) or score < min_composite:
         return None
 
     # Earnings blackout — never hold a 2-week swing through results
