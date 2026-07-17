@@ -154,6 +154,24 @@ def _post(endpoint: str, payload: dict) -> bool:
         return False
 
 
+def _post_json(endpoint: str, payload: dict):
+    """POST and return the parsed JSON response (None on failure).
+    Longer timeout — the reconcile endpoint talks to the VPS/Zerodha."""
+    try:
+        body = json.dumps(payload, default=str).encode("utf-8")
+        req = _urllib.Request(
+            f"{API_URL}{endpoint}",
+            data=body,
+            headers={"Content-Type": "application/json", **_UPLOAD_AUTH},
+            method="POST"
+        )
+        with _urllib.urlopen(req, timeout=30) as r:
+            return json.loads(r.read().decode())
+    except Exception as e:
+        print(f"  ⚠️  POST {endpoint} failed: {e}")
+        return None
+
+
 # ─────────────────────────────────────────────
 # PRICE FETCHER
 # ─────────────────────────────────────────────
@@ -445,6 +463,19 @@ def run_swing_alerter(force: bool = False, test: bool = False):
     if not force and not test and not is_market_hours():
         print(f"  ⏰ Outside market hours — skipping.")
         return
+
+    # ── Reconcile missed SELL fills FIRST ─────────────────────
+    # A GTT exit whose postback was missed leaves the position looking
+    # open forever — and this alerter would keep alerting on a stock we
+    # no longer hold. The API scans today's Zerodha order book for
+    # COMPLETE SELLs on held tickers and processes any not yet in
+    # history (deduped by order_id, so this is safe every run).
+    rec = _post_json("/swing/reconcile-sells", {})
+    if rec and rec.get("processed"):
+        for r_ in rec["processed"]:
+            print(f"  🔄 Missed exit reconciled: {r_.get('symbol')} → {r_.get('outcome')}")
+    elif rec:
+        print("  ✅ Sell reconcile: nothing missing")
 
     # ── Load open swing positions ─────────────────────────────
     positions = _fetch("/swing/live")

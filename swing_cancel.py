@@ -184,6 +184,18 @@ def main(reconcile_only=False):
     # full 2 PM run also cancels the still-unfilled limits.
     label = "Swing Fill Reconcile" if reconcile_only else "Swing Cancel 2:00 PM"
     print(f"=== {label} ===")
+
+    # Reconcile missed SELL fills (GTT exits) before touching the queue —
+    # deduped server-side by order_id, so calling it every run is safe.
+    try:
+        rec = _post(f"{RAILWAY_URL}/swing/reconcile-sells", {}, RAILWAY_HEADERS)
+        done = rec.get("processed") or []
+        if done:
+            print("  🔄 Reconciled missed sell fills: "
+                  + ", ".join(f"{d.get('symbol','?')} ({d.get('outcome','')})" for d in done))
+    except Exception as e:
+        print(f"  ⚠️  Sell reconcile failed (non-fatal): {e}")
+
     queue = get_placed_queue()
     if not queue:
         print("No order_placed entries.")

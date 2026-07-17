@@ -1707,6 +1707,56 @@ def swing_arm_exits():
             if fill_price:
                 results["fill_price"] = fill_price
 
+        # Seed/refresh the QUEUE record for this position. SELL-fill
+        # processing matches sells against queue entries with status
+        # 'filled'; Enter-Now positions used to have no queue record at
+        # all, so their exits were silently ignored — the position stayed
+        # 'open' forever and leftover GTTs were never cancelled (the
+        # NYKAA trailing-stop exit). The live-position fallback in
+        # _process_swing_sell also covers this; the queue record makes
+        # the position visible to every queue-based flow as well.
+        try:
+            pos = live[idx] if idx is not None else {}
+            qrec = _read_queue()
+            qe = qrec.get(ticker_ns) or {}
+            qe.update({
+                "ticker":     ticker_ns,
+                "nse_symbol": symbol,
+                "name":       pos.get("name", symbol),
+                "status":     "filled",
+                "quantity":   qty,
+                "fill_qty":   qty,
+                "fill_price": fill_price or pos.get("buy_price") or pos.get("price"),
+                "fill_date":  time.strftime("%Y-%m-%d"),
+                "stop_qty":   qty,
+                "trail_high": fill_price or pos.get("buy_price") or 0,
+                "stop_loss":  stop,
+                "target1":    target1,
+                "target2":    target2,
+                "gtt_id":     results.get("stop_gtt_id"),
+                "gtt_t1_id":  results.get("t1_gtt_id"),
+                "gtt_t2_id":  results.get("t2_gtt_id"),
+                "order_id":   order_id,
+                "source":     qe.get("source") or "enter_now",
+                "trail_atr":  pos.get("trailing_stop") or qe.get("trail_atr"),
+                # attribution snapshot from the live record
+                "score":      pos.get("score"),
+                "max_score":  pos.get("max_score", 100),
+                "conviction": pos.get("conviction"),
+                "sector":     pos.get("sector"),
+                "sentiment_val":    pos.get("sentiment_val"),
+                "sentiment_bucket": pos.get("sentiment_bucket"),
+                "signals":    pos.get("signals"),
+                "rr_ratio":   pos.get("rr_ratio"),
+                "atr":        pos.get("atr"),
+                "entry_type": pos.get("entry_type"),
+                "regime":     pos.get("regime"),
+            })
+            qrec[ticker_ns] = qe
+            _write_queue(qrec)
+        except Exception as seed_err:
+            print(f"⚠️  Could not seed queue record for {symbol}: {seed_err}")
+
         if failures:
             fail_lines = "\n".join(f"  • {f}" for f in failures)
             _tg(f"🚨 <b>{symbol}: exit GTT placement failed</b>\n{fail_lines}\n"
@@ -1715,6 +1765,63 @@ def swing_arm_exits():
         _tg(f"🛡 <b>{symbol}: exits armed</b>\n"
             f"Stop ₹{stop} · T1 ₹{target1} ({qty_t1}) · T2 ₹{target2} ({qty_t2})")
         return jsonify({"status": "ok", **results})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ── POST /swing/reconcile-sells ──────────────────────────────────
+@app.route("/swing/reconcile-sells", methods=["POST", "OPTIONS"])
+def swing_reconcile_sells():
+    """Polling backstop for missed SELL postbacks (GTT stop/target exits).
+    Scans today's Zerodha order book for COMPLETE SELLs on tickers we
+    hold (queue 'filled' entries + /swing/live positions) and processes
+    any that never made it into history. Deduped by order_id, so calling
+    it repeatedly is safe. Called by the swing alerter's 30-min cron and
+    the 2 PM cancel run — sells only stay invisible until the next pass,
+    instead of forever when a postback is missed."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    auth_err = _require_upload_token()
+    if auth_err:
+        return auth_err
+    try:
+        orders, err = _vps_get("/get-orders")
+        olist = (orders or {}).get("orders") or []
+        if not olist and err:
+            return jsonify({"error": f"could not fetch orders: {err}"}), 502
+
+        q = _read_queue()
+        watched = {k.replace(".NS", "").replace(".BO", "") for k, v in q.items()
+                   if v.get("status") == "filled"}
+        for p in _read_swing_live():
+            t = str(p.get("ticker") or "")
+            if t:
+                watched.add(t.replace(".NS", "").replace(".BO", ""))
+
+        processed, already = [], 0
+        for o in olist:
+            osym = str(o.get("tradingsymbol", "")).upper()
+            if (str(o.get("status", "")).upper() != "COMPLETE"
+                    or str(o.get("transaction_type", "")).upper() != "SELL"
+                    or osym not in watched):
+                continue
+            oid = str(o.get("order_id", ""))
+            if _swing_history_has_order(oid):
+                already += 1
+                continue
+            try:
+                fp = float(o.get("average_price") or 0)
+                fq = int(o.get("filled_quantity") or o.get("quantity") or 0)
+            except (TypeError, ValueError):
+                continue
+            if fp > 0 and fq > 0:
+                outcome = _process_swing_sell(osym, oid, fp, fq)
+                processed.append({"symbol": osym, "order_id": oid,
+                                  "outcome": outcome})
+                print(f"🔄 Sell reconcile: {osym} #{oid} → {outcome}")
+        return jsonify({"status": "ok", "processed": processed,
+                        "already_recorded": already,
+                        "watched": sorted(watched)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -2299,6 +2406,238 @@ def _classify_swing_exit(fill_price: float, stop_loss, target1, target2) -> str:
     return "MANUAL_EXIT"
 
 
+def _process_swing_sell(symbol: str, order_id: str,
+                        fill_price: float, fill_qty: int) -> str:
+    """Process a COMPLETE swing SELL fill: classify the exit, append the
+    closed-trade record, cancel/replace leftover GTTs, sync the queue and
+    /swing/live, and Telegram the outcome. Called from the Zerodha
+    postback AND the /swing/reconcile-sells polling backstop (deduped by
+    order_id, so processing the same fill twice is a no-op).
+
+    Position lookup: the swing QUEUE ('filled' entry) first; if the
+    ticker was entered via the dashboard's Enter-Now flow it may exist
+    only in /swing/live — fall back to that record. (NYKAA's trailing
+    stop fired and the sale was silently ignored because this handler
+    used to require a queue entry that Enter-Now never created: the
+    position stayed 'open' forever and its leftover GTTs were never
+    cancelled.) Returns an outcome string for logs/reconcile reports."""
+    symbol    = (symbol or "").upper().replace(".NS", "").replace(".BO", "")
+    ticker_ns = f"{symbol}.NS"
+
+    if _swing_history_has_order(order_id):
+        return "already_recorded"
+
+    q     = _read_queue()
+    entry = q.get(ticker_ns) or q.get(symbol)
+    t_key = ticker_ns if ticker_ns in q else (symbol if symbol in q else None)
+    if entry and entry.get("status") != "filled":
+        entry, t_key = None, None
+
+    if not entry:
+        pos = next((p for p in _read_swing_live()
+                    if p.get("ticker") in (ticker_ns, symbol)), None)
+        if not pos:
+            return "no_position"
+        entry = {
+            "status":     "filled",
+            "fill_qty":   pos.get("shares"),
+            "quantity":   pos.get("shares"),
+            "stop_qty":   pos.get("stop_qty") or pos.get("shares"),
+            "stop_loss":  pos.get("stop_loss") or pos.get("stop_loss_price"),
+            "live_stop":  pos.get("live_stop"),
+            "target1":    pos.get("target1"),
+            "target2":    pos.get("target2"),
+            "gtt_id":     pos.get("gtt_id"),
+            "gtt_t1_id":  pos.get("gtt_t1_id"),
+            "gtt_t2_id":  pos.get("gtt_t2_id"),
+            "name":       pos.get("name", symbol),
+            "fill_price": pos.get("buy_price") or pos.get("price"),
+            "fill_date":  pos.get("entry_date") or pos.get("buy_date"),
+            "score":      pos.get("score"),
+            "max_score":  pos.get("max_score", 100),
+            "conviction": pos.get("conviction"),
+            "sector":     pos.get("sector"),
+            "sentiment_val":    pos.get("sentiment_val"),
+            "sentiment_bucket": pos.get("sentiment_bucket"),
+            "signals":    pos.get("signals"),
+            "rr_ratio":   pos.get("rr_ratio"),
+            "atr":        pos.get("atr"),
+            "entry_type": pos.get("entry_type"),
+            "regime":     pos.get("regime"),
+        }
+
+    bought_qty = int(entry.get("fill_qty") or entry.get("quantity") or 0)
+    stop_loss  = entry.get("stop_loss")
+    target1    = entry.get("target1")
+    target2    = entry.get("target2")
+    gtt_id     = entry.get("gtt_id")
+    gtt_t1_id  = entry.get("gtt_t1_id")
+    gtt_t2_id  = entry.get("gtt_t2_id")
+    name       = entry.get("name", symbol)
+    buy_price  = float(entry.get("fill_price") or 0)
+
+    def _cancel_gtt(gid):
+        if gid:
+            try:
+                _vps_post("/cancel-gtt", {"gtt_id": gid})
+                print(f"🗑 Cancelled GTT {gid}")
+            except Exception as ce:
+                print(f"⚠️  GTT cancel failed ({gid}): {ce}")
+
+    # Classify by fill-price proximity, not quantity equality
+    # (even lots made qty_t1 == qty_t2 ambiguous). After T1
+    # the working stop is live_stop (break-even), not the
+    # planned stop — classify against where the GTT actually
+    # sits or a break-even stop fill would read MANUAL_EXIT.
+    exit_reason = _classify_swing_exit(
+        fill_price, entry.get("live_stop") or stop_loss,
+        target1, target2)
+
+    remaining_before = int(entry.get("stop_qty") or bought_qty)
+    sold             = min(fill_qty, remaining_before)
+    remaining_after  = remaining_before - sold
+    closed           = remaining_after <= 0
+
+    # ── History record (real exit reason, deduped by order) ──
+    # Carries the entry-time signal snapshot so closed trades
+    # can be attributed back to what the scanner saw, plus
+    # the R-multiple (pnl per unit of planned risk).
+    today_str = time.strftime("%Y-%m-%d")
+    risk = (buy_price - float(stop_loss)) \
+        if buy_price and stop_loss and float(stop_loss) < buy_price else None
+    _append_swing_history({
+        "ticker":            ticker_ns,
+        "name":              name,
+        "buy_price":         buy_price,
+        "sell_price":        fill_price,
+        "shares":            sold,
+        "entry_date":        entry.get("fill_date")
+                             or str(entry.get("placed_at", ""))[:10],
+        "exit_date":         today_str,
+        "realised_pnl_inr":  round((fill_price - buy_price) * sold, 2),
+        "realised_pnl_pct":  round((fill_price - buy_price) / buy_price * 100, 2)
+                             if buy_price else 0,
+        "exit_reason":       exit_reason,
+        "order_id":          order_id,
+        "auto":              True,
+        # entry-time snapshot (attribution)
+        "score":             entry.get("score"),
+        "max_score":         entry.get("max_score", 100),
+        "conviction":        entry.get("conviction"),
+        "sector":            entry.get("sector"),
+        "sentiment_val":     entry.get("sentiment_val"),
+        "sentiment_bucket":  entry.get("sentiment_bucket"),
+        "signals":           entry.get("signals"),
+        "rr_ratio":          entry.get("rr_ratio"),
+        "atr":               entry.get("atr"),
+        "entry_type":        entry.get("entry_type"),
+        "regime":            entry.get("regime"),
+        "planned_stop":      stop_loss,
+        "planned_t1":        target1,
+        "planned_t2":        target2,
+        "r_multiple":        round((fill_price - buy_price) / risk, 2)
+                             if risk else None,
+    })
+
+    # ── GTT housekeeping ─────────────────────────────────
+    fired = {"TARGET1": gtt_t1_id, "TARGET2": gtt_t2_id,
+             "STOP_LOSS": gtt_id}.get(exit_reason)
+
+    new_stop, new_gtt_id, new_gtt_err = None, None, None
+    if closed:
+        # Whole position gone — cancel every GTT still standing
+        for gid in (gtt_id, gtt_t1_id, gtt_t2_id):
+            if gid and gid != fired:
+                _cancel_gtt(gid)
+        if t_key:
+            q[t_key].update({
+                "status":    "closed",
+                "stop_qty":  0,
+                "exit_date": today_str,
+                "gtt_id":    None,
+                "gtt_t1_id": None,
+                "gtt_t2_id": None,
+            })
+            _write_queue(q)
+    else:
+        # Partial exit — replace the stop GTT for what's left.
+        # After T1 the stop moves to BREAK-EVEN (the alerter
+        # always advised this; the automation used to re-place
+        # the original stop, contradicting it) — the remaining
+        # half can no longer turn a winner into a loser.
+        if gtt_id and gtt_id != fired:
+            _cancel_gtt(gtt_id)
+        new_stop = float(stop_loss) if stop_loss else None
+        if exit_reason == "TARGET1" and buy_price:
+            new_stop = max(new_stop or 0, round(buy_price, 2))
+        if new_stop:
+            new_gtt_id, new_gtt_err = _place_sell_gtt(
+                symbol, new_stop, remaining_after, fill_price)
+        if t_key:
+            q[t_key].update({
+                "stop_qty":  remaining_after,
+                "gtt_id":    new_gtt_id,
+                "live_stop": new_stop,
+            })
+            if exit_reason == "TARGET1":
+                q[t_key]["gtt_t1_id"] = None
+            elif exit_reason == "TARGET2":
+                q[t_key]["gtt_t2_id"] = None
+            _write_queue(q)
+
+    # ── /swing/live sync ─────────────────────────────────
+    live_positions = list(_read_swing_live())
+    idx = next((i for i, p in enumerate(live_positions)
+                if p.get("ticker") in (ticker_ns, symbol)), None)
+    if idx is not None:
+        if closed:
+            live_positions.pop(idx)
+        else:
+            live_positions[idx]["shares"] = remaining_after
+            if exit_reason == "TARGET1":
+                # stops the alerter re-firing the T1 alert
+                # daily and tells it the stop moved
+                live_positions[idx]["target1_booked"] = True
+            if new_stop:
+                live_positions[idx]["stop_loss"] = new_stop
+                live_positions[idx]["stop_loss_price"] = new_stop
+                live_positions[idx]["gtt_id"] = new_gtt_id
+                live_positions[idx]["stop_qty"] = remaining_after
+        _write_swing_live(live_positions)
+
+    # ── Telegram ─────────────────────────────────────────
+    pnl = round((fill_price - buy_price) * sold, 2)
+    pnl_txt = f"{'🟢 +' if pnl >= 0 else '🔴 −'}₹{abs(pnl):,.0f}"
+    label = {"TARGET1": "🎯 T1 hit", "TARGET2": "🎯 T2 hit",
+             "STOP_LOSS": "🛑 Stop hit",
+             "MANUAL_EXIT": "👤 Manual sell"}[exit_reason]
+    if closed:
+        _tg(
+            f"{label}: <b>{name} ({symbol})</b>\n"
+            f"Sold {sold} shares @ ₹{fill_price:.2f} — {pnl_txt}\n"
+            f"Position fully closed 🏁 (logged as {exit_reason})\n"
+            f"🤖 Remaining GTTs cancelled, records updated."
+        )
+    else:
+        stop_desc = (f"₹{new_stop} (break-even)"
+                     if exit_reason == "TARGET1" and new_stop == round(buy_price, 2)
+                     else f"₹{new_stop}")
+        sl_note = (f"New stop GTT for {remaining_after}sh at {stop_desc} ✅"
+                   if new_gtt_id else
+                   f"⚠️ Stop GTT re-placement FAILED ({new_gtt_err}) — "
+                   f"manually set stop for {remaining_after}sh at {stop_desc}")
+        _tg(
+            f"{label}: <b>{name} ({symbol})</b>\n"
+            f"Sold {sold} of {remaining_before} shares @ "
+            f"₹{fill_price:.2f} — {pnl_txt}\n"
+            f"{remaining_after} shares still held.\n"
+            f"🤖 {sl_note}"
+        )
+    print(f"📨 Swing exit processed: {symbol} {exit_reason} "
+          f"sold={sold} remaining={remaining_after}")
+    return f"processed:{exit_reason}"
+
+
 @app.route("/kite/postback", methods=["POST", "OPTIONS"])
 def kite_postback():
     """
@@ -2572,188 +2911,16 @@ def kite_postback():
                         _write_india_queue(iq)
 
         # ── Swing SELL fills: auto-adjust GTTs + Telegram ──────────────
+        # (full processing lives in _process_swing_sell, shared with the
+        #  /swing/reconcile-sells polling backstop)
         if status == "COMPLETE" and side == "SELL" and avg_price:
             try:
                 fill_price = float(avg_price)
                 fill_qty   = int(data.get("filled_quantity") or qty or 0)
             except (TypeError, ValueError):
                 fill_price, fill_qty = 0, 0
-
             if fill_qty > 0:
-                q = _read_queue()
-                ticker_ns = f"{symbol}.NS"
-                entry = q.get(ticker_ns) or q.get(symbol)
-                t_key = ticker_ns if ticker_ns in q else (symbol if symbol in q else None)
-
-                if entry and entry.get("status") == "filled" \
-                        and not _swing_history_has_order(order_id):
-                    bought_qty = int(entry.get("fill_qty") or entry.get("quantity") or 0)
-                    stop_loss  = entry.get("stop_loss")
-                    target1    = entry.get("target1")
-                    target2    = entry.get("target2")
-                    gtt_id     = entry.get("gtt_id")
-                    gtt_t1_id  = entry.get("gtt_t1_id")
-                    gtt_t2_id  = entry.get("gtt_t2_id")
-                    name       = entry.get("name", symbol)
-                    buy_price  = float(entry.get("fill_price") or 0)
-
-                    def _cancel_gtt(gid):
-                        if gid:
-                            try:
-                                _vps_post("/cancel-gtt", {"gtt_id": gid})
-                                print(f"🗑 Cancelled GTT {gid}")
-                            except Exception as ce:
-                                print(f"⚠️  GTT cancel failed ({gid}): {ce}")
-
-                    # Classify by fill-price proximity, not quantity equality
-                    # (even lots made qty_t1 == qty_t2 ambiguous). After T1
-                    # the working stop is live_stop (break-even), not the
-                    # planned stop — classify against where the GTT actually
-                    # sits or a break-even stop fill would read MANUAL_EXIT.
-                    exit_reason = _classify_swing_exit(
-                        fill_price, entry.get("live_stop") or stop_loss,
-                        target1, target2)
-
-                    remaining_before = int(entry.get("stop_qty") or bought_qty)
-                    sold             = min(fill_qty, remaining_before)
-                    remaining_after  = remaining_before - sold
-                    closed           = remaining_after <= 0
-
-                    # ── History record (real exit reason, deduped by order) ──
-                    # Carries the entry-time signal snapshot so closed trades
-                    # can be attributed back to what the scanner saw, plus
-                    # the R-multiple (pnl per unit of planned risk).
-                    today_str = time.strftime("%Y-%m-%d")
-                    risk = (buy_price - float(stop_loss)) \
-                        if buy_price and stop_loss and float(stop_loss) < buy_price else None
-                    _append_swing_history({
-                        "ticker":            ticker_ns,
-                        "name":              name,
-                        "buy_price":         buy_price,
-                        "sell_price":        fill_price,
-                        "shares":            sold,
-                        "entry_date":        entry.get("fill_date")
-                                             or str(entry.get("placed_at", ""))[:10],
-                        "exit_date":         today_str,
-                        "realised_pnl_inr":  round((fill_price - buy_price) * sold, 2),
-                        "realised_pnl_pct":  round((fill_price - buy_price) / buy_price * 100, 2)
-                                             if buy_price else 0,
-                        "exit_reason":       exit_reason,
-                        "order_id":          order_id,
-                        "auto":              True,
-                        # entry-time snapshot (attribution)
-                        "score":             entry.get("score"),
-                        "max_score":         entry.get("max_score", 100),
-                        "conviction":        entry.get("conviction"),
-                        "sector":            entry.get("sector"),
-                        "sentiment_val":     entry.get("sentiment_val"),
-                        "sentiment_bucket":  entry.get("sentiment_bucket"),
-                        "signals":           entry.get("signals"),
-                        "rr_ratio":          entry.get("rr_ratio"),
-                        "atr":               entry.get("atr"),
-                        "entry_type":        entry.get("entry_type"),
-                        "regime":            entry.get("regime"),
-                        "planned_stop":      stop_loss,
-                        "planned_t1":        target1,
-                        "planned_t2":        target2,
-                        "r_multiple":        round((fill_price - buy_price) / risk, 2)
-                                             if risk else None,
-                    })
-
-                    # ── GTT housekeeping ─────────────────────────────────
-                    fired = {"TARGET1": gtt_t1_id, "TARGET2": gtt_t2_id,
-                             "STOP_LOSS": gtt_id}.get(exit_reason)
-
-                    if closed:
-                        # Whole position gone — cancel every GTT still standing
-                        for gid in (gtt_id, gtt_t1_id, gtt_t2_id):
-                            if gid and gid != fired:
-                                _cancel_gtt(gid)
-                        if t_key:
-                            q[t_key].update({
-                                "status":    "closed",
-                                "stop_qty":  0,
-                                "exit_date": today_str,
-                                "gtt_id":    None,
-                                "gtt_t1_id": None,
-                                "gtt_t2_id": None,
-                            })
-                            _write_queue(q)
-                    else:
-                        # Partial exit — replace the stop GTT for what's left.
-                        # After T1 the stop moves to BREAK-EVEN (the alerter
-                        # always advised this; the automation used to re-place
-                        # the original stop, contradicting it) — the remaining
-                        # half can no longer turn a winner into a loser.
-                        if gtt_id and gtt_id != fired:
-                            _cancel_gtt(gtt_id)
-                        new_stop = float(stop_loss) if stop_loss else None
-                        if exit_reason == "TARGET1" and buy_price:
-                            new_stop = max(new_stop or 0, round(buy_price, 2))
-                        new_gtt_id, new_gtt_err = (None, None)
-                        if new_stop:
-                            new_gtt_id, new_gtt_err = _place_sell_gtt(
-                                symbol, new_stop, remaining_after, fill_price)
-                        if t_key:
-                            q[t_key].update({
-                                "stop_qty":  remaining_after,
-                                "gtt_id":    new_gtt_id,
-                                "live_stop": new_stop,
-                            })
-                            if exit_reason == "TARGET1":
-                                q[t_key]["gtt_t1_id"] = None
-                            elif exit_reason == "TARGET2":
-                                q[t_key]["gtt_t2_id"] = None
-                            _write_queue(q)
-
-                    # ── /swing/live sync ─────────────────────────────────
-                    live_positions = list(_read_swing_live())
-                    idx = next((i for i, p in enumerate(live_positions)
-                                if p.get("ticker") in (ticker_ns, symbol)), None)
-                    if idx is not None:
-                        if closed:
-                            live_positions.pop(idx)
-                        else:
-                            live_positions[idx]["shares"] = remaining_after
-                            if exit_reason == "TARGET1":
-                                # stops the alerter re-firing the T1 alert
-                                # daily and tells it the stop moved
-                                live_positions[idx]["target1_booked"] = True
-                            if new_stop:
-                                live_positions[idx]["stop_loss"] = new_stop
-                                live_positions[idx]["stop_loss_price"] = new_stop
-                        _write_swing_live(live_positions)
-
-                    # ── Telegram ─────────────────────────────────────────
-                    pnl = round((fill_price - buy_price) * sold, 2)
-                    pnl_txt = f"{'🟢 +' if pnl >= 0 else '🔴 −'}₹{abs(pnl):,.0f}"
-                    label = {"TARGET1": "🎯 T1 hit", "TARGET2": "🎯 T2 hit",
-                             "STOP_LOSS": "🛑 Stop hit",
-                             "MANUAL_EXIT": "👤 Manual sell"}[exit_reason]
-                    if closed:
-                        _tg(
-                            f"{label}: <b>{name} ({symbol})</b>\n"
-                            f"Sold {sold} shares @ ₹{fill_price:.2f} — {pnl_txt}\n"
-                            f"Position fully closed 🏁 (logged as {exit_reason})\n"
-                            f"🤖 Remaining GTTs cancelled, records updated."
-                        )
-                    else:
-                        stop_desc = (f"₹{new_stop} (break-even)"
-                                     if exit_reason == "TARGET1" and new_stop == round(buy_price, 2)
-                                     else f"₹{new_stop}")
-                        sl_note = (f"New stop GTT for {remaining_after}sh at {stop_desc} ✅"
-                                   if new_gtt_id else
-                                   f"⚠️ Stop GTT re-placement FAILED ({new_gtt_err}) — "
-                                   f"manually set stop for {remaining_after}sh at {stop_desc}")
-                        _tg(
-                            f"{label}: <b>{name} ({symbol})</b>\n"
-                            f"Sold {sold} of {remaining_before} shares @ "
-                            f"₹{fill_price:.2f} — {pnl_txt}\n"
-                            f"{remaining_after} shares still held.\n"
-                            f"🤖 {sl_note}"
-                        )
-                    print(f"📨 Swing exit processed: {symbol} {exit_reason} "
-                          f"sold={sold} remaining={remaining_after}")
+                _process_swing_sell(symbol, order_id, fill_price, fill_qty)
 
         # ── India SELL fills: remove/reduce shares in live portfolio ──
         if status == "COMPLETE" and side == "SELL" and avg_price:
