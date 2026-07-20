@@ -1826,6 +1826,44 @@ def swing_reconcile_sells():
         return jsonify({"error": str(e)}), 500
 
 
+# ── POST /swing/record-exit ──────────────────────────────────────
+@app.route("/swing/record-exit", methods=["POST", "OPTIONS"])
+def swing_record_exit():
+    """Manually record a swing exit that happened on Zerodha (a GTT fired
+    or a hand-placed sell) but never reached the app — the dashboard's
+    quick 'T1 hit' / 'T2 hit' buttons call this. Thin wrapper over
+    _process_swing_sell, so the bookkeeping is IDENTICAL to the automated
+    postback path: history record with the exit reason classified from
+    the price (near T1 → TARGET1, etc.) + R-multiple, GTT housekeeping
+    (cancel leftovers on full close, break-even stop re-placed after T1),
+    live-position and queue sync, and the Telegram summary."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    auth_err = _require_upload_token()
+    if auth_err:
+        return auth_err
+    try:
+        data   = request.get_json(force=True) or {}
+        ticker = str(data.get("ticker") or "").strip().upper()
+        symbol = ticker.replace(".NS", "").replace(".BO", "")
+        try:
+            price = float(data.get("sell_price") or 0)
+            qty   = int(data.get("qty") or 0)
+        except (TypeError, ValueError):
+            price, qty = 0, 0
+        if not symbol or price <= 0 or qty <= 0:
+            return jsonify({"error": "ticker, sell_price and qty required"}), 400
+        # Millisecond id — a per-second id made two records for the same
+        # symbol in the same second collide with the order-id dedupe.
+        order_id = f"MANUAL-{symbol}-{int(time.time() * 1000)}"
+        outcome = _process_swing_sell(symbol, order_id, price, qty)
+        if outcome == "no_position":
+            return jsonify({"error": f"no open swing position found for {symbol}"}), 404
+        return jsonify({"status": "ok", "outcome": outcome, "order_id": order_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ── POST /swing/history/remove ───────────────────────────────────
 # Path contains "/remove" so the before_request token gate protects it.
 @app.route("/swing/history/remove", methods=["POST", "OPTIONS"])

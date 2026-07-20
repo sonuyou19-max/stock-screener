@@ -903,7 +903,7 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
     <div class="stat-c"><div class="stat-lbl">Win Rate</div><div class="stat-val" id="sw-winRate">—</div><div class="stat-sub">Closed trades</div></div>
     <div class="stat-c"><div class="stat-lbl">Today's Picks</div><div class="stat-val" id="sw-candCount">—</div><div class="stat-sub" id="sw-scanTime">Last scan: —</div></div>
   </div>
-  <div class="sec"><span class="sec-lbl">Open Positions</span><span class="sec-line"></span></div>
+  <div class="sec"><span class="sec-lbl">Open Positions</span><span class="sec-line"></span><button class="refresh-btn" id="sw-syncBtn" style="padding:5px 10px;font-size:10px" onclick="syncSwingExits()">⟳ Sync exits</button></div>
   <div style="padding:0 20px;" id="swOpenPositions"><div class="spin-wrap"><div class="spinner"></div></div></div>
   <div class="sec" id="swQueueSec" style="display:none"><span class="sec-lbl">⏳ Pending Entry (Queue)</span><span class="sec-line"></span></div>
   <div style="padding:0 20px;" id="swQueueList"></div>
@@ -3495,12 +3495,67 @@ function renderSwingOpen(){
         </div>`:''}
       </div>
 
-      <div class="sc-actions">
+      <div class="sc-actions" style="flex-wrap:wrap">
+        ${t1&&!p.target1_booked?`<button class="sc-act-btn" style="border-color:var(--green);color:var(--green)" onclick="recordSwingExit('${p.ticker}','T1')">🎯 T1 hit</button>`:''}
+        ${t2?`<button class="sc-act-btn" style="border-color:var(--green);color:var(--green)" onclick="recordSwingExit('${p.ticker}','T2')">🎯 T2 hit</button>`:''}
         <button class="sc-act-btn" onclick="editBuyPrice('${p.ticker}','sw','',${bp})">Edit buy price</button>
         <button class="sc-act-btn sc-act-exit" onclick="exitSwingTrade('${p.ticker}','${bp}')">Mark Exited</button>
       </div>
     </div>`;
   }).join('')}</div>`;
+}
+
+/* ── Quick T1/T2 exit recording ─────────────────────────────
+   For a GTT that fired on Zerodha but never reached the app (missed
+   postback + reconcile). Posts to /swing/record-exit, which reuses the
+   automated sell bookkeeping verbatim: history record (exit reason
+   classified from the price), break-even stop after T1 / GTT cleanup on
+   full close, live + queue sync, Telegram. */
+async function recordSwingExit(ticker,which){
+  const p=(_swLive||[]).find(x=>x.ticker===ticker);
+  if(!p)return;
+  const sym=(ticker||'').replace('.NS','');
+  const shares=Math.round(p.shares||p.approx_shares||0);
+  const defQty=which==='T1'?Math.floor(shares/2):shares;
+  const defPrice=which==='T1'?(p.target1||0):(p.target2||0);
+  const qtyStr=prompt(`${which} hit for ${sym} — how many shares did the GTT sell?`,String(defQty));
+  if(qtyStr===null)return;
+  const qty=parseInt(qtyStr,10);
+  if(!qty||qty<=0||qty>shares){alert(`Enter a quantity between 1 and ${shares}.`);return;}
+  const priceStr=prompt(`Sell price (₹)? Check the executed order on Kite.`,defPrice?defPrice.toFixed(2):'');
+  if(priceStr===null)return;
+  const price=parseFloat(priceStr);
+  if(!price||price<=0){alert('Enter a valid sell price.');return;}
+  if(!confirm(`Record ${which} exit for ${sym}:\nSell ${qty} of ${shares} sh @ ₹${price.toFixed(2)}\n\nHistory, stop adjustments and portfolio update automatically.`))return;
+  _showSpinner('Recording '+which+' exit…');
+  try{
+    const r=await fetch(`${API}/swing/record-exit`,{method:'POST',headers:_postHeaders(),
+      body:JSON.stringify({ticker:ticker,sell_price:price,qty:qty})});
+    const d=await r.json();
+    _hideSpinner();
+    if(d.status==='ok'){
+      alert(`✅ Recorded (${d.outcome.replace('processed:','')}).\n${which==='T1'&&qty<shares?'Stop moved to break-even for the remaining shares — verify the new GTT on Kite.':'Records updated.'}`);
+      loadSwing();
+    }else alert('⚠️ '+(d.error||JSON.stringify(d)));
+  }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
+}
+
+/* ── On-demand sell reconcile (same-day sales only — Zerodha's order
+   book resets at midnight; older misses use the T1/T2 buttons) ── */
+async function syncSwingExits(){
+  const btn=document.getElementById('sw-syncBtn');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Syncing…';}
+  try{
+    const r=await fetch(`${API}/swing/reconcile-sells`,{method:'POST',headers:_postHeaders()});
+    const d=await r.json();
+    if(d.status==='ok'){
+      const n=(d.processed||[]).length;
+      alert(n?`✅ Recorded ${n} missed exit${n>1?'s':''}: ${d.processed.map(p=>p.symbol).join(', ')}`
+             :`Nothing to sync from today's order book.\nIf the sale was on an earlier day, use the 🎯 T1/T2 buttons on the position card.`);
+      if(n)loadSwing();
+    }else alert('⚠️ '+(d.error||JSON.stringify(d)));
+  }catch(e){alert('⚠️ Error: '+e.message);}
+  if(btn){btn.disabled=false;btn.textContent='⟳ Sync exits';}
 }
 
 /* ═══ SWING CANDIDATES ═══ */
