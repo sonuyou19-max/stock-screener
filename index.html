@@ -2044,6 +2044,11 @@ async function _exSubmit(){
           r_multiple:_exRisk?parseFloat(((sp-bp)/_exRisk).toFixed(2)):null})});
       const newLive=(_swLive||[]).filter(p=>p.ticker!==ticker);
       await fetch(`${API}/swing/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(newLive)});
+      /* close the queue record too — leaving it 'filled' kept the ticker
+         on the sell-reconcile watch-list, so Sync re-recorded the same
+         sale from the order book (the SONACOMS duplicate) */
+      await fetch(`${API}/swing/queue/update`,{method:'POST',headers:_postHeaders(),
+        body:JSON.stringify([{ticker:ticker,status:'closed',stop_qty:0,exit_date:today}])});
       _swL=false;await loadSwing();
     }
     _hideSpinner();
@@ -3536,6 +3541,8 @@ async function recordSwingExit(ticker,which){
     if(d.status==='ok'){
       alert(`✅ Recorded (${d.outcome.replace('processed:','')}).\n${which==='T1'&&qty<shares?'Stop moved to break-even for the remaining shares — verify the new GTT on Kite.':'Records updated.'}`);
       loadSwing();
+    }else if(d.status==='duplicate'){
+      alert('ℹ️ '+(d.message||'This exit is already recorded — nothing added.'));
     }else alert('⚠️ '+(d.error||JSON.stringify(d)));
   }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
 }

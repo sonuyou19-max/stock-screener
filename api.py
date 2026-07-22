@@ -1816,8 +1816,14 @@ def swing_reconcile_sells():
                 continue
             if fp > 0 and fq > 0:
                 outcome = _process_swing_sell(osym, oid, fp, fq)
-                processed.append({"symbol": osym, "order_id": oid,
-                                  "outcome": outcome})
+                # duplicate_exit / no_position are NOT new records —
+                # counting them as processed made the dashboard's Sync
+                # alert claim it "recorded" an exit that was skipped.
+                if str(outcome).startswith("processed:"):
+                    processed.append({"symbol": osym, "order_id": oid,
+                                      "outcome": outcome})
+                else:
+                    already += 1
                 print(f"🔄 Sell reconcile: {osym} #{oid} → {outcome}")
         return jsonify({"status": "ok", "processed": processed,
                         "already_recorded": already,
@@ -1859,6 +1865,11 @@ def swing_record_exit():
         outcome = _process_swing_sell(symbol, order_id, price, qty)
         if outcome == "no_position":
             return jsonify({"error": f"no open swing position found for {symbol}"}), 404
+        if outcome == "duplicate_exit":
+            return jsonify({"status": "duplicate",
+                            "message": f"An exit for {symbol} with the same "
+                                       f"date, quantity and price is already "
+                                       f"recorded — nothing added."})
         return jsonify({"status": "ok", "outcome": outcome, "order_id": order_id})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2444,6 +2455,41 @@ def _classify_swing_exit(fill_price: float, stop_loss, target1, target2) -> str:
     return "MANUAL_EXIT"
 
 
+def _has_equivalent_manual_exit(ticker_ns: str, order_id: str,
+                                fill_price: float, fill_qty: int,
+                                exit_date: str) -> bool:
+    """Substance-level dedupe. A hand-recorded exit (Mark Exited / the
+    T1-T2 buttons) and the same real-world sale arriving via postback or
+    reconcile carry DIFFERENT order ids (none / MANUAL-… vs Zerodha's),
+    so the order-id dedupe cannot link them — recording one then syncing
+    produced a duplicate closed trade. Treat two records as the same
+    sale when ticker, exit date and share count match and the sell price
+    is within 2% — but only when at least one side is manual, so two
+    genuine same-day Zerodha tranches (distinct real ids) are never
+    suppressed."""
+    global _swing_history_cache
+    if not _swing_history_cache:
+        loaded = _load_json(SWING_HISTORY_FILE)
+        _swing_history_cache = loaded if isinstance(loaded, list) else []
+    incoming_manual = str(order_id or "").startswith("MANUAL-")
+    for t in _swing_history_cache:
+        if t.get("ticker") != ticker_ns or str(t.get("exit_date")) != exit_date:
+            continue
+        if int(t.get("shares") or 0) != int(fill_qty):
+            continue
+        existing_id = str(t.get("order_id") or "")
+        existing_manual = (not existing_id) or existing_id.startswith("MANUAL-")
+        if not (incoming_manual or existing_manual):
+            continue
+        try:
+            sp = float(t.get("sell_price") or 0)
+        except (TypeError, ValueError):
+            continue
+        if sp > 0 and fill_price > 0 and abs(sp - fill_price) / sp <= 0.02:
+            return True
+    return False
+
+
 def _process_swing_sell(symbol: str, order_id: str,
                         fill_price: float, fill_qty: int) -> str:
     """Process a COMPLETE swing SELL fill: classify the exit, append the
@@ -2464,6 +2510,11 @@ def _process_swing_sell(symbol: str, order_id: str,
 
     if _swing_history_has_order(order_id):
         return "already_recorded"
+    if _has_equivalent_manual_exit(ticker_ns, order_id, fill_price, fill_qty,
+                                   time.strftime("%Y-%m-%d")):
+        print(f"⏭ {symbol}: an equivalent exit is already recorded today "
+              f"(manual/auto pair) — skipping duplicate")
+        return "duplicate_exit"
 
     q     = _read_queue()
     entry = q.get(ticker_ns) or q.get(symbol)
