@@ -1894,6 +1894,38 @@ def swing_ensure_gtts():
         if changed:
             _write_swing_live(positions)
 
+        # ── Verify what we just placed actually EXISTS at the broker ──
+        # "Placed OK" is only the API's word for it; a GTT id in a
+        # response is not proof the trigger is resting. Re-read the live
+        # list and confirm each new id is really there, so the app can
+        # never claim a position is armed while Kite shows nothing.
+        placed_ids = [str(p["gtt_id"]) for r in report for p in r["placed"]]
+        resting = None
+        if placed_ids and broker_listed:
+            recheck, _ = _vps_get("/get-gtts")
+            if isinstance(recheck, dict) and "gtts" in recheck:
+                active = [g for g in (recheck.get("gtts") or [])
+                          if str(g.get("status", "")).lower() == "active"]
+                live_ids = {str(g.get("gtt_id")) for g in active}
+                resting = [{"symbol": g.get("symbol"), "gtt_id": g.get("gtt_id"),
+                            "trigger_values": g.get("trigger_values"),
+                            "quantity": g.get("quantity")} for g in active]
+                for r in report:
+                    ghosts = [p for p in r["placed"] if str(p["gtt_id"]) not in live_ids]
+                    if ghosts:
+                        r["protected"] = False
+                        r["failed"].append({
+                            "level": ghosts[0]["level"],
+                            "error": f"GTT {ghosts[0]['gtt_id']} was accepted but is "
+                                     f"NOT in Zerodha's active list — treat as unplaced",
+                        })
+                        failures.append(
+                            f"{r['symbol']} stop ₹{ghosts[0]['level']} — broker "
+                            f"accepted GTT {ghosts[0]['gtt_id']} but it is not "
+                            f"active on Zerodha")
+                        print(f"🚨 ensure-gtts: {r['symbol']} GTT "
+                              f"{ghosts[0]['gtt_id']} vanished after placement")
+
         unprotected = [r for r in report if not r["protected"]]
         if failures:
             _tg("🚨 <b>Unprotected swing position(s)</b>\n"
@@ -1904,6 +1936,7 @@ def swing_ensure_gtts():
                         "unprotected": [r["symbol"] for r in unprotected],
                         "broker_verified": broker_listed,
                         "warning": degraded_note,
+                        "resting_gtts": resting,
                         "report": report})
     except Exception as e:
         return jsonify({"error": str(e)}), 500

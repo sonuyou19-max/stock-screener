@@ -3629,6 +3629,12 @@ async function armSwingStops(){
       }else{
         msg=n?`🛡 Placed ${n} missing stop GTT${n>1?'s':''}.`
              :`All ${d.positions||0} position${d.positions===1?'':'s'} already have a resting stop${d.broker_verified?' on Zerodha':' recorded'}.`;
+        /* Show what Zerodha actually holds, so "armed" is never just our
+           word for it — if this list is empty the GTT isn't really there. */
+        if(d.resting_gtts&&d.resting_gtts.length){
+          msg+=`\n\nConfirmed resting on Zerodha (Orders → GTT):\n`+
+            d.resting_gtts.map(g=>`  • ${g.symbol} — trigger ₹${(g.trigger_values||[]).join('/')} × ${g.quantity||'?'} (id ${g.gtt_id})`).join('\n');
+        }
       }
       if(d.broker_verified===false)msg+=`\n\n⚠️ Could not verify against Zerodha's live GTT list:\n${d.warning||''}`;
       alert(msg);
