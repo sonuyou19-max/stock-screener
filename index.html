@@ -3612,7 +3612,8 @@ async function armSwingStops(){
       const n=d.gtts_placed||0;
       const bad=(d.unprotected||[]);
       let msg=n?`🛡 Placed ${n} missing stop GTT${n>1?'s':''}.`
-              :`All ${d.positions||0} position${d.positions===1?'':'s'} already have a resting stop on Zerodha.`;
+              :`All ${d.positions||0} position${d.positions===1?'':'s'} already have a resting stop${d.broker_verified?' on Zerodha':' recorded'}.`;
+      if(d.broker_verified===false)msg+=`\n\n⚠️ Could not verify against Zerodha's live GTT list, so this used the app's own records:\n${d.warning||''}`;
       if(bad.length)msg+=`\n\n🚨 STILL UNPROTECTED: ${bad.join(', ')}\nPlace these stops manually on Kite now — see Telegram for the broker's reason.`;
       alert(msg);
       if(n)loadSwing();

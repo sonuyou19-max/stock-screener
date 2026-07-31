@@ -1808,16 +1808,26 @@ def swing_ensure_gtts():
         return auth_err
     try:
         gtt_data, gstatus = _vps_get("/get-gtts")
-        if not isinstance(gtt_data, dict) or "gtts" not in gtt_data:
-            return jsonify({"error": f"could not list GTTs from broker: "
-                                     f"{(gtt_data or {}).get('error', gstatus)}"}), 502
+        broker_listed = isinstance(gtt_data, dict) and "gtts" in gtt_data
+        degraded_note = None
         by_symbol = {}
-        for g in (gtt_data.get("gtts") or []):
-            if str(g.get("status", "")).lower() != "active":
-                continue
-            if str(g.get("transaction_type", "")).upper() not in ("SELL", ""):
-                continue
-            by_symbol.setdefault(str(g.get("symbol", "")).upper(), []).append(g)
+        if broker_listed:
+            for g in (gtt_data.get("gtts") or []):
+                if str(g.get("status", "")).lower() != "active":
+                    continue
+                if str(g.get("transaction_type", "")).upper() not in ("SELL", ""):
+                    continue
+                by_symbol.setdefault(str(g.get("symbol", "")).upper(), []).append(g)
+        else:
+            # Can't verify against the broker (older executor without
+            # /get-gtts, or the VPS is down). Falling back to our stored
+            # gtt_id is worse than broker truth — but doing NOTHING would
+            # leave a real position with no stop, which is the failure
+            # this endpoint exists to prevent. Place stops where we have
+            # no id recorded and say plainly that verification was skipped.
+            degraded_note = ((gtt_data or {}).get("error")
+                             or f"could not list GTTs from the broker (HTTP {gstatus})")
+            print(f"⚠️  ensure-gtts degraded: {degraded_note}")
 
         report, placed_any, failures = [], 0, []
         positions = list(_read_swing_live())
@@ -1839,12 +1849,18 @@ def swing_ensure_gtts():
             existing_triggers = [float(t) for g in existing
                                  for t in (g.get("trigger_values") or [])]
 
-            def _has_level(level):
-                """A GTT within 0.5% of the level already covers it."""
-                if not level:
-                    return True
-                return any(abs(t - float(level)) / float(level) <= 0.005
-                           for t in existing_triggers)
+            if broker_listed:
+                def _has_level(level):
+                    """A GTT within 0.5% of the level already covers it."""
+                    if not level:
+                        return True
+                    return any(abs(t - float(level)) / float(level) <= 0.005
+                               for t in existing_triggers)
+            else:
+                _stored_id = pos.get("gtt_id")
+                def _has_level(level, _sid=_stored_id):
+                    """Degraded: trust our own record of a placed GTT."""
+                    return (not level) or bool(_sid)
 
             missing = []
             if stop and not _has_level(stop):
@@ -1886,6 +1902,8 @@ def swing_ensure_gtts():
         return jsonify({"status": "ok", "positions": len(report),
                         "gtts_placed": placed_any,
                         "unprotected": [r["symbol"] for r in unprotected],
+                        "broker_verified": broker_listed,
+                        "warning": degraded_note,
                         "report": report})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -2376,6 +2394,34 @@ def _tg(msg: str):
         print(f"Telegram error: {e}")
 
 
+def _vps_parse(raw: bytes, status: int, endpoint: str) -> dict:
+    """Parse a VPS response body that is USUALLY but not always JSON.
+
+    Flask serves an HTML page for 404/500, so json.loads() on an error
+    body raised JSONDecodeError from inside the except-handler — which
+    escaped the helper entirely and surfaced to the user as the useless
+    'Expecting value: line 1 column 1 (char 0)'. That is exactly what a
+    call to an endpoint the executor doesn't have yet looks like, so the
+    message must name the real problem instead."""
+    import json as _json
+    text = ""
+    try:
+        text = (raw or b"").decode("utf-8", "replace").strip()
+        parsed = _json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+        return {"result": parsed}
+    except Exception:
+        pass
+    if status == 404:
+        return {"error": f"the trading server has no {endpoint} endpoint "
+                         f"(HTTP 404) — update and restart kite_executor on "
+                         f"the VPS: git pull && sudo systemctl restart kite-executor"}
+    snippet = " ".join(text.split())[:160] or "<empty response>"
+    return {"error": f"trading server returned a non-JSON response "
+                     f"(HTTP {status}) for {endpoint}: {snippet}"}
+
+
 def _vps_post(endpoint: str, payload: dict):
     import urllib.request, urllib.error, json as _json
     if not ORACLE_VPS_URL:
@@ -2388,9 +2434,13 @@ def _vps_post(endpoint: str, payload: dict):
     )
     try:
         with urllib.request.urlopen(req, timeout=15) as resp:
-            return _json.loads(resp.read()), resp.status
+            return _vps_parse(resp.read(), resp.status, endpoint), resp.status
     except urllib.error.HTTPError as e:
-        return _json.loads(e.read()), e.code
+        try:
+            raw = e.read()
+        except Exception:
+            raw = b""
+        return _vps_parse(raw, e.code, endpoint), e.code
     except Exception as e:
         return {"error": str(e)}, 502
 
@@ -2406,9 +2456,13 @@ def _vps_get(endpoint: str):
     )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
-            return _json.loads(resp.read()), resp.status
+            return _vps_parse(resp.read(), resp.status, endpoint), resp.status
     except urllib.error.HTTPError as e:
-        return _json.loads(e.read()), e.code
+        try:
+            raw = e.read()
+        except Exception:
+            raw = b""
+        return _vps_parse(raw, e.code, endpoint), e.code
     except Exception as e:
         return {"error": str(e)}, 502
 
