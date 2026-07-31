@@ -1671,33 +1671,24 @@ def swing_arm_exits():
                 except (TypeError, ValueError):
                     pass
 
-        qty_t1 = qty // 2
-        qty_t2 = qty - qty_t1
-        results, failures = {}, []
-
-        if stop:
-            gid, err = _place_sell_gtt(symbol, stop, qty)
-            results["stop_gtt_id"] = gid
-            if not gid:
-                failures.append(f"STOP ₹{stop} × {qty} — {err}")
-        if target1 and qty_t1 > 0:
-            gid, err = _place_sell_gtt(symbol, target1, qty_t1)
-            results["t1_gtt_id"] = gid
-            if not gid:
-                failures.append(f"T1 ₹{target1} × {qty_t1} — {err}")
-        if target2 and qty_t2 > 0:
-            gid, err = _place_sell_gtt(symbol, target2, qty_t2)
-            results["t2_gtt_id"] = gid
-            if not gid:
-                failures.append(f"T2 ₹{target2} × {qty_t2} — {err}")
+        # Arm OCO protection: stop + target in ONE trigger per tranche,
+        # so a fired leg auto-cancels its sibling (no orphaned triggers).
+        _p = {"ticker": f"{symbol}.NS", "shares": qty, "stop_qty": qty,
+              "stop_loss": stop, "target1": target1, "target2": target2,
+              "current_price": fill_price, "buy_price": fill_price}
+        _rep = _reconcile_position_gtts(_p, None)
+        results = {"gtt_ids": _rep.get("gtt_ids") or [],
+                   "stop_gtt_id": (_rep.get("gtt_ids") or [None])[0],
+                   "placed": _rep.get("placed", [])}
+        failures = [f"stop ₹{f['stop']} / target ₹{f.get('target')} × {f['qty']} — {f['error']}"
+                    for f in _rep.get("failed", [])]
 
         ticker_ns = f"{symbol}.NS"
         live = list(_read_swing_live())
         idx = next((i for i, p in enumerate(live) if p.get("ticker") == ticker_ns), None)
         if idx is not None:
             upd = {"gtt_id": results.get("stop_gtt_id"),
-                   "gtt_t1_id": results.get("t1_gtt_id"),
-                   "gtt_t2_id": results.get("t2_gtt_id"),
+                   "gtt_ids": results.get("gtt_ids"),
                    "stop_qty": qty}
             if fill_price:   # correct the cost basis to the real fill
                 upd["buy_price"] = fill_price
@@ -1734,8 +1725,7 @@ def swing_arm_exits():
                 "target1":    target1,
                 "target2":    target2,
                 "gtt_id":     results.get("stop_gtt_id"),
-                "gtt_t1_id":  results.get("t1_gtt_id"),
-                "gtt_t2_id":  results.get("t2_gtt_id"),
+                "gtt_ids":    results.get("gtt_ids"),
                 "order_id":   order_id,
                 "source":     qe.get("source") or "enter_now",
                 "trail_atr":  pos.get("trailing_stop") or qe.get("trail_atr"),
@@ -1762,14 +1752,151 @@ def swing_arm_exits():
             _tg(f"🚨 <b>{symbol}: exit GTT placement failed</b>\n{fail_lines}\n"
                 f"⚠️ Place these manually on Kite.")
             return jsonify({"status": "partial", "failures": failures, **results}), 207
-        _tg(f"🛡 <b>{symbol}: exits armed</b>\n"
-            f"Stop ₹{stop} · T1 ₹{target1} ({qty_t1}) · T2 ₹{target2} ({qty_t2})")
+        _legs = " · ".join(
+            f"₹{p['stop']:.0f}/₹{p['target']:.0f} × {p['qty']}sh"
+            if p.get("target") else f"stop-only ₹{p['stop']:.0f} × {p['qty']}sh"
+            for p in results.get("placed", [])) or "already armed"
+        _tg(f"🛡 <b>{symbol}: OCO exits armed</b>\n{_legs}\n"
+            f"Either leg firing cancels the other automatically.")
         return jsonify({"status": "ok", **results})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 
 # ── GTT protection backstop ──────────────────────────────────────
+def _cancel_gtt_id(gid):
+    if not gid:
+        return
+    try:
+        _vps_post("/cancel-gtt", {"gtt_id": gid})
+        print(f"🗑 Cancelled GTT {gid}")
+    except Exception as e:
+        print(f"⚠️  GTT cancel failed ({gid}): {e}")
+
+
+def _reconcile_position_gtts(pos: dict, existing: list = None,
+                             cancel_strays: bool = False) -> dict:
+    """Bring one position's broker GTTs in line with _oco_plan(pos).
+
+    Places any missing OCO, optionally cancels ones we recorded that the
+    plan no longer wants (used after a partial exit, when the stop moves
+    to break-even). Idempotent — an OCO that already covers a planned
+    leg is left alone. Returns a report dict.
+
+    `existing` is the broker's active GTT list for this symbol; pass None
+    to skip broker verification (degraded mode) and rely on our own ids."""
+    ticker = str(pos.get("ticker") or "")
+    symbol = ticker.replace(".NS", "").replace(".BO", "").upper()
+    plan   = _oco_plan(pos)
+    rep    = {"ticker": ticker, "symbol": symbol, "planned": len(plan),
+              "placed": [], "failed": [], "cancelled": []}
+    if not plan:
+        rep["protected"] = True   # nothing to protect (no qty or no stop)
+        return rep
+
+    last_px = (pos.get("current_price") or pos.get("price")
+               or pos.get("buy_price"))
+    known    = [g for g in (existing or []) if g]
+    new_ids  = []
+    kept_ids = []
+    # Ids we have on record — gtt_ids is the current field, but positions
+    # armed before OCO only carry the legacy singles.
+    recorded = [g for g in (list(pos.get("gtt_ids") or [])
+                            + [pos.get(k) for k in
+                               ("gtt_id", "gtt_t1_id", "gtt_t2_id")]) if g]
+
+    for stop, target, qty in plan:
+        if target is None:
+            # Stop-only tranche (no targets on the position): a single-leg
+            # GTT is the correct shape, and an existing single-leg at that
+            # level already covers it.
+            match = next((g for g in known
+                          if len(g.get("trigger_values") or []) == 1
+                          and abs(float(g["trigger_values"][0]) - stop) / stop <= 0.005),
+                         None)
+            if match is not None and existing is not None:
+                kept_ids.append(match.get("gtt_id"))
+                known.remove(match)
+                continue
+            if existing is None and recorded and not cancel_strays:
+                kept_ids.extend(recorded)
+                break
+            sgid, serr = _place_sell_gtt(symbol, stop, qty, last_px)
+            if sgid:
+                new_ids.append(sgid)
+                rep["placed"].append({"gtt_id": sgid, "stop": stop,
+                                      "target": None, "qty": qty})
+                print(f"🛡 Stop-only GTT: {symbol} ₹{stop} × {qty} → {sgid}")
+            else:
+                rep["failed"].append({"stop": stop, "target": None,
+                                      "qty": qty, "error": serr})
+            continue
+        match = next((g for g in known if _gtt_matches(g, stop, target, qty)), None)
+        if match is not None and existing is not None:
+            kept_ids.append(match.get("gtt_id"))
+            known.remove(match)
+            continue
+        if existing is None and recorded and not cancel_strays:
+            # Degraded: can't verify, but we recorded ids — trust them
+            # rather than stacking duplicate triggers on the broker.
+            # NOT when cancel_strays is set: that means the plan itself
+            # changed (a partial exit moved the stop and halved the qty),
+            # so the recorded ids are exactly what must be replaced.
+            kept_ids.extend(recorded)
+            break
+        gid, err = _place_oco_gtt(symbol, stop, target, qty, last_px)
+        if gid:
+            new_ids.append(gid)
+            rep["placed"].append({"gtt_id": gid, "stop": stop,
+                                  "target": target, "qty": qty})
+            print(f"🛡 OCO placed: {symbol} stop ₹{stop} / target ₹{target} "
+                  f"× {qty} → GTT {gid}")
+            continue
+        # OCO impossible (price already outside the band) — a stop still
+        # matters more than the target, so fall back to a single-leg stop.
+        sgid, serr = _place_sell_gtt(symbol, stop, qty, last_px)
+        if sgid:
+            new_ids.append(sgid)
+            rep["placed"].append({"gtt_id": sgid, "stop": stop,
+                                  "target": None, "qty": qty})
+            print(f"🛡 Stop-only GTT: {symbol} ₹{stop} × {qty} → {sgid} "
+                  f"(OCO not possible: {err})")
+        else:
+            rep["failed"].append({"stop": stop, "target": target,
+                                  "qty": qty, "error": serr or err})
+
+    if cancel_strays:
+        planned_ids = set(str(i) for i in kept_ids + new_ids)
+        # One id can appear in both gtt_ids and a legacy field — dedupe so
+        # it isn't cancelled twice (the second call 404s and logs a
+        # misleading "cancel failed").
+        stale, seen = [], set()
+        for gid in list(pos.get("gtt_ids") or []) + \
+                   [pos.get(k) for k in ("gtt_id", "gtt_t1_id", "gtt_t2_id")]:
+            if not gid or str(gid) in planned_ids or str(gid) in seen:
+                continue
+            seen.add(str(gid))
+            stale.append(gid)
+        for gid in stale:
+            _cancel_gtt_id(gid)
+            rep["cancelled"].append(gid)
+
+    ids = [i for i in (kept_ids + new_ids) if i]
+    if ids:
+        pos["gtt_ids"] = ids
+        pos["gtt_id"]  = ids[0]          # legacy field / dashboard badge
+    elif cancel_strays:
+        pos["gtt_ids"] = []
+        pos["gtt_id"]  = None
+    if cancel_strays:
+        pos.pop("gtt_t1_id", None)
+        pos.pop("gtt_t2_id", None)
+    rep["protected"] = bool(ids) and not rep["failed"]
+    rep["gtt_ids"] = ids
+    return rep
+
+
+
 def _live_gtts_for(symbol: str) -> list:
     """Active SELL GTTs on Zerodha for one symbol. Verifying against the
     broker (not our stored gtt_id) is the point: an id can be stale after
@@ -1790,17 +1917,15 @@ def _live_gtts_for(symbol: str) -> list:
 
 @app.route("/swing/ensure-gtts", methods=["POST", "OPTIONS"])
 def swing_ensure_gtts():
-    """Guarantee every open swing position has a resting stop on Zerodha.
+    """Guarantee every open swing position has the OCO protection it
+    should, verified against Zerodha's live GTT list.
 
-    GTT placement can fail for reasons we only find out about at the
-    broker (rejected leg, expired token, symbol/tick quirk), and a failure
-    used to leave a REAL position with no stop until someone read a
-    Telegram message. This re-checks the broker's live GTT list for each
-    open position and places whatever is missing — safe to run repeatedly
-    (it never places a second GTT for a level that already rests there).
-
-    Called by the swing alerter's 30-min cron and the dashboard's
-    'Arm stops' button. Returns a per-position protection report."""
+    GTT placement can fail for reasons we only learn at the broker, and a
+    failure used to leave a REAL position with no stop until someone read
+    a Telegram message. This computes the desired OCO coverage for each
+    position, places whatever is missing, then re-reads the broker's list
+    to confirm the new triggers are genuinely resting. Idempotent — safe
+    to run from the 30-min alerter cron and the dashboard button."""
     if request.method == "OPTIONS":
         return jsonify({}), 200
     auth_err = _require_upload_token()
@@ -1820,85 +1945,38 @@ def swing_ensure_gtts():
                 by_symbol.setdefault(str(g.get("symbol", "")).upper(), []).append(g)
         else:
             # Can't verify against the broker (older executor without
-            # /get-gtts, or the VPS is down). Falling back to our stored
-            # gtt_id is worse than broker truth — but doing NOTHING would
-            # leave a real position with no stop, which is the failure
-            # this endpoint exists to prevent. Place stops where we have
-            # no id recorded and say plainly that verification was skipped.
+            # /get-gtts, or the VPS is down). Doing NOTHING would leave a
+            # real position with no stop — the failure this endpoint
+            # exists to prevent — so fall back to our own recorded ids
+            # and say plainly that verification was skipped.
             degraded_note = ((gtt_data or {}).get("error")
                              or f"could not list GTTs from the broker (HTTP {gstatus})")
             print(f"⚠️  ensure-gtts degraded: {degraded_note}")
 
-        report, placed_any, failures = [], 0, []
+        report, failures = [], []
         positions = list(_read_swing_live())
         changed = False
 
         for pos in positions:
-            ticker = str(pos.get("ticker") or "")
-            if not ticker:
+            if not pos.get("ticker"):
                 continue
-            symbol = ticker.replace(".NS", "").replace(".BO", "").upper()
-            qty    = int(pos.get("shares") or pos.get("approx_shares") or 0)
-            if qty <= 0:
-                continue
-            # The stop that should be resting right now: the trailed /
-            # break-even stop if one exists, else the planned stop.
-            stop = (pos.get("tsl_stop") or pos.get("live_stop")
-                    or pos.get("stop_loss") or pos.get("stop_loss_price"))
-            existing = by_symbol.get(symbol, [])
-            existing_triggers = [float(t) for g in existing
-                                 for t in (g.get("trigger_values") or [])]
-
-            if broker_listed:
-                def _has_level(level):
-                    """A GTT within 0.5% of the level already covers it."""
-                    if not level:
-                        return True
-                    return any(abs(t - float(level)) / float(level) <= 0.005
-                               for t in existing_triggers)
-            else:
-                _stored_id = pos.get("gtt_id")
-                def _has_level(level, _sid=_stored_id):
-                    """Degraded: trust our own record of a placed GTT."""
-                    return (not level) or bool(_sid)
-
-            missing = []
-            if stop and not _has_level(stop):
-                missing.append(("STOP", float(stop), qty))
-            # Targets are optional protection — only chase the stop when a
-            # position has none. Placing target legs for a position whose
-            # stop is missing first would leave the downside uncovered.
-            entry_report = {"ticker": ticker, "symbol": symbol, "qty": qty,
-                            "stop": stop, "existing_gtts": len(existing),
-                            "placed": [], "failed": []}
-
-            for label, level, q in missing:
-                last_px = pos.get("current_price") or pos.get("price") or pos.get("buy_price")
-                gid, err = _place_sell_gtt(symbol, level, q, last_px)
-                if gid:
-                    placed_any += 1
-                    entry_report["placed"].append({"level": level, "gtt_id": gid})
-                    pos["gtt_id"] = gid
-                    pos["stop_qty"] = q
-                    changed = True
-                    print(f"🛡 ensure-gtts: {symbol} stop ₹{level} × {q} → GTT {gid}")
-                else:
-                    entry_report["failed"].append({"level": level, "error": err})
-                    failures.append(f"{symbol} stop ₹{level} × {q} — {err}")
-                    print(f"🚨 ensure-gtts: {symbol} stop FAILED — {err}")
-
-            entry_report["protected"] = bool(
-                (not stop) or _has_level(stop) or entry_report["placed"])
-            report.append(entry_report)
+            symbol = str(pos["ticker"]).replace(".NS", "").replace(".BO", "").upper()
+            existing = by_symbol.get(symbol, []) if broker_listed else None
+            before = list(pos.get("gtt_ids") or [])
+            rep = _reconcile_position_gtts(pos, existing)
+            if rep["placed"] or list(pos.get("gtt_ids") or []) != before:
+                changed = True
+            for f in rep["failed"]:
+                failures.append(f"{symbol} stop ₹{f['stop']} × {f['qty']} — {f['error']}")
+                print(f"🚨 ensure-gtts: {symbol} protection FAILED — {f['error']}")
+            report.append(rep)
 
         if changed:
             _write_swing_live(positions)
 
         # ── Verify what we just placed actually EXISTS at the broker ──
         # "Placed OK" is only the API's word for it; a GTT id in a
-        # response is not proof the trigger is resting. Re-read the live
-        # list and confirm each new id is really there, so the app can
-        # never claim a position is armed while Kite shows nothing.
+        # response is not proof the trigger is resting.
         placed_ids = [str(p["gtt_id"]) for r in report for p in r["placed"]]
         resting = None
         if placed_ids and broker_listed:
@@ -1911,22 +1989,23 @@ def swing_ensure_gtts():
                             "trigger_values": g.get("trigger_values"),
                             "quantity": g.get("quantity")} for g in active]
                 for r in report:
-                    ghosts = [p for p in r["placed"] if str(p["gtt_id"]) not in live_ids]
+                    ghosts = [p for p in r["placed"]
+                              if str(p["gtt_id"]) not in live_ids]
                     if ghosts:
                         r["protected"] = False
                         r["failed"].append({
-                            "level": ghosts[0]["level"],
+                            "stop": ghosts[0]["stop"], "qty": ghosts[0]["qty"],
                             "error": f"GTT {ghosts[0]['gtt_id']} was accepted but is "
                                      f"NOT in Zerodha's active list — treat as unplaced",
                         })
                         failures.append(
-                            f"{r['symbol']} stop ₹{ghosts[0]['level']} — broker "
-                            f"accepted GTT {ghosts[0]['gtt_id']} but it is not "
-                            f"active on Zerodha")
+                            f"{r['symbol']} — broker accepted GTT "
+                            f"{ghosts[0]['gtt_id']} but it is not active on Zerodha")
                         print(f"🚨 ensure-gtts: {r['symbol']} GTT "
                               f"{ghosts[0]['gtt_id']} vanished after placement")
 
         unprotected = [r for r in report if not r["protected"]]
+        placed_any = sum(len(r["placed"]) for r in report)
         if failures:
             _tg("🚨 <b>Unprotected swing position(s)</b>\n"
                 + "\n".join(f"  • {f}" for f in failures)
@@ -1946,11 +2025,12 @@ def swing_ensure_gtts():
 def swing_trail_stop():
     """Ratchet a position's stop UP to a new trigger on Zerodha.
 
-    Zerodha has no trailing GTT, so the trail is simulated: MODIFY the
-    resting stop GTT to the higher trigger (same id, so the position is
-    never momentarily unprotected). Falls back to placing a fresh GTT if
-    there is nothing to modify. Refuses to LOWER a stop — a trailing stop
-    that can move down is worse than no trailing stop at all.
+    Zerodha has no trailing GTT, so the trail is simulated: MODIFY each
+    resting OCO in place, keeping its target leg and raising only the
+    stop leg. Modifying keeps the same trigger id, so the position is
+    never momentarily unprotected (delete-then-recreate has a window).
+    Refuses to LOWER a stop — a trailing stop that can move down is worse
+    than no trailing stop at all.
 
     Body: {ticker, new_stop, [last_price]}"""
     if request.method == "OPTIONS":
@@ -1997,32 +2077,72 @@ def swing_trail_stop():
         if not last_px:
             return jsonify({"error": "no last_price available"}), 502
 
-        limit_price = round(new_stop * 0.995, 2)
-        leg = [{"transaction_type": "SELL", "quantity": qty,
-                "product": "CNC", "order_type": "LIMIT", "price": limit_price}]
+        # Move the stop leg of every OCO resting for this symbol, keeping
+        # each one's own target leg intact.
+        gtt_data, _ = _vps_get("/get-gtts")
+        mine = []
+        if isinstance(gtt_data, dict) and "gtts" in gtt_data:
+            mine = [g for g in (gtt_data.get("gtts") or [])
+                    if str(g.get("symbol", "")).upper() == symbol.upper()
+                    and str(g.get("status", "")).lower() == "active"]
 
-        gtt_id = pos.get("gtt_id")
-        result, status, action = None, None, None
-        if gtt_id:
+        moved, errors = [], []
+        for g in mine:
+            trg = sorted(float(t) for t in (g.get("trigger_values") or []))
+            if not trg:
+                continue
+            two_leg = len(trg) == 2
+            target  = trg[-1] if two_leg else None
+            if two_leg and new_stop >= target:
+                errors.append(f"GTT {g.get('gtt_id')}: new stop ₹{new_stop} is at or "
+                              f"above its target ₹{target} — left alone")
+                continue
+            leg_qty = max(1, int(g.get("quantity") or qty) // (2 if two_leg else 1))
+            legs = [{"transaction_type": "SELL", "quantity": leg_qty,
+                     "product": "CNC", "order_type": "LIMIT",
+                     "price": round(new_stop * 0.995, 2)}]
+            triggers = [new_stop]
+            if two_leg:
+                triggers.append(target)
+                legs.append({"transaction_type": "SELL", "quantity": leg_qty,
+                             "product": "CNC", "order_type": "LIMIT",
+                             "price": round(target * 0.995, 2)})
             result, status = _vps_post("/modify-gtt", {
-                "gtt_id": gtt_id, "symbol": symbol,
-                "trigger_values": [new_stop], "last_price": float(last_px),
-                "orders": leg,
+                "gtt_id": g.get("gtt_id"), "symbol": symbol,
+                "trigger_type": "two-leg" if two_leg else "single",
+                "trigger_values": triggers, "last_price": float(last_px),
+                "orders": legs,
             })
-            action = "modified"
-        if not gtt_id or (result or {}).get("error"):
-            # Nothing to modify (or the id was stale) → place a fresh stop
-            # so the ratchet still happens instead of silently failing.
-            new_id, err = _place_sell_gtt(symbol, new_stop, qty, last_px)
-            if not new_id:
-                return jsonify({"error": f"could not move stop: "
-                                         f"{(result or {}).get('error') or err}"}), 502
-            gtt_id, action = new_id, "replaced"
+            if (result or {}).get("error"):
+                errors.append(f"GTT {g.get('gtt_id')}: {result['error']}")
+            else:
+                moved.append(g.get("gtt_id"))
+
+        if not moved:
+            # Nothing to modify (or all modifies failed) — place fresh
+            # protection so the ratchet still happens.
+            pos["tsl_stop"] = new_stop
+            pos["stop_loss"] = new_stop
+            pos["stop_loss_price"] = new_stop
+            rep = _reconcile_position_gtts(pos, mine or None)
+            if not rep["protected"]:
+                return jsonify({"error": "could not move stop: "
+                                         + "; ".join(errors or ["no GTT to modify"]),
+                                "detail": rep}), 502
+            positions[idx] = pos
+            _write_swing_live(positions)
+            _ids = rep.get("gtt_ids") or []
+            return jsonify({"status": "ok", "action": "replaced",
+                            "gtt_ids": _ids,
+                            "gtt_id": _ids[0] if _ids else None,
+                            "old_stop": current_stop, "new_stop": new_stop,
+                            "errors": errors})
 
         pos["tsl_stop"]        = new_stop
         pos["stop_loss"]       = new_stop
         pos["stop_loss_price"] = new_stop
-        pos["gtt_id"]          = gtt_id
+        pos["gtt_ids"]         = moved
+        pos["gtt_id"]          = moved[0]
         pos["stop_qty"]        = qty
         pos["trail_high"]      = max(float(pos.get("trail_high") or 0), float(last_px))
         positions[idx] = pos
@@ -2032,13 +2152,15 @@ def swing_trail_stop():
         for k in (f"{symbol}.NS", symbol):
             if k in q:
                 q[k].update({"tsl_stop": new_stop, "live_stop": new_stop,
-                             "gtt_id": gtt_id, "trail_high": pos["trail_high"]})
+                             "gtt_id": moved[0], "trail_high": pos["trail_high"]})
                 _write_queue(q)
                 break
 
-        print(f"📈 Trail stop {action}: {symbol} ₹{current_stop} → ₹{new_stop} (GTT {gtt_id})")
-        return jsonify({"status": "ok", "action": action, "gtt_id": gtt_id,
-                        "old_stop": current_stop, "new_stop": new_stop})
+        print(f"📈 Trail stop modified: {symbol} ₹{current_stop} → ₹{new_stop} "
+              f"on GTT(s) {moved}")
+        return jsonify({"status": "ok", "action": "modified", "gtt_ids": moved,
+                        "gtt_id": moved[0], "old_stop": current_stop,
+                        "new_stop": new_stop, "errors": errors})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -2734,6 +2856,113 @@ def _place_sell_gtt(symbol: str, trigger_price, qty: int, last_price=None):
         return None, str(e)
 
 
+def _place_oco_gtt(symbol: str, stop, target, qty: int, last_price=None):
+    """Place a two-leg OCO GTT: stop-loss AND target in ONE trigger.
+
+    Zerodha cancels the other leg automatically when either fires, which
+    is the whole point — the old design placed separate stop / T1 / T2
+    GTTs, so a fired target left a stale stop (and vice versa) that had
+    to be cleaned up by hand. Kite requires stop < LTP < target for a
+    two-leg trigger; callers fall back to a single-leg stop when that
+    doesn't hold. Returns (gtt_id | None, error | None)."""
+    try:
+        stop   = round(float(stop), 2)
+        target = round(float(target), 2)
+        qty    = int(qty)
+        if qty <= 0:
+            return None, "quantity must be > 0"
+        if not last_price:
+            quote, _ = _vps_get(f"/get-quote?symbol={symbol}")
+            last_price = ((quote or {}).get(symbol) or {}).get("last_price")
+        if not last_price:
+            return None, "no last_price available for GTT"
+        lp = float(last_price)
+        if not (stop < lp < target):
+            return None, (f"OCO needs stop < LTP < target "
+                          f"(stop ₹{stop}, LTP ₹{lp}, target ₹{target})")
+        legs = [
+            # Both legs priced 0.5% through their trigger so they fill
+            # like market orders once triggered.
+            {"transaction_type": "SELL", "quantity": qty, "product": "CNC",
+             "order_type": "LIMIT", "price": round(stop * 0.995, 2)},
+            {"transaction_type": "SELL", "quantity": qty, "product": "CNC",
+             "order_type": "LIMIT", "price": round(target * 0.995, 2)},
+        ]
+        result, status = _vps_post("/place-gtt", {
+            "symbol":         symbol,
+            "trigger_type":   "two-leg",
+            "trigger_values": [stop, target],
+            "last_price":     lp,
+            "orders":         legs,
+        })
+        gtt_id = (result or {}).get("gtt_id")
+        if gtt_id:
+            return gtt_id, None
+        return None, (result or {}).get("error", f"HTTP {status}")
+    except Exception as e:
+        return None, str(e)
+
+
+def _oco_plan(pos: dict) -> list:
+    """The OCO coverage an open position SHOULD have, as
+    [(stop, target, qty), …].
+
+    Declarative on purpose: every path (fill, arm, ensure, partial exit)
+    computes this and reconciles to it, instead of patching individual
+    GTTs incrementally — which is how stale and orphaned triggers kept
+    appearing. Scale-out is expressed as two OCOs sharing one stop:
+    half exits at T1, half at T2, and the stop covers both halves."""
+    qty = int(pos.get("stop_qty") or pos.get("shares")
+              or pos.get("approx_shares") or 0)
+    stop = (pos.get("tsl_stop") or pos.get("live_stop")
+            or pos.get("stop_loss") or pos.get("stop_loss_price"))
+    if qty <= 0 or not stop:
+        return []
+    stop = float(stop)
+    t1 = pos.get("target1")
+    t2 = pos.get("target2")
+    t1 = float(t1) if t1 else None
+    t2 = float(t2) if t2 else None
+    if not t1 and not t2:
+        # No targets recorded — the stop still MUST rest. Returning an
+        # empty plan here would have reported the position "protected"
+        # while placing nothing at all.
+        return [(stop, None, qty)]
+    # After T1 is booked the remainder runs to T2 behind the (break-even)
+    # stop; a single share can't be halved, so it books at the first target.
+    if pos.get("target1_booked"):
+        tgt = t2 or t1
+        return [(stop, tgt, qty)] if tgt else []
+    if qty == 1:
+        tgt = t1 or t2
+        return [(stop, tgt, 1)] if tgt else []
+    q1 = qty // 2
+    q2 = qty - q1
+    plan = []
+    if q1 > 0 and t1:
+        plan.append((stop, t1, q1))
+    if q2 > 0:
+        tgt = t2 or t1
+        if tgt:
+            plan.append((stop, tgt, q2))
+    return plan
+
+
+def _gtt_matches(g: dict, stop: float, target: float, qty: int) -> bool:
+    """Does a broker GTT already provide this exact OCO coverage?
+    Triggers within 0.5% and the same per-leg quantity."""
+    trg = [float(t) for t in (g.get("trigger_values") or [])]
+    if len(trg) != 2:
+        return False
+    want = (float(stop), float(target))
+    for got, exp in zip(sorted(trg), sorted(want)):
+        if not exp or abs(got - exp) / exp > 0.005:
+            return False
+    # /get-gtts sums the legs, so a 2-leg OCO of N reports 2N
+    gq = int(g.get("quantity") or 0)
+    return gq in (int(qty), int(qty) * 2)
+
+
 def _read_swing_live() -> list:
     global _swing_live_cache
     if not _swing_live_cache:
@@ -2955,71 +3184,94 @@ def _process_swing_sell(symbol: str, order_id: str,
                              if risk else None,
     })
 
-    # ── GTT housekeeping ─────────────────────────────────
-    fired = {"TARGET1": gtt_t1_id, "TARGET2": gtt_t2_id,
-             "STOP_LOSS": gtt_id}.get(exit_reason)
+    # ── GTT housekeeping (declarative) ───────────────────
+    # Previously this patched individual GTTs by hand — cancel this id,
+    # re-place that one — which is how stale and orphaned triggers kept
+    # appearing. Now: update the position to its post-exit state and
+    # reconcile the broker to the OCO plan that state implies.
+    live_positions = list(_read_swing_live())
+    idx = next((i for i, p in enumerate(live_positions)
+                if p.get("ticker") in (ticker_ns, symbol)), None)
 
-    new_stop, new_gtt_id, new_gtt_err = None, None, None
+    # Collect every trigger id we know of, from BOTH the queue entry and
+    # the live position. ensure-gtts writes the authoritative gtt_ids
+    # list onto the POSITION; reading only the queue entry lost the
+    # second OCO of a scale-out pair, which then survived the exit as an
+    # orphan (it would try to sell shares already gone).
+    all_ids = []
+    for src in (entry, live_positions[idx] if idx is not None else {}):
+        for gid in (src.get("gtt_ids") or []):
+            if gid and gid not in all_ids:
+                all_ids.append(gid)
+        for legacy in ("gtt_id", "gtt_t1_id", "gtt_t2_id"):
+            gid = src.get(legacy)
+            if gid and gid not in all_ids:
+                all_ids.append(gid)
+
+    new_stop, reconcile_rep = None, None
     if closed:
-        # Whole position gone — cancel every GTT still standing
-        for gid in (gtt_id, gtt_t1_id, gtt_t2_id):
-            if gid and gid != fired:
-                _cancel_gtt(gid)
+        # Whole position gone — cancel every trigger still standing.
+        # A fired OCO leg auto-cancels its sibling leg, but the OTHER
+        # OCO (the second tranche) is independent and must go.
+        for gid in all_ids:
+            _cancel_gtt_id(gid)
         if t_key:
             q[t_key].update({
                 "status":    "closed",
                 "stop_qty":  0,
                 "exit_date": today_str,
                 "gtt_id":    None,
+                "gtt_ids":   [],
                 "gtt_t1_id": None,
                 "gtt_t2_id": None,
             })
             _write_queue(q)
+        if idx is not None:
+            live_positions.pop(idx)
+            _write_swing_live(live_positions)
     else:
-        # Partial exit — replace the stop GTT for what's left.
-        # After T1 the stop moves to BREAK-EVEN (the alerter
-        # always advised this; the automation used to re-place
-        # the original stop, contradicting it) — the remaining
-        # half can no longer turn a winner into a loser.
-        if gtt_id and gtt_id != fired:
-            _cancel_gtt(gtt_id)
+        # Partial exit. After T1 the stop moves to BREAK-EVEN — the
+        # remaining tranche can no longer turn a winner into a loser.
         new_stop = float(stop_loss) if stop_loss else None
         if exit_reason == "TARGET1" and buy_price:
             new_stop = max(new_stop or 0, round(buy_price, 2))
-        if new_stop:
-            new_gtt_id, new_gtt_err = _place_sell_gtt(
-                symbol, new_stop, remaining_after, fill_price)
+
+        if idx is not None:
+            p = live_positions[idx]
+            p["shares"]   = remaining_after
+            p["stop_qty"] = remaining_after
+            p["gtt_ids"]  = all_ids
+            if exit_reason == "TARGET1":
+                p["target1_booked"] = True   # stops the alerter re-alerting
+            if new_stop:
+                p["stop_loss"] = p["stop_loss_price"] = p["live_stop"] = new_stop
+            p["current_price"] = fill_price
+            p["gtt_ids"] = all_ids
+            # Reconcile against what the broker ACTUALLY still holds — the
+            # fired OCO is already gone from that list, so it is never
+            # "cancelled" redundantly. cancel_strays=True clears the
+            # pre-exit OCOs that no longer match the (smaller,
+            # higher-stopped) plan.
+            _bro, _ = _vps_get("/get-gtts")
+            _sym_gtts = None
+            if isinstance(_bro, dict) and "gtts" in _bro:
+                _sym_gtts = [g for g in (_bro.get("gtts") or [])
+                             if str(g.get("symbol", "")).upper() == symbol.upper()
+                             and str(g.get("status", "")).lower() == "active"]
+            reconcile_rep = _reconcile_position_gtts(p, _sym_gtts, cancel_strays=True)
+            live_positions[idx] = p
+            _write_swing_live(live_positions)
+
         if t_key:
             q[t_key].update({
                 "stop_qty":  remaining_after,
-                "gtt_id":    new_gtt_id,
+                "gtt_ids":   (reconcile_rep or {}).get("gtt_ids") or [],
+                "gtt_id":    ((reconcile_rep or {}).get("gtt_ids") or [None])[0],
                 "live_stop": new_stop,
+                "gtt_t1_id": None,
+                "gtt_t2_id": None,
             })
-            if exit_reason == "TARGET1":
-                q[t_key]["gtt_t1_id"] = None
-            elif exit_reason == "TARGET2":
-                q[t_key]["gtt_t2_id"] = None
             _write_queue(q)
-
-    # ── /swing/live sync ─────────────────────────────────
-    live_positions = list(_read_swing_live())
-    idx = next((i for i, p in enumerate(live_positions)
-                if p.get("ticker") in (ticker_ns, symbol)), None)
-    if idx is not None:
-        if closed:
-            live_positions.pop(idx)
-        else:
-            live_positions[idx]["shares"] = remaining_after
-            if exit_reason == "TARGET1":
-                # stops the alerter re-firing the T1 alert
-                # daily and tells it the stop moved
-                live_positions[idx]["target1_booked"] = True
-            if new_stop:
-                live_positions[idx]["stop_loss"] = new_stop
-                live_positions[idx]["stop_loss_price"] = new_stop
-                live_positions[idx]["gtt_id"] = new_gtt_id
-                live_positions[idx]["stop_qty"] = remaining_after
-        _write_swing_live(live_positions)
 
     # ── Telegram ─────────────────────────────────────────
     pnl = round((fill_price - buy_price) * sold, 2)
@@ -3038,10 +3290,12 @@ def _process_swing_sell(symbol: str, order_id: str,
         stop_desc = (f"₹{new_stop} (break-even)"
                      if exit_reason == "TARGET1" and new_stop == round(buy_price, 2)
                      else f"₹{new_stop}")
-        sl_note = (f"New stop GTT for {remaining_after}sh at {stop_desc} ✅"
-                   if new_gtt_id else
-                   f"⚠️ Stop GTT re-placement FAILED ({new_gtt_err}) — "
-                   f"manually set stop for {remaining_after}sh at {stop_desc}")
+        _rr = reconcile_rep or {}
+        sl_note = (f"OCO re-armed for {remaining_after}sh — stop {stop_desc} ✅"
+                   if _rr.get("protected") else
+                   f"⚠️ Re-arming FAILED ("
+                   + "; ".join(str(f.get("error")) for f in _rr.get("failed", []))
+                   + f") — manually set a stop for {remaining_after}sh at {stop_desc}")
         _tg(
             f"{label}: <b>{name} ({symbol})</b>\n"
             f"Sold {sold} of {remaining_before} shares @ "
@@ -3132,29 +3386,21 @@ def kite_postback():
                     qty_t1    = fill_qty // 2
                     qty_t2    = fill_qty - qty_t1
 
-                    gtt_id = gtt_t1_id = gtt_t2_id = None
-                    gtt_failures = []
-
-                    if stop_loss:
-                        gtt_id, err = _place_sell_gtt(symbol, stop_loss, fill_qty, fill_price)
-                        if gtt_id:
-                            print(f"✅ Auto-GTT stop: {symbol} ₹{stop_loss} qty={fill_qty} → id={gtt_id}")
-                        else:
-                            gtt_failures.append(f"STOP ₹{stop_loss} × {fill_qty}sh — {err}")
-
-                    if target1 and qty_t1 > 0:
-                        gtt_t1_id, err = _place_sell_gtt(symbol, target1, qty_t1, fill_price)
-                        if gtt_t1_id:
-                            print(f"✅ Auto-GTT T1: {symbol} ₹{target1} qty={qty_t1} → id={gtt_t1_id}")
-                        else:
-                            gtt_failures.append(f"T1 ₹{target1} × {qty_t1}sh — {err}")
-
-                    if target2 and qty_t2 > 0:
-                        gtt_t2_id, err = _place_sell_gtt(symbol, target2, qty_t2, fill_price)
-                        if gtt_t2_id:
-                            print(f"✅ Auto-GTT T2: {symbol} ₹{target2} qty={qty_t2} → id={gtt_t2_id}")
-                        else:
-                            gtt_failures.append(f"T2 ₹{target2} × {qty_t2}sh — {err}")
+                    # ── Arm OCO protection (stop + target in ONE
+                    # trigger, so a fired leg auto-cancels its sibling) ──
+                    _p = {"ticker": ticker_ns, "shares": fill_qty,
+                          "stop_qty": fill_qty, "stop_loss": stop_loss,
+                          "target1": target1, "target2": target2,
+                          "current_price": fill_price, "price": fill_price,
+                          "buy_price": fill_price}
+                    _rep = _reconcile_position_gtts(_p, None)
+                    gtt_ids = _rep.get("gtt_ids") or []
+                    gtt_id = gtt_ids[0] if gtt_ids else None
+                    gtt_failures = [
+                        f"stop ₹{f['stop']} / target ₹{f.get('target')} "
+                        f"× {f['qty']}sh — {f['error']}"
+                        for f in _rep.get("failed", [])
+                    ]
 
                     # A silent GTT failure means an unprotected position —
                     # that exact failure mode went unnoticed for months.
@@ -3170,12 +3416,16 @@ def kite_postback():
                             f"is unprotected until you do."
                         )
                     else:
+                        legs = " · ".join(
+                            f"₹{p['stop']:.0f}/₹{p['target']:.0f} × {p['qty']}sh"
+                            if p.get("target") else
+                            f"stop-only ₹{p['stop']:.0f} × {p['qty']}sh"
+                            for p in _rep.get("placed", []))
                         _tg(
                             f"✅ <b>{symbol}: swing entry filled</b>\n"
                             f"Bought {fill_qty} @ ₹{fill_price:.2f}\n"
-                            f"🛑 Stop ₹{stop_loss} · 🎯 T1 ₹{target1} ({qty_t1}sh) "
-                            f"· T2 ₹{target2} ({qty_t2}sh)\n"
-                            f"All GTTs placed automatically."
+                            f"🛡 OCO armed (stop/target): {legs}\n"
+                            f"Either leg firing cancels the other automatically."
                         )
 
                     if t_key:
@@ -3188,8 +3438,7 @@ def kite_postback():
                             "trail_high": fill_price,
                             "order_id":   order_id,
                             "gtt_id":     gtt_id,
-                            "gtt_t1_id":  gtt_t1_id,
-                            "gtt_t2_id":  gtt_t2_id,
+                            "gtt_ids":    gtt_ids,
                         })
                         _write_queue(q)
 
@@ -3246,25 +3495,26 @@ def kite_postback():
                     lp = next((p for p in live_positions
                                if p.get("ticker") in (ticker_ns, symbol)), None)
                     if lp and not lp.get("gtt_id"):
-                        s_stop = lp.get("stop_loss") or lp.get("stop_loss_price")
-                        s_t1   = lp.get("target1")
-                        s_t2   = lp.get("target2")
-                        qty_t1 = fill_qty // 2
-                        qty_t2 = fill_qty - qty_t1
-                        g_stop, e1 = _place_sell_gtt(symbol, s_stop, fill_qty, fill_price) if s_stop else (None, "no stop")
-                        g_t1, e2   = _place_sell_gtt(symbol, s_t1, qty_t1, fill_price) if (s_t1 and qty_t1) else (None, None)
-                        g_t2, e3   = _place_sell_gtt(symbol, s_t2, qty_t2, fill_price) if (s_t2 and qty_t2) else (None, None)
-                        lp.update({"gtt_id": g_stop, "gtt_t1_id": g_t1,
-                                   "gtt_t2_id": g_t2, "stop_qty": fill_qty})
+                        lp["shares"]        = lp.get("shares") or fill_qty
+                        lp["stop_qty"]      = fill_qty
+                        lp["current_price"] = fill_price
+                        rep = _reconcile_position_gtts(lp, None)
                         _write_swing_live(live_positions)
-                        if s_stop and not g_stop:
+                        s_stop = (lp.get("stop_loss") or lp.get("stop_loss_price"))
+                        if not rep.get("protected"):
+                            why = "; ".join(str(f.get("error")) for f in rep.get("failed", [])) \
+                                  or "no stop level on the position"
                             _tg(f"🚨 <b>{symbol}: stop GTT FAILED after fill</b>\n"
                                 f"Bought {fill_qty} @ ₹{fill_price:.2f} — place a stop "
-                                f"at ₹{s_stop} manually on Kite. ({e1})")
+                                f"at ₹{s_stop} manually on Kite. ({why})")
                         else:
-                            _tg(f"🛡 <b>{symbol}: exits armed on fill</b>\n"
-                                f"Stop ₹{s_stop} · T1 ₹{s_t1} · T2 ₹{s_t2}")
-                        print(f"✅ Enter-Now backstop armed GTTs: {symbol}")
+                            legs = " · ".join(
+                                f"₹{p['stop']:.0f}/₹{p['target']:.0f} × {p['qty']}sh"
+                                if p.get("target") else
+                                f"stop-only ₹{p['stop']:.0f} × {p['qty']}sh"
+                                for p in rep.get("placed", []))
+                            _tg(f"🛡 <b>{symbol}: OCO exits armed on fill</b>\n{legs}")
+                        print(f"✅ Enter-Now backstop armed OCO GTTs: {symbol}")
 
                 # ── India monthly queue: auto-add to live portfolio ────
                 iq = _read_india_queue()

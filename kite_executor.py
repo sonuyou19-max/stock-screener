@@ -382,7 +382,7 @@ def place_gtt():
                     o["price"] = px[f"p{i}"]
                 ords.append(o)
             return kite.place_gtt(
-                trigger_type=data.get("trigger_type", kite.GTT_TYPE_SINGLE),
+                trigger_type=_gtt_type(kite, data.get("trigger_type")),
                 tradingsymbol=sym,
                 exchange=data.get("exchange", "NSE"),
                 trigger_values=trg,
@@ -398,6 +398,16 @@ def place_gtt():
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+def _gtt_type(kite, requested):
+    """Map a requested trigger type to the SDK's constant. Two-leg (OCO)
+    puts the stop and the target in ONE trigger, so whichever fires
+    cancels the other automatically — no orphaned leg to clean up."""
+    want = str(requested or "").strip().lower()
+    if want in ("two-leg", "two_leg", "oco", "twoleg"):
+        return getattr(kite, "GTT_TYPE_OCO", "two-leg")
+    return getattr(kite, "GTT_TYPE_SINGLE", "single")
 
 
 @app.route("/get-gtts", methods=["GET"])
@@ -470,7 +480,7 @@ def modify_gtt():
                 ords.append(o)
             return kite.modify_gtt(
                 trigger_id=int(data["gtt_id"]),
-                trigger_type=data.get("trigger_type", kite.GTT_TYPE_SINGLE),
+                trigger_type=_gtt_type(kite, data.get("trigger_type")),
                 tradingsymbol=sym,
                 exchange=data.get("exchange", "NSE"),
                 trigger_values=trg,
