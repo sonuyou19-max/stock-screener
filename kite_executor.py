@@ -390,7 +390,7 @@ def place_gtt():
                 orders=ords,
             )
 
-        gtt_id = _with_tick_retry(sym, flat, _submit_gtt)
+        gtt_id = _as_gtt_id(_with_tick_retry(sym, flat, _submit_gtt))
         log.info("✅ GTT placed: gtt_id=%s  symbol=%s  triggers=%s",
                  gtt_id, sym, [flat[f"t{i}"] for i in range(len(triggers))])
         return jsonify({"gtt_id": gtt_id, "status": "placed"})
@@ -398,6 +398,21 @@ def place_gtt():
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+def _as_gtt_id(result):
+    """Normalise what the SDK returns for a GTT to a plain id.
+
+    kite.place_gtt()/modify_gtt() return {"trigger_id": 123}, not 123.
+    Passing that dict on made the API store {'trigger_id': …} as the
+    trigger id, so verifying it against Zerodha's list of plain integer
+    ids never matched and a perfectly good GTT was reported missing."""
+    if isinstance(result, dict):
+        for k in ("trigger_id", "gtt_id", "id"):
+            if result.get(k) is not None:
+                return result[k]
+        return None
+    return result
 
 
 def _gtt_type(kite, requested):
@@ -488,11 +503,12 @@ def modify_gtt():
                 orders=ords,
             )
 
-        _with_tick_retry(sym, flat, _submit_modify)
+        _modified = _as_gtt_id(_with_tick_retry(sym, flat, _submit_modify))
         final = [flat[f"t{i}"] for i in range(len(triggers))]
         log.info("✏️  GTT modified: id=%s symbol=%s → trigger=%s",
                  data["gtt_id"], sym, final)
-        return jsonify({"status": "modified", "gtt_id": data["gtt_id"],
+        return jsonify({"status": "modified",
+                        "gtt_id": _modified or data["gtt_id"],
                         "trigger_values": final})
     except KiteException as e:
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 400

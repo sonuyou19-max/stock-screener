@@ -2877,12 +2877,29 @@ def _place_sell_gtt(symbol: str, trigger_price, qty: int, last_price=None):
                 "price":            limit_price,
             }],
         })
-        gtt_id = (result or {}).get("gtt_id")
+        gtt_id = _norm_gtt_id((result or {}).get("gtt_id"))
         if gtt_id:
             return gtt_id, None
         return None, (result or {}).get("error", f"HTTP {status}")
     except Exception as e:
         return None, str(e)
+
+
+def _norm_gtt_id(raw):
+    """Unwrap a GTT id that arrives as {"trigger_id": …}.
+
+    The Kite SDK returns a dict from place_gtt/modify_gtt. Storing that
+    dict as the trigger id meant verifying it against Zerodha's list of
+    plain integer ids never matched, so a correctly placed GTT was
+    reported as a ghost ("accepted but not active"). Normalised at the
+    executor now, but kept here too so an older executor can't poison
+    the stored ids."""
+    if isinstance(raw, dict):
+        for k in ("trigger_id", "gtt_id", "id"):
+            if raw.get(k) is not None:
+                return raw[k]
+        return None
+    return raw
 
 
 def _place_oco_gtt(symbol: str, stop, target, qty: int, last_price=None):
@@ -2924,7 +2941,7 @@ def _place_oco_gtt(symbol: str, stop, target, qty: int, last_price=None):
             "last_price":     lp,
             "orders":         legs,
         })
-        gtt_id = (result or {}).get("gtt_id")
+        gtt_id = _norm_gtt_id((result or {}).get("gtt_id"))
         if gtt_id:
             return gtt_id, None
         return None, (result or {}).get("error", f"HTTP {status}")
