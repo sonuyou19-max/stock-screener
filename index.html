@@ -3627,8 +3627,9 @@ async function armSwingStops(){
         msg=`🚨 UNPROTECTED: ${bad.join(', ')}\n\nZerodha refused the stop-loss — see Telegram for the exact reason.\nPlace these stops manually on Kite NOW.`;
         if(n)msg=`🛡 Placed ${n} stop GTT${n>1?'s':''}, but:\n\n`+msg;
       }else{
-        msg=n?`🛡 Placed ${n} missing stop GTT${n>1?'s':''}.`
+        msg=n?`🛡 Placed ${n} missing OCO GTT${n>1?'s':''} (stop + target in one trigger).`
              :`All ${d.positions||0} position${d.positions===1?'':'s'} already have a resting stop${d.broker_verified?' on Zerodha':' recorded'}.`;
+        if(d.gtts_retired)msg+=`\n♻️ Retired ${d.gtts_retired} superseded single-leg stop${d.gtts_retired>1?'s':''} (${(d.retired||[]).map(x=>'₹'+x.trigger).join(', ')}) — the OCO covers those now.`;
         /* Show what Zerodha actually holds, so "armed" is never just our
            word for it — if this list is empty the GTT isn't really there. */
         if(d.resting_gtts&&d.resting_gtts.length){

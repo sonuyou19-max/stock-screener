@@ -1789,7 +1789,7 @@ def _reconcile_position_gtts(pos: dict, existing: list = None,
     symbol = ticker.replace(".NS", "").replace(".BO", "").upper()
     plan   = _oco_plan(pos)
     rep    = {"ticker": ticker, "symbol": symbol, "planned": len(plan),
-              "placed": [], "failed": [], "cancelled": []}
+              "placed": [], "failed": [], "cancelled": [], "retired": []}
     if not plan:
         rep["protected"] = True   # nothing to protect (no qty or no stop)
         return rep
@@ -1880,6 +1880,32 @@ def _reconcile_position_gtts(pos: dict, existing: list = None,
         for gid in stale:
             _cancel_gtt_id(gid)
             rep["cancelled"].append(gid)
+
+    # ── Retire single-leg stops the OCO plan now supersedes ──────────
+    # Once OCO coverage is resting, an older stop-only GTT at the same
+    # level is DUPLICATE protection: if the stop hit, both would fire and
+    # try to sell twice the shares held. Only runs when the OCO plan is
+    # fully in place (nothing failed) and we can actually see the broker's
+    # list — protection is never removed before its replacement exists.
+    # Scope is deliberately narrow: a leftover single-leg is retired only
+    # if we placed it (its id is on the position) or its trigger sits
+    # within 0.5% of the planned stop, so a deliberately different manual
+    # stop is left alone.
+    if (existing is not None and not rep["failed"]
+            and any(t is not None for _, t, _ in plan)):
+        plan_stop = float(plan[0][0])
+        for g in list(known):
+            trg = [float(t) for t in (g.get("trigger_values") or [])]
+            if len(trg) != 1:
+                continue                      # only single-leg triggers
+            gid = g.get("gtt_id")
+            same_level = plan_stop and abs(trg[0] - plan_stop) / plan_stop <= 0.005
+            if str(gid) in {str(r) for r in recorded} or same_level:
+                _cancel_gtt_id(gid)
+                rep["retired"].append({"gtt_id": gid, "trigger": trg[0]})
+                known.remove(g)
+                print(f"♻️  Retired superseded single-leg stop {gid} "
+                      f"(₹{trg[0]}) for {symbol} — OCO now covers it")
 
     ids = [i for i in (kept_ids + new_ids) if i]
     if ids:
@@ -2010,8 +2036,11 @@ def swing_ensure_gtts():
             _tg("🚨 <b>Unprotected swing position(s)</b>\n"
                 + "\n".join(f"  • {f}" for f in failures)
                 + "\n\n⚠️ Place these stop-losses manually on Kite NOW.")
+        retired = [x for r in report for x in r.get("retired", [])]
         return jsonify({"status": "ok", "positions": len(report),
                         "gtts_placed": placed_any,
+                        "gtts_retired": len(retired),
+                        "retired": retired,
                         "unprotected": [r["symbol"] for r in unprotected],
                         "broker_verified": broker_listed,
                         "warning": degraded_note,
