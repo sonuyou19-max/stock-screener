@@ -360,6 +360,86 @@ def place_gtt():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/get-gtts", methods=["GET"])
+def get_gtts():
+    """List active GTT triggers. Lets the API verify what protection is
+    ACTUALLY live on Zerodha rather than trusting the gtt_id we stored —
+    an id can be stale (trigger already fired, or deleted by hand)."""
+    err = _check_auth()
+    if err:
+        return err
+    try:
+        kite = _get_kite()
+        out = []
+        for g in (kite.get_gtts() or []):
+            cond = g.get("condition") or {}
+            orders = g.get("orders") or []
+            out.append({
+                "gtt_id":         g.get("id"),
+                "status":         g.get("status"),
+                "symbol":         cond.get("tradingsymbol"),
+                "exchange":       cond.get("exchange"),
+                "trigger_values": cond.get("trigger_values") or [],
+                "last_price":     cond.get("last_price"),
+                "quantity":       sum(int(o.get("quantity") or 0) for o in orders),
+                "transaction_type": (orders[0].get("transaction_type") if orders else None),
+            })
+        return jsonify({"gtts": out, "count": len(out)})
+    except KiteException as e:
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 400
+    except Exception as e:
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
+
+
+@app.route("/modify-gtt", methods=["POST"])
+def modify_gtt():
+    """Move an existing GTT's trigger (and limit price/qty).
+
+    Zerodha has NO native trailing GTT — a trailing stop can only be
+    simulated by modifying the resting GTT each time the trail ratchets
+    up. Modifying keeps the same trigger id, so there is never a window
+    where the position sits unprotected (delete-then-recreate has one).
+
+    Body: {gtt_id, symbol, trigger_values:[…], last_price, orders:[…]}
+    """
+    err = _check_auth()
+    if err:
+        return err
+    data = request.get_json(force=True) or {}
+    required = ["gtt_id", "symbol", "trigger_values", "last_price", "orders"]
+    missing = [k for k in required if not data.get(k)]
+    if missing:
+        return jsonify({"error": f"Missing required fields: {missing}"}), 400
+    try:
+        kite = _get_kite()
+        sym = data["symbol"].strip().upper()
+        _ensure_instruments(kite)
+        triggers = [_round_to_tick(sym, t) for t in data["trigger_values"]]
+        orders = []
+        for o in data["orders"]:
+            o = dict(o)
+            if o.get("price") is not None:
+                o["price"] = _round_to_tick(sym, o["price"])
+            orders.append(o)
+        kite.modify_gtt(
+            trigger_id=int(data["gtt_id"]),
+            trigger_type=data.get("trigger_type", kite.GTT_TYPE_SINGLE),
+            tradingsymbol=sym,
+            exchange=data.get("exchange", "NSE"),
+            trigger_values=triggers,
+            last_price=float(data["last_price"]),
+            orders=orders,
+        )
+        log.info("✏️  GTT modified: id=%s symbol=%s → trigger=%s",
+                 data["gtt_id"], sym, triggers)
+        return jsonify({"status": "modified", "gtt_id": data["gtt_id"],
+                        "trigger_values": triggers})
+    except KiteException as e:
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 400
+    except Exception as e:
+        return jsonify({"error": f"{type(e).__name__}: {e}"}), 500
+
+
 @app.route("/cancel-gtt", methods=["POST"])
 def cancel_gtt():
     """Delete a GTT trigger by id. Body: {"gtt_id": 123456}"""

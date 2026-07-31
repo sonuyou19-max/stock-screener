@@ -388,8 +388,7 @@ def check_position(pos: dict, price_info: dict) -> Optional[dict]:
                 "message":     (
                     f"High so far ₹{high_water:.2f} (P&L {gain_pct:+.1f}%) — raise your stop.\n"
                     f"Old stop: ₹{effective_stop:.2f}\n"
-                    f"New stop: ₹{new_trail_stop:.2f} ({trail_dist:.2f} below the high)\n"
-                    f"Update GTT on Kite."
+                    f"New stop: ₹{new_trail_stop:.2f} ({trail_dist:.2f} below the high)"
                 ),
                 "buy_price":   buy_price,
                 "curr_price":  curr_price,
@@ -477,6 +476,20 @@ def run_swing_alerter(force: bool = False, test: bool = False):
     elif rec:
         print("  ✅ Sell reconcile: nothing missing")
 
+    # ── Guarantee every open position has a resting stop ──────
+    # GTT placement can fail at the broker for reasons we only learn
+    # about there; a failure used to leave a REAL position with no stop
+    # until someone happened to read a Telegram alert. This verifies
+    # against Zerodha's live GTT list and places whatever is missing.
+    if not test:
+        ens = _post_json("/swing/ensure-gtts", {})
+        if ens and ens.get("gtts_placed"):
+            print(f"  🛡 Armed {ens['gtts_placed']} missing stop GTT(s)")
+        if ens and ens.get("unprotected"):
+            print(f"  🚨 STILL UNPROTECTED: {', '.join(ens['unprotected'])}")
+        elif ens:
+            print(f"  ✅ All {ens.get('positions', 0)} position(s) have a resting stop")
+
     # ── Load open swing positions ─────────────────────────────
     positions = _fetch("/swing/live")
     if not positions:
@@ -552,6 +565,36 @@ def run_swing_alerter(force: bool = False, test: bool = False):
         }.get(alert["urgency"], "📌")
 
         subject = f"{urgency_prefix} Swing: {alert['title']}"
+
+        # ── Trailing stop: MOVE it, don't just advise ─────────
+        # Zerodha has no trailing GTT, so the trail is simulated by
+        # modifying the resting stop GTT. Previously this only sent
+        # "Update GTT on Kite" and the stop stayed where it was unless
+        # the user did it by hand — so a trade that ran up and reversed
+        # gave back the gains it was supposed to lock in.
+        if alert["alert_type"] == "trail_update" and not test:
+            res = _post_json("/swing/trail-stop", {
+                "ticker":     ticker,
+                "new_stop":   alert["new_stop"],
+                "last_price": alert.get("curr_price"),
+            })
+            if res and res.get("status") == "ok":
+                alert["message"] += (
+                    f"\n\n🤖 Stop GTT {res.get('action', 'updated')} automatically "
+                    f"on Zerodha — nothing to do."
+                )
+                print(f"    📈 Trail stop {res.get('action')} → ₹{alert['new_stop']}")
+            elif res and res.get("status") == "unchanged":
+                print(f"    ⏭️  Trail stop already at/above ₹{alert['new_stop']}")
+                time.sleep(0.3)
+                continue
+            else:
+                err = (res or {}).get("error", "no response")
+                alert["message"] += (
+                    f"\n\n🚨 Could NOT move the stop automatically ({err}).\n"
+                    f"⚠️ Update the GTT on Kite yourself."
+                )
+                print(f"    🚨 Trail stop move FAILED: {err}")
 
         if not test:
             sent = send_telegram(subject, alert["message"])

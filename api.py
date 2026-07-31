@@ -1769,6 +1769,229 @@ def swing_arm_exits():
         return jsonify({"error": str(e)}), 500
 
 
+# ── GTT protection backstop ──────────────────────────────────────
+def _live_gtts_for(symbol: str) -> list:
+    """Active SELL GTTs on Zerodha for one symbol. Verifying against the
+    broker (not our stored gtt_id) is the point: an id can be stale after
+    a trigger fires or a manual delete, and 'we stored an id' is not
+    evidence that a stop is actually resting."""
+    data, _ = _vps_get("/get-gtts")
+    out = []
+    for g in ((data or {}).get("gtts") or []):
+        if str(g.get("symbol", "")).upper() != symbol.upper():
+            continue
+        if str(g.get("status", "")).lower() not in ("active", "", "triggered"):
+            continue
+        if str(g.get("status", "")).lower() == "triggered":
+            continue
+        out.append(g)
+    return out
+
+
+@app.route("/swing/ensure-gtts", methods=["POST", "OPTIONS"])
+def swing_ensure_gtts():
+    """Guarantee every open swing position has a resting stop on Zerodha.
+
+    GTT placement can fail for reasons we only find out about at the
+    broker (rejected leg, expired token, symbol/tick quirk), and a failure
+    used to leave a REAL position with no stop until someone read a
+    Telegram message. This re-checks the broker's live GTT list for each
+    open position and places whatever is missing — safe to run repeatedly
+    (it never places a second GTT for a level that already rests there).
+
+    Called by the swing alerter's 30-min cron and the dashboard's
+    'Arm stops' button. Returns a per-position protection report."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    auth_err = _require_upload_token()
+    if auth_err:
+        return auth_err
+    try:
+        gtt_data, gstatus = _vps_get("/get-gtts")
+        if not isinstance(gtt_data, dict) or "gtts" not in gtt_data:
+            return jsonify({"error": f"could not list GTTs from broker: "
+                                     f"{(gtt_data or {}).get('error', gstatus)}"}), 502
+        by_symbol = {}
+        for g in (gtt_data.get("gtts") or []):
+            if str(g.get("status", "")).lower() != "active":
+                continue
+            if str(g.get("transaction_type", "")).upper() not in ("SELL", ""):
+                continue
+            by_symbol.setdefault(str(g.get("symbol", "")).upper(), []).append(g)
+
+        report, placed_any, failures = [], 0, []
+        positions = list(_read_swing_live())
+        changed = False
+
+        for pos in positions:
+            ticker = str(pos.get("ticker") or "")
+            if not ticker:
+                continue
+            symbol = ticker.replace(".NS", "").replace(".BO", "").upper()
+            qty    = int(pos.get("shares") or pos.get("approx_shares") or 0)
+            if qty <= 0:
+                continue
+            # The stop that should be resting right now: the trailed /
+            # break-even stop if one exists, else the planned stop.
+            stop = (pos.get("tsl_stop") or pos.get("live_stop")
+                    or pos.get("stop_loss") or pos.get("stop_loss_price"))
+            existing = by_symbol.get(symbol, [])
+            existing_triggers = [float(t) for g in existing
+                                 for t in (g.get("trigger_values") or [])]
+
+            def _has_level(level):
+                """A GTT within 0.5% of the level already covers it."""
+                if not level:
+                    return True
+                return any(abs(t - float(level)) / float(level) <= 0.005
+                           for t in existing_triggers)
+
+            missing = []
+            if stop and not _has_level(stop):
+                missing.append(("STOP", float(stop), qty))
+            # Targets are optional protection — only chase the stop when a
+            # position has none. Placing target legs for a position whose
+            # stop is missing first would leave the downside uncovered.
+            entry_report = {"ticker": ticker, "symbol": symbol, "qty": qty,
+                            "stop": stop, "existing_gtts": len(existing),
+                            "placed": [], "failed": []}
+
+            for label, level, q in missing:
+                last_px = pos.get("current_price") or pos.get("price") or pos.get("buy_price")
+                gid, err = _place_sell_gtt(symbol, level, q, last_px)
+                if gid:
+                    placed_any += 1
+                    entry_report["placed"].append({"level": level, "gtt_id": gid})
+                    pos["gtt_id"] = gid
+                    pos["stop_qty"] = q
+                    changed = True
+                    print(f"🛡 ensure-gtts: {symbol} stop ₹{level} × {q} → GTT {gid}")
+                else:
+                    entry_report["failed"].append({"level": level, "error": err})
+                    failures.append(f"{symbol} stop ₹{level} × {q} — {err}")
+                    print(f"🚨 ensure-gtts: {symbol} stop FAILED — {err}")
+
+            entry_report["protected"] = bool(
+                (not stop) or _has_level(stop) or entry_report["placed"])
+            report.append(entry_report)
+
+        if changed:
+            _write_swing_live(positions)
+
+        unprotected = [r for r in report if not r["protected"]]
+        if failures:
+            _tg("🚨 <b>Unprotected swing position(s)</b>\n"
+                + "\n".join(f"  • {f}" for f in failures)
+                + "\n\n⚠️ Place these stop-losses manually on Kite NOW.")
+        return jsonify({"status": "ok", "positions": len(report),
+                        "gtts_placed": placed_any,
+                        "unprotected": [r["symbol"] for r in unprotected],
+                        "report": report})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/swing/trail-stop", methods=["POST", "OPTIONS"])
+def swing_trail_stop():
+    """Ratchet a position's stop UP to a new trigger on Zerodha.
+
+    Zerodha has no trailing GTT, so the trail is simulated: MODIFY the
+    resting stop GTT to the higher trigger (same id, so the position is
+    never momentarily unprotected). Falls back to placing a fresh GTT if
+    there is nothing to modify. Refuses to LOWER a stop — a trailing stop
+    that can move down is worse than no trailing stop at all.
+
+    Body: {ticker, new_stop, [last_price]}"""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    auth_err = _require_upload_token()
+    if auth_err:
+        return auth_err
+    try:
+        data     = request.get_json(force=True) or {}
+        ticker   = str(data.get("ticker") or "").strip().upper()
+        symbol   = ticker.replace(".NS", "").replace(".BO", "")
+        try:
+            new_stop = float(data.get("new_stop") or 0)
+        except (TypeError, ValueError):
+            new_stop = 0
+        if not symbol or new_stop <= 0:
+            return jsonify({"error": "ticker and new_stop required"}), 400
+
+        positions = list(_read_swing_live())
+        idx = next((i for i, p in enumerate(positions)
+                    if str(p.get("ticker", "")).upper() in (ticker, f"{symbol}.NS")), None)
+        if idx is None:
+            return jsonify({"error": f"no open swing position for {symbol}"}), 404
+        pos = positions[idx]
+        qty = int(pos.get("stop_qty") or pos.get("shares") or 0)
+        if qty <= 0:
+            return jsonify({"error": "position has no quantity"}), 400
+
+        current_stop = max(float(pos.get("tsl_stop") or 0),
+                           float(pos.get("live_stop") or 0),
+                           float(pos.get("stop_loss") or 0),
+                           float(pos.get("stop_loss_price") or 0))
+        if new_stop <= current_stop:
+            return jsonify({"status": "unchanged",
+                            "message": f"new stop ₹{new_stop} is not above the "
+                                       f"current ₹{current_stop} — stops only ratchet up",
+                            "current_stop": current_stop})
+
+        last_px = (data.get("last_price") or pos.get("current_price")
+                   or pos.get("price") or pos.get("buy_price"))
+        if not last_px:
+            quote, _ = _vps_get(f"/get-quote?symbol={symbol}")
+            last_px = ((quote or {}).get(symbol) or {}).get("last_price")
+        if not last_px:
+            return jsonify({"error": "no last_price available"}), 502
+
+        limit_price = round(new_stop * 0.995, 2)
+        leg = [{"transaction_type": "SELL", "quantity": qty,
+                "product": "CNC", "order_type": "LIMIT", "price": limit_price}]
+
+        gtt_id = pos.get("gtt_id")
+        result, status, action = None, None, None
+        if gtt_id:
+            result, status = _vps_post("/modify-gtt", {
+                "gtt_id": gtt_id, "symbol": symbol,
+                "trigger_values": [new_stop], "last_price": float(last_px),
+                "orders": leg,
+            })
+            action = "modified"
+        if not gtt_id or (result or {}).get("error"):
+            # Nothing to modify (or the id was stale) → place a fresh stop
+            # so the ratchet still happens instead of silently failing.
+            new_id, err = _place_sell_gtt(symbol, new_stop, qty, last_px)
+            if not new_id:
+                return jsonify({"error": f"could not move stop: "
+                                         f"{(result or {}).get('error') or err}"}), 502
+            gtt_id, action = new_id, "replaced"
+
+        pos["tsl_stop"]        = new_stop
+        pos["stop_loss"]       = new_stop
+        pos["stop_loss_price"] = new_stop
+        pos["gtt_id"]          = gtt_id
+        pos["stop_qty"]        = qty
+        pos["trail_high"]      = max(float(pos.get("trail_high") or 0), float(last_px))
+        positions[idx] = pos
+        _write_swing_live(positions)
+
+        q = _read_queue()
+        for k in (f"{symbol}.NS", symbol):
+            if k in q:
+                q[k].update({"tsl_stop": new_stop, "live_stop": new_stop,
+                             "gtt_id": gtt_id, "trail_high": pos["trail_high"]})
+                _write_queue(q)
+                break
+
+        print(f"📈 Trail stop {action}: {symbol} ₹{current_stop} → ₹{new_stop} (GTT {gtt_id})")
+        return jsonify({"status": "ok", "action": action, "gtt_id": gtt_id,
+                        "old_stop": current_stop, "new_stop": new_stop})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ── POST /swing/reconcile-sells ──────────────────────────────────
 @app.route("/swing/reconcile-sells", methods=["POST", "OPTIONS"])
 def swing_reconcile_sells():

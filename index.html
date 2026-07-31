@@ -654,7 +654,7 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
         </div>
         <button class="pw-btn" type="button" onclick="_qswNudge(1)">+</button>
       </div>
-      <div class="pw-limits" id="qswWheelLimits"><span>◀ Optimal ₹<span id="qswWheelMin"></span></span><span>Scan close ₹<span id="qswWheelMax"></span> ▶</span></div>
+      <div class="pw-limits" id="qswWheelLimits"><span>◀ Optimal ₹<span id="qswWheelMin"></span></span><span>Max entry ₹<span id="qswWheelMax"></span> ▶</span></div>
       <div id="qswWheelNote" style="font-size:11px;color:var(--text3);margin-top:3px;min-height:15px"></div>
     </div>
     <div class="modal-lbl">Quantity (shares)</div>
@@ -903,7 +903,7 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
     <div class="stat-c"><div class="stat-lbl">Win Rate</div><div class="stat-val" id="sw-winRate">—</div><div class="stat-sub">Closed trades</div></div>
     <div class="stat-c"><div class="stat-lbl">Today's Picks</div><div class="stat-val" id="sw-candCount">—</div><div class="stat-sub" id="sw-scanTime">Last scan: —</div></div>
   </div>
-  <div class="sec"><span class="sec-lbl">Open Positions</span><span class="sec-line"></span><button class="refresh-btn" id="sw-syncBtn" style="padding:5px 10px;font-size:10px" onclick="syncSwingExits()">⟳ Sync exits</button></div>
+  <div class="sec"><span class="sec-lbl">Open Positions</span><span class="sec-line"></span><button class="refresh-btn" id="sw-armBtn" style="padding:5px 10px;font-size:10px" onclick="armSwingStops()">🛡 Arm stops</button><button class="refresh-btn" id="sw-syncBtn" style="padding:5px 10px;font-size:10px;margin-left:6px" onclick="syncSwingExits()">⟳ Sync exits</button></div>
   <div style="padding:0 20px;" id="swOpenPositions"><div class="spin-wrap"><div class="spinner"></div></div></div>
   <div class="sec" id="swQueueSec" style="display:none"><span class="sec-lbl">⏳ Pending Entry (Queue)</span><span class="sec-line"></span></div>
   <div style="padding:0 20px;" id="swQueueList"></div>
@@ -2132,6 +2132,10 @@ async function _eswFetchLivePrice(candidate,nseSymbol){
       entryMode='limit';
     }
 
+    // Snap to the ₹0.05 tick — Zerodha rejects a LIMIT price that isn't a
+    // tick multiple, and the field used to show an unsnapped number so the
+    // rejection looked unexplained.
+    suggestedEntry=_tickPrice(suggestedEntry);
     document.getElementById('eswPrice').value=suggestedEntry.toFixed(2);
     noteEl.textContent=entryLabel;
     noteEl.style.color=entryColor;
@@ -2153,7 +2157,7 @@ async function _eswFetchLivePrice(candidate,nseSymbol){
     noteEl.style.color='#888';
     const optEntry=candidate.optimal_entry;
     if(optEntry){
-      document.getElementById('eswPrice').value=parseFloat(optEntry).toFixed(2);
+      document.getElementById('eswPrice').value=_tickPrice(parseFloat(optEntry)).toFixed(2);
       document.getElementById('eswEntryDetail').innerHTML=
         `Optimal entry: ₹${parseFloat(optEntry).toFixed(2)} (${candidate.entry_basis||''}) · Scan close: ₹${candidate.current_price||'—'}`;
       document.getElementById('eswEntryDetail').style.display='block';
@@ -2417,12 +2421,28 @@ function queueSwingTrade(ticker){
    holds. Snaps to the NSE 0.05 tick. The chosen value is written into
    the queue entry's optimal_entry, which is exactly the price
    swing_entry.py places the 9:20 AM LIMIT order at. */
-let _qswPrice=0,_qswMin=0,_qswMax=0,_qswSquelch=false;
+let _qswPrice=0,_qswMin=0,_qswMax=0,_qswScanClose=0,_qswSquelch=false;
 const PW_TICK=0.05;
 function _qswInitWheel(c){
   _qswMin=Math.round(parseFloat(c.optimal_entry||c.current_price||0)*100)/100;
-  _qswMax=Math.round(parseFloat(c.current_price||_qswMin)*100)/100;
+  _qswScanClose=Math.round(parseFloat(c.current_price||_qswMin)*100)/100;
+  /* Upper limit is the scanner's OWN max-entry gate (scan close +2%), not
+     the scan close. Breakout ("broken resistance") setups cap the optimal
+     entry AT the close, which left no range at all — and a resting limit
+     at the close never fills when a breakout opens higher and runs, so
+     those orders sat unfilled all day and were cancelled at 2 PM. The
+     gate is the scanner's own ceiling for a still-valid R/R, so anything
+     up to it is a legitimate choice. */
+  const gate=Math.round(parseFloat(c.limit_price||(_qswScanClose*1.02))*100)/100;
+  _qswMax=Math.max(_qswScanClose,gate);
   if(_qswMax<_qswMin){const t=_qswMin;_qswMin=_qswMax;_qswMax=t;}
+  /* Snap the BOUNDS to real ₹0.05 ticks — inward, so the floor never sits
+     below the scanner's optimal and the ceiling never exceeds the entry
+     gate. Snapping only at selection time left the endpoints on invalid
+     prices (e.g. a gate of 328.29), which Zerodha rejects. */
+  _qswMin=Math.round(Math.ceil(_qswMin/PW_TICK)*PW_TICK*100)/100;
+  _qswMax=Math.round(Math.floor(_qswMax/PW_TICK)*PW_TICK*100)/100;
+  if(_qswMax<_qswMin)_qswMax=_qswMin;
   _qswPrice=_qswMin;
   const wrap=document.getElementById('qswWheelWrap');
   const row=document.getElementById('qswWheelRow');
@@ -2430,16 +2450,12 @@ function _qswInitWheel(c){
   document.getElementById('qswWheelMin').textContent=_qswMin.toFixed(2);
   document.getElementById('qswWheelMax').textContent=_qswMax.toFixed(2);
   if(_qswMax-_qswMin<PW_TICK){
-    // Optimal entry == scan close: the scanner capped the entry at the
-    // close (typical for breakout setups that closed at the broken
-    // level), so the selectable range [optimal … scan close] is empty.
-    // Show the fixed price + the reason instead of vanishing silently.
     wrap.style.display='block';
     if(row)row.style.display='none';
     if(limits)limits.style.display='none';
     _qswSetPrice(_qswMin,false);
     const note=document.getElementById('qswWheelNote');
-    if(note)note.textContent='Fixed — optimal entry equals the scan close for this setup, so there is no range to choose.';
+    if(note)note.textContent='Fixed — there is no selectable range for this setup.';
     return;
   }
   wrap.style.display='block';
@@ -2468,9 +2484,15 @@ function _qswSetPrice(v,syncScroll=true){
   if(valEl)valEl.textContent='₹'+v.toFixed(2);
   const note=document.getElementById('qswWheelNote');
   if(note){
-    if(v-_qswMin<PW_TICK/2)note.textContent='At scanner optimal entry (default)';
-    else if(_qswMax-v<PW_TICK/2)note.textContent='At scan close — fills fastest, thinnest R/R';
-    else note.textContent='+'+(((v-_qswMin)/_qswMin)*100).toFixed(2)+'% above optimal — fills sooner, slightly thinner R/R';
+    const pct=_qswMin?(((v-_qswMin)/_qswMin)*100):0;
+    if(v-_qswMin<PW_TICK/2)
+      note.textContent='At scanner optimal entry (default) — best R/R, may not fill if it opens higher';
+    else if(_qswMax-v<PW_TICK/2)
+      note.textContent='At the max entry gate — fills most reliably, thinnest R/R';
+    else if(v>_qswScanClose+PW_TICK/2)
+      note.textContent='+'+pct.toFixed(2)+'% above optimal · above the scan close ₹'+_qswScanClose.toFixed(2)+' — pays up to get filled';
+    else
+      note.textContent='+'+pct.toFixed(2)+'% above optimal — fills sooner, slightly thinner R/R';
   }
   if(syncScroll){
     const wheel=document.getElementById('qswWheel');
@@ -2567,7 +2589,10 @@ async function _qswSubmit(){
       optimal_entry:chosenEntry,
       scanner_entry:c.optimal_entry||c.current_price,
       entry_custom:Math.abs(chosenEntry-(c.optimal_entry||c.current_price||0))>=0.05,
-      limit_price:c.limit_price||((c.current_price||0)*1.02),
+      /* The gate must never sit below the entry you chose, or the 9:20
+         run would skip the order as "gapped above gate" at the very
+         price you asked to buy at. */
+      limit_price:Math.max(c.limit_price||((c.current_price||0)*1.02),chosenEntry),
       stop_loss:c.stop_loss,
       target1:c.target1,
       target2:c.target2,
@@ -2635,53 +2660,76 @@ async function _eswSubmit(){
       buy_date:new Date().toISOString().split('T')[0],
       shares:qty,signals:c.signals,
     };
+    /* ORDER FIRST, then the position record. The old order was reversed:
+       the position was written to /swing/live before the Zerodha order was
+       even attempted, so a rejected order (bad tick size, insufficient
+       funds, …) still left a phantom holding in the app that the alerter
+       then tracked and the P&L counted. Nothing is recorded now unless
+       Zerodha actually accepted the order. */
+    let kiteOrderId=null;
+    if(placeKite){
+      const nseSymbol=(c.ticker||'').replace(/\.NS$/i,'').replace(/\.BO$/i,'');
+      let _oType2=orderType,_oPrice2;
+      if(orderType==='LIMIT'){
+        // "Limit — at scanner entry price" means the optimal_entry shown
+        // in the modal (a pullback level BELOW live), not the live price.
+        const _lim=parseFloat(document.getElementById('eswPrice').value)||parseFloat(c.optimal_entry)||parseFloat(c.current_price);
+        _oPrice2=_tickPrice(_lim);
+      }else if(orderType==='MARKET'){
+        try{const _q=await fetch(`${API}/kite/quote?symbol=${nseSymbol}`,{headers:_postHeaders()});const _qd=await _q.json();const _ltp=_qd[nseSymbol]?.last_price;if(_ltp){_oPrice2=_tickPrice(_ltp*1.005);_oType2='LIMIT';}}catch(_){}
+      }
+      const kiteRes=await fetch(`${API}/kite/place-order`,{method:'POST',headers:_postHeaders(),body:JSON.stringify({
+        symbol:nseSymbol,side:'BUY',quantity:Math.round(qty),
+        order_type:_oType2,price:_oPrice2,
+        product:'CNC',tag:'sw-advisor'
+      })});
+      const kiteData=await kiteRes.json();
+      if(!kiteData.order_id){
+        _hideSpinner();
+        alert('❌ Zerodha REJECTED the order — nothing was recorded.\n\n'
+          +(kiteData.error||JSON.stringify(kiteData))
+          +'\n\nFix the issue and try again. No position was added to the app.');
+        return;
+      }
+      kiteOrderId=kiteData.order_id;
+    }
+    if(kiteOrderId)position.order_id=kiteOrderId;
     const r=await fetch(`${API}/swing/live/upload`,{method:'POST',headers:_postHeaders(),body:JSON.stringify(position)});
     const res=await r.json();
-    if(res.status==='ok'||res.positions>=0){
+    if(!(res.status==='ok'||res.positions>=0)){
+      _hideSpinner();
+      alert('⚠️ Order placed on Zerodha (ID '+(kiteOrderId||'—')+') but the app could not record it: '
+        +JSON.stringify(res)+'\nAdd it manually so the stop-loss gets armed.');
+      return;
+    }
+    if(kiteOrderId){
+      // Arm the stop/T1/T2 GTTs directly (don't rely on the postback).
+      // The endpoint verifies the buy filled before placing exits.
+      const nseSymbol=(c.ticker||'').replace(/\.NS$/i,'').replace(/\.BO$/i,'');
+      let armMsg='';
+      try{
+        const armRes=await fetch(`${API}/swing/arm-exits`,{method:'POST',headers:_postHeaders(),
+          body:JSON.stringify({symbol:nseSymbol,order_id:kiteOrderId,quantity:Math.round(qty),
+            stop_loss:c.stop_loss,target1:c.target1,target2:c.target2})});
+        const armData=await armRes.json();
+        if(armData.status==='ok')armMsg='\n🛡 Stop + targets (GTT) placed automatically.';
+        else if(armData.status==='pending')armMsg='\n⏳ Order not filled yet — stop/targets arm on fill (auto-checked every 30 min).';
+        else if(armData.status==='partial')armMsg='\n🚨 Some exit GTTs FAILED — check Telegram and place them manually on Kite.';
+      }catch(_){armMsg='\n⚠️ Could not confirm exit GTTs — verify on Kite (Orders → GTT).';}
+      _hideSpinner();
       _swL=false;await loadSwing();
-      if(placeKite){
-        const nseSymbol=(c.ticker||'').replace(/\.NS$/i,'').replace(/\.BO$/i,'');
-        const _tick=p=>Math.round(Math.round(p/0.05)*0.05*100)/100;   // snap to ₹0.05
-        let _oType2=orderType,_oPrice2;
-        if(orderType==='LIMIT'){
-          // "Limit — at scanner entry price" means the optimal_entry shown
-          // in the modal (a pullback level BELOW live), not the live price.
-          // Using current_price made the order fill instantly at ~live.
-          const _lim=parseFloat(document.getElementById('eswPrice').value)||parseFloat(c.optimal_entry)||parseFloat(c.current_price);
-          _oPrice2=_tick(_lim);
-        }else if(orderType==='MARKET'){
-          try{const _q=await fetch(`${API}/kite/quote?symbol=${nseSymbol}`,{headers:_postHeaders()});const _qd=await _q.json();const _ltp=_qd[nseSymbol]?.last_price;if(_ltp){_oPrice2=_tick(_ltp*1.005);_oType2='LIMIT';}}catch(_){}
-        }
-        const kiteRes=await fetch(`${API}/kite/place-order`,{method:'POST',headers:_postHeaders(),body:JSON.stringify({
-          symbol:nseSymbol,side:'BUY',quantity:Math.round(qty),
-          order_type:_oType2,price:_oPrice2,
-          product:'CNC',tag:'sw-advisor'
-        })});
-        const kiteData=await kiteRes.json();
-        if(kiteData.order_id){
-          // Arm the stop/T1/T2 GTTs directly (don't rely on the postback).
-          // The endpoint verifies the buy filled before placing exits.
-          let armMsg='';
-          try{
-            const armRes=await fetch(`${API}/swing/arm-exits`,{method:'POST',headers:_postHeaders(),
-              body:JSON.stringify({symbol:nseSymbol,order_id:kiteData.order_id,quantity:Math.round(qty),
-                stop_loss:c.stop_loss,target1:c.target1,target2:c.target2})});
-            const armData=await armRes.json();
-            if(armData.status==='ok')armMsg='\n🛡 Stop + targets (GTT) placed automatically.';
-            else if(armData.status==='pending')armMsg='\n⏳ Order not filled yet — stop/targets will arm on fill.';
-            else if(armData.status==='partial')armMsg='\n⚠️ Some exit GTTs failed — check Telegram & place manually.';
-          }catch(_){armMsg='\n⚠️ Could not confirm exit GTTs — verify on Kite (Orders → GTT).';}
-          _hideSpinner();
-          _swL=false;await loadSwing();
-          alert('✅ Swing position added & Zerodha order placed!\nOrder ID: '+kiteData.order_id+armMsg);
-        }else{
-          _hideSpinner();
-          alert('Swing position added.\n⚠️ Zerodha order failed: '+(kiteData.error||JSON.stringify(kiteData)));
-        }
-      }else{_hideSpinner();}
-    }else{_hideSpinner();alert('Error: '+JSON.stringify(res));}
+      alert('✅ Zerodha order placed & position recorded.\nOrder ID: '+kiteOrderId+armMsg);
+    }else{
+      _hideSpinner();
+      _swL=false;await loadSwing();
+    }
   }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
 }
+
+/* NSE tick size — ₹0.05 for most scripts. The executor re-snaps to the
+   script's REAL tick (0.10 / 0.20 for some) before sending to Zerodha;
+   this keeps what the user SEES equal to what gets sent. */
+function _tickPrice(p){return Math.round(Math.round(p/0.05)*0.05*100)/100;}
 
 function execUsAdvisory(buy,sell){markUsBought(buy,sell,0);}
 
@@ -3501,6 +3549,8 @@ function renderSwingOpen(){
       </div>
 
       <div class="sc-actions" style="flex-wrap:wrap">
+        ${p.gtt_id?`<span style="font-size:10.5px;font-weight:600;color:var(--green);padding:0 4px" title="A stop-loss GTT is resting on Zerodha">🛡 Stop armed</span>`
+                  :`<span style="font-size:10.5px;font-weight:600;color:var(--red);padding:0 4px" title="No stop-loss GTT recorded — tap ⟳ Sync exits / Arm stops">🚨 No stop</span>`}
         ${t1&&!p.target1_booked?`<button class="sc-act-btn" style="border-color:var(--green);color:var(--green)" onclick="recordSwingExit('${p.ticker}','T1')">🎯 T1 hit</button>`:''}
         ${t2?`<button class="sc-act-btn" style="border-color:var(--green);color:var(--green)" onclick="recordSwingExit('${p.ticker}','T2')">🎯 T2 hit</button>`:''}
         <button class="sc-act-btn" onclick="editBuyPrice('${p.ticker}','sw','',${bp})">Edit buy price</button>
@@ -3545,6 +3595,30 @@ async function recordSwingExit(ticker,which){
       alert('ℹ️ '+(d.message||'This exit is already recorded — nothing added.'));
     }else alert('⚠️ '+(d.error||JSON.stringify(d)));
   }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
+}
+
+/* ── Arm missing stop-loss GTTs on demand ───────────────────
+   Checks Zerodha's LIVE GTT list for every open position and places any
+   missing stop. Safe to tap repeatedly — it never duplicates a stop that
+   already rests at that level. The same call runs automatically every
+   30 min from the alerter cron. */
+async function armSwingStops(){
+  const btn=document.getElementById('sw-armBtn');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Arming…';}
+  try{
+    const r=await fetch(`${API}/swing/ensure-gtts`,{method:'POST',headers:_postHeaders()});
+    const d=await r.json();
+    if(d.status==='ok'){
+      const n=d.gtts_placed||0;
+      const bad=(d.unprotected||[]);
+      let msg=n?`🛡 Placed ${n} missing stop GTT${n>1?'s':''}.`
+              :`All ${d.positions||0} position${d.positions===1?'':'s'} already have a resting stop on Zerodha.`;
+      if(bad.length)msg+=`\n\n🚨 STILL UNPROTECTED: ${bad.join(', ')}\nPlace these stops manually on Kite now — see Telegram for the broker's reason.`;
+      alert(msg);
+      if(n)loadSwing();
+    }else alert('⚠️ '+(d.error||JSON.stringify(d)));
+  }catch(e){alert('⚠️ Error: '+e.message);}
+  if(btn){btn.disabled=false;btn.textContent='🛡 Arm stops';}
 }
 
 /* ── On-demand sell reconcile (same-day sales only — Zerodha's order

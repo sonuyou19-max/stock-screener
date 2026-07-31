@@ -182,6 +182,7 @@ def main():
             update_queue([{"ticker": ticker, "status": "skipped", "skip_price": live}])
             continue
 
+        resting = False
         if opt > 0 and live <= opt:
             # Stock already at/below the pullback level — buy now. Use a
             # LIMIT priced 0.5% through live (place_order snaps it to the
@@ -195,7 +196,9 @@ def main():
         else:
             order_type = "LIMIT"
             place_price = opt if opt > 0 else live
-            print(f"  → LIMIT @ ₹{place_price:.2f}")
+            resting = True
+            print(f"  → LIMIT @ ₹{place_price:.2f} (rests {((live-place_price)/live*100):.1f}% "
+                  f"below live — fills only on a pullback)")
 
         disp = f"₹{place_price:.0f}" if order_type == "LIMIT" else f"MARKET ~₹{live:.0f}"
         if DRY_RUN:
@@ -216,7 +219,21 @@ def main():
                     "placed_at":    time.strftime("%Y-%m-%dT%H:%M:%S"),
                 }])
                 placed.append(symbol)
-                msgs.append(f"✅ {symbol}: {order_type} {qty}sh @ {disp} (#{order_id})")
+                # Distinguish "will fill now" from "waiting for a pullback".
+                # A resting limit below the market often never fills and is
+                # cancelled at 2 PM — that read as "the order was never
+                # placed" when the Telegram just said ✅.
+                if resting:
+                    gap = (live - place_price) / live * 100 if live else 0
+                    msgs.append(
+                        f"⏳ {symbol}: LIMIT {qty}sh @ {disp} resting "
+                        f"{gap:.1f}% below live ₹{live:.0f} (#{order_id})\n"
+                        f"   Fills only if it pulls back to {disp}; "
+                        f"cancelled at 2 PM if not."
+                    )
+                else:
+                    msgs.append(f"✅ {symbol}: {order_type} {qty}sh @ {disp} — "
+                                f"fills now (#{order_id})")
             except Exception as e:
                 print(f"⚠️  Order failed for {symbol}: {e}")
                 errors.append(symbol)
