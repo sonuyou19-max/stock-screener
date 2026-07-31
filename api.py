@@ -2566,6 +2566,23 @@ def kite_broker_status():
 
     if status == 200 and px:
         data.update({"connected": True, "reason": "Live quote OK", "last_price": px})
+        # A reachable-but-STALE executor is the nastiest failure mode: quotes
+        # work, so everything looks connected, while newer endpoints 404 and
+        # fixes that live in the executor silently never run. Surface it.
+        health, hstatus = _vps_get("/health")
+        missing = []
+        if isinstance(health, dict) and hstatus == 200:
+            routes = health.get("routes")
+            if routes is None:
+                missing = ["/health has no route list — pre-2026.07.31 build"]
+            else:
+                missing = [r for r in ("/get-gtts", "/modify-gtt") if r not in routes]
+            data["executor_version"] = health.get("version")
+        if missing:
+            data["stale_executor"] = True
+            data["reason"] = ("Trading server is running OLD code — "
+                              "git pull && sudo systemctl restart kite-executor")
+            print(f"⚠️  Stale executor detected: missing {missing}")
     else:
         err = ""
         if isinstance(result, dict):

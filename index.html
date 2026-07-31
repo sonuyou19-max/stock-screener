@@ -3371,9 +3371,16 @@ async function loadBrokerStatus(userTap){
   if(!el)return;
   const d=await fd('/kite/broker-status');
   if(!d){el.className='broker-dot unknown';el.title='Broker status unavailable';return;}
-  if(d.connected){
+  if(d.connected&&d.stale_executor){
+    /* Quotes work but the VPS is running old code — newer endpoints 404
+       and executor-side fixes never run, while everything LOOKS fine. */
+    el.className='broker-dot bad';
+    el.title='⚠️ Trading server is running OLD code — '+(d.reason||'');
+    if(userTap)alert('⚠️ Trading server is running OLD code\n\nZerodha itself is connected, but the VPS executor predates the current app, so newer features (GTT listing, tick auto-correction) will fail.\n\nOn the VPS:\ncd ~/kite && git pull\nsudo systemctl restart kite-executor\n\nThen verify:\ncurl -s localhost:5001/health');
+  }else if(d.connected){
     el.className='broker-dot ok';
-    el.title='Zerodha connected · checked '+(d.checked_at||'')+(d.last_price?' · RELIANCE ₹'+d.last_price:'');
+    el.title='Zerodha connected · checked '+(d.checked_at||'')+(d.last_price?' · RELIANCE ₹'+d.last_price:'')
+      +(d.executor_version?' · executor '+d.executor_version:'');
   }else{
     el.className='broker-dot bad';
     el.title='⚠️ Broker NOT connected: '+(d.reason||'')+' — tap to recheck';
