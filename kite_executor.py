@@ -19,6 +19,9 @@ Endpoints:
   GET  /get-historical    — daily OHLCV history for an NSE symbol (from Zerodha)
 """
 import os
+import re
+import math
+import json
 import threading
 import logging
 from datetime import date, datetime, timedelta
@@ -156,28 +159,36 @@ def place_order():
 
         # Server-side safety net: snap any LIMIT/SL price to the script's
         # ACTUAL tick size (0.05 for most NSE equities, but 0.10/0.20/0.50
-        # for some — e.g. SHRIRAMFIN is 0.10). Zerodha rejects any price
-        # that isn't a multiple of the script's tick with a 400.
+        # for some — e.g. SHRIRAMFIN is 0.10, EICHERMOT is 0.50). Zerodha
+        # rejects any price that isn't a multiple of the script's tick.
+        # Rounding happens inside _with_tick_retry so a rejection can be
+        # re-rounded from these ORIGINAL values.
         _ensure_instruments(kite)          # make sure tick sizes are loaded
-        price = _round_to_tick(symbol, price)
-        trig  = _round_to_tick(symbol, data.get("trigger_price"))
+        trig = data.get("trigger_price")
 
-        order_id = kite.place_order(
-            variety=data.get("variety", kite.VARIETY_REGULAR),
-            exchange=exchange,
-            tradingsymbol=symbol,
-            transaction_type=(
-                kite.TRANSACTION_TYPE_BUY
-                if side == "BUY"
-                else kite.TRANSACTION_TYPE_SELL
-            ),
-            quantity=int(data["quantity"]),
-            product=data.get("product", kite.PRODUCT_CNC),
-            order_type=order_type,
-            price=price,
-            trigger_price=trig,
-            tag=(data.get("tag", "eq-advisor") or "eq-advisor")[:20],
-        )
+        def _submit(price=None, trigger_price=None):
+            return kite.place_order(
+                variety=data.get("variety", kite.VARIETY_REGULAR),
+                exchange=exchange,
+                tradingsymbol=symbol,
+                transaction_type=(
+                    kite.TRANSACTION_TYPE_BUY
+                    if side == "BUY"
+                    else kite.TRANSACTION_TYPE_SELL
+                ),
+                quantity=int(data["quantity"]),
+                product=data.get("product", kite.PRODUCT_CNC),
+                order_type=order_type,
+                price=price,
+                trigger_price=trigger_price,
+                tag=(data.get("tag", "eq-advisor") or "eq-advisor")[:20],
+            )
+
+        # Retry once with the real tick if Zerodha rejects purely on tick
+        # size — the instruments dump under-reports it for some scripts.
+        _prices = {"price": price, "trigger_price": trig}
+        order_id = _with_tick_retry(symbol, _prices, _submit)
+        price, trig = _prices["price"], _prices["trigger_price"]
         log.info(
             "✅ Order placed: %s  %s %s  price=%s  qty=%s  order_id=%s",
             side, symbol, order_type, price,
@@ -337,22 +348,35 @@ def place_gtt():
         # Snap trigger(s) and each order's LIMIT price to the script's real
         # tick size, or Zerodha 400s on non-0.05-tick scripts (e.g. 0.10).
         _ensure_instruments(kite)
-        triggers = [_round_to_tick(sym, t) for t in data["trigger_values"]]
-        orders = []
-        for o in data["orders"]:
-            o = dict(o)
-            if o.get("price") is not None:
-                o["price"] = _round_to_tick(sym, o["price"])
-            orders.append(o)
-        gtt_id = kite.place_gtt(
-            trigger_type=data.get("trigger_type", kite.GTT_TYPE_SINGLE),
-            tradingsymbol=sym,
-            exchange=data.get("exchange", "NSE"),
-            trigger_values=triggers,
-            last_price=float(data["last_price"]),
-            orders=orders,
-        )
-        log.info("✅ GTT placed: gtt_id=%s  symbol=%s", gtt_id, data["symbol"])
+        triggers = list(data["trigger_values"])          # raw; rounded below
+        orders = [dict(o) for o in data["orders"]]
+        # A GTT rejected on tick size leaves the position UNPROTECTED, so
+        # the same learn-and-retry applies here: flatten trigger+leg
+        # prices, retry once with the real tick if Zerodha tells us one.
+        flat = {f"t{i}": v for i, v in enumerate(triggers)}
+        flat.update({f"p{i}": o.get("price") for i, o in enumerate(orders)
+                     if o.get("price") is not None})
+
+        def _submit_gtt(**px):
+            trg = [px[f"t{i}"] for i in range(len(triggers))]
+            ords = []
+            for i, o in enumerate(orders):
+                o = dict(o)
+                if f"p{i}" in px:
+                    o["price"] = px[f"p{i}"]
+                ords.append(o)
+            return kite.place_gtt(
+                trigger_type=data.get("trigger_type", kite.GTT_TYPE_SINGLE),
+                tradingsymbol=sym,
+                exchange=data.get("exchange", "NSE"),
+                trigger_values=trg,
+                last_price=float(data["last_price"]),
+                orders=ords,
+            )
+
+        gtt_id = _with_tick_retry(sym, flat, _submit_gtt)
+        log.info("✅ GTT placed: gtt_id=%s  symbol=%s  triggers=%s",
+                 gtt_id, sym, [flat[f"t{i}"] for i in range(len(triggers))])
         return jsonify({"gtt_id": gtt_id, "status": "placed"})
     except KiteException as e:
         return jsonify({"error": str(e)}), 400
@@ -414,26 +438,36 @@ def modify_gtt():
         kite = _get_kite()
         sym = data["symbol"].strip().upper()
         _ensure_instruments(kite)
-        triggers = [_round_to_tick(sym, t) for t in data["trigger_values"]]
-        orders = []
-        for o in data["orders"]:
-            o = dict(o)
-            if o.get("price") is not None:
-                o["price"] = _round_to_tick(sym, o["price"])
-            orders.append(o)
-        kite.modify_gtt(
-            trigger_id=int(data["gtt_id"]),
-            trigger_type=data.get("trigger_type", kite.GTT_TYPE_SINGLE),
-            tradingsymbol=sym,
-            exchange=data.get("exchange", "NSE"),
-            trigger_values=triggers,
-            last_price=float(data["last_price"]),
-            orders=orders,
-        )
+        triggers = list(data["trigger_values"])          # raw; rounded below
+        orders = [dict(o) for o in data["orders"]]
+        flat = {f"t{i}": v for i, v in enumerate(triggers)}
+        flat.update({f"p{i}": o.get("price") for i, o in enumerate(orders)
+                     if o.get("price") is not None})
+
+        def _submit_modify(**px):
+            trg = [px[f"t{i}"] for i in range(len(triggers))]
+            ords = []
+            for i, o in enumerate(orders):
+                o = dict(o)
+                if f"p{i}" in px:
+                    o["price"] = px[f"p{i}"]
+                ords.append(o)
+            return kite.modify_gtt(
+                trigger_id=int(data["gtt_id"]),
+                trigger_type=data.get("trigger_type", kite.GTT_TYPE_SINGLE),
+                tradingsymbol=sym,
+                exchange=data.get("exchange", "NSE"),
+                trigger_values=trg,
+                last_price=float(data["last_price"]),
+                orders=ords,
+            )
+
+        _with_tick_retry(sym, flat, _submit_modify)
+        final = [flat[f"t{i}"] for i in range(len(triggers))]
         log.info("✏️  GTT modified: id=%s symbol=%s → trigger=%s",
-                 data["gtt_id"], sym, triggers)
+                 data["gtt_id"], sym, final)
         return jsonify({"status": "modified", "gtt_id": data["gtt_id"],
-                        "trigger_values": triggers})
+                        "trigger_values": final})
     except KiteException as e:
         return jsonify({"error": f"{type(e).__name__}: {e}"}), 400
     except Exception as e:
@@ -489,15 +523,120 @@ def _ensure_instruments(kite: KiteConnect):
 def _round_to_tick(symbol: str, price):
     """Snap a price to the symbol's ACTUAL tick size (0.05 for most NSE
     equities, but 0.10 / 0.20 / 0.50 for some). Zerodha rejects any price
-    that isn't a multiple of the script's tick. Falls back to 0.05 if the
-    tick isn't cached yet."""
+    that isn't a multiple of the script's tick.
+
+    Order of truth: a tick LEARNED from a Zerodha rejection beats the
+    instruments dump, which is not always right — EICHERMOT is published
+    with tick_size 0.05 while the exchange enforces 0.50, so orders
+    rounded from the dump were rejected as 'Tick size for this script is
+    0.50'. Learned ticks are persisted so they survive restarts and the
+    daily instruments refresh."""
     if price is None:
         return None
     try:
-        tick = _tick_cache.get((symbol or "").strip().upper(), 0.05) or 0.05
-        return round(round(float(price) / tick) * tick, 2)
+        sym  = (symbol or "").strip().upper()
+        tick = (_tick_overrides.get(sym)
+                or _tick_cache.get(sym, 0.05) or 0.05)
+        # Half-UP, not Python's bankers' rounding: round() sends an exact
+        # midpoint to the nearest EVEN multiple, so 6543.25 with a 0.50
+        # tick became 6543.00 (a quarter-rupee below the intended price)
+        # instead of 6543.50. Prices should round predictably.
+        return round(math.floor(float(price) / tick + 0.5) * tick, 2)
     except (TypeError, ValueError):
         return price
+
+
+# ── Learned tick sizes ────────────────────────────────────────────────────────
+# Zerodha's instruments dump under-reports the tick for some scripts. When an
+# order is rejected we read the real tick out of the error text, remember it,
+# and retry — so the same rejection can never happen twice for that symbol.
+
+_TICK_OVERRIDE_FILE = os.path.join(BASE_DIR, "tick_overrides.json")
+_tick_overrides: dict = {}
+
+
+def _load_tick_overrides():
+    global _tick_overrides
+    try:
+        with open(_TICK_OVERRIDE_FILE) as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            _tick_overrides = {str(k).upper(): float(v) for k, v in data.items()}
+            if _tick_overrides:
+                log.info("Loaded %d learned tick size(s)", len(_tick_overrides))
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log.warning("Could not read tick overrides: %s", e)
+
+
+def _learn_tick(symbol: str, tick: float):
+    """Remember a tick size Zerodha told us about, and persist it."""
+    sym = (symbol or "").strip().upper()
+    if not sym or not tick or tick <= 0:
+        return
+    with _inst_lock:
+        _tick_overrides[sym] = float(tick)
+        try:
+            with open(_TICK_OVERRIDE_FILE, "w") as f:
+                json.dump(_tick_overrides, f, indent=2, sort_keys=True)
+        except Exception as e:
+            log.warning("Could not persist tick override for %s: %s", sym, e)
+    log.warning("📏 Learned tick size for %s: %s (instruments dump said %s)",
+                sym, tick, _tick_cache.get(sym))
+
+
+_TICK_ERR_RE = re.compile(
+    r"tick\s*size\s*for\s*this\s*script\s*is\s*([0-9]*\.?[0-9]+)", re.I)
+
+
+def _tick_from_error(err) -> float:
+    """Pull the real tick size out of a Zerodha rejection message like
+    'Tick size for this script is 0.50. Kindly enter price in the
+    multiple of tick size for this script'. Returns 0 if not that error."""
+    m = _TICK_ERR_RE.search(str(err or ""))
+    if not m:
+        return 0.0
+    try:
+        return float(m.group(1))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _with_tick_retry(symbol: str, raw_prices: dict, submit):
+    """Round `raw_prices` to the symbol's tick and submit. If Zerodha
+    rejects it purely for tick size, learn the real tick, re-round FROM
+    THE ORIGINAL values and retry ONCE.
+
+    Re-rounding from the originals matters: rounding an already-rounded
+    price compounds the error (6543.27 →0.05→ 6543.25 →0.50→ 6543.00,
+    a quarter rupee below where it should land).
+
+    Safe to retry: a tick-size rejection means the order was never
+    created, so this cannot double-place. Any other error propagates
+    untouched. `raw_prices` is updated in place with the values actually
+    accepted, so the caller can log/return them."""
+    rounded = {k: _round_to_tick(symbol, v) for k, v in raw_prices.items()}
+    try:
+        result = submit(**rounded)
+        raw_prices.update(rounded)
+        return result
+    except Exception as e:
+        real_tick = _tick_from_error(e)
+        if not real_tick:
+            raise
+        _learn_tick(symbol, real_tick)
+        fixed = {k: _round_to_tick(symbol, v) for k, v in raw_prices.items()}
+        if fixed == rounded:
+            raise
+        log.warning("↻ Retrying %s with tick-corrected prices: %s → %s",
+                    symbol, rounded, fixed)
+        result = submit(**fixed)
+        raw_prices.update(fixed)
+        return result
+
+
+_load_tick_overrides()
 
 
 # ── Historical OHLCV ──────────────────────────────────────────────────────────
