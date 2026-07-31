@@ -70,10 +70,26 @@ def _get_kite() -> KiteConnect:
 
 # ── Health ────────────────────────────────────────────────────────────────────
 
+# Bumped whenever this file gains capabilities the API depends on, so a
+# stale process can be identified instead of guessed at. `git pull`
+# without restarting the service leaves the OLD code serving requests,
+# which looked identical to a code bug from the dashboard's side.
+EXECUTOR_VERSION = "2026.07.31-gtt-tick"
+
+
 @app.route("/health")
 def health():
     token_ok = os.path.exists(TOKEN_FILE) and os.path.getsize(TOKEN_FILE) > 0
-    return jsonify({"status": "ok", "token_ready": token_ok})
+    routes = sorted({r.rule for r in app.url_map.iter_rules()
+                     if not r.rule.startswith("/static")})
+    return jsonify({
+        "status": "ok",
+        "token_ready": token_ok,
+        "version": EXECUTOR_VERSION,
+        "routes": routes,
+        "learned_ticks": dict(_tick_overrides),
+        "started_from": BASE_DIR,
+    })
 
 
 # ── Token exchange (called by Railway after OAuth redirect) ───────────────────

@@ -3611,10 +3611,19 @@ async function armSwingStops(){
     if(d.status==='ok'){
       const n=d.gtts_placed||0;
       const bad=(d.unprotected||[]);
-      let msg=n?`🛡 Placed ${n} missing stop GTT${n>1?'s':''}.`
-              :`All ${d.positions||0} position${d.positions===1?'':'s'} already have a resting stop${d.broker_verified?' on Zerodha':' recorded'}.`;
-      if(d.broker_verified===false)msg+=`\n\n⚠️ Could not verify against Zerodha's live GTT list, so this used the app's own records:\n${d.warning||''}`;
-      if(bad.length)msg+=`\n\n🚨 STILL UNPROTECTED: ${bad.join(', ')}\nPlace these stops manually on Kite now — see Telegram for the broker's reason.`;
+      /* Lead with the failure when there is one. Saying "all positions
+         already have a resting stop" and "STILL UNPROTECTED" in the same
+         dialog was contradictory — the first line only holds when
+         nothing failed. */
+      let msg;
+      if(bad.length){
+        msg=`🚨 UNPROTECTED: ${bad.join(', ')}\n\nZerodha refused the stop-loss — see Telegram for the exact reason.\nPlace these stops manually on Kite NOW.`;
+        if(n)msg=`🛡 Placed ${n} stop GTT${n>1?'s':''}, but:\n\n`+msg;
+      }else{
+        msg=n?`🛡 Placed ${n} missing stop GTT${n>1?'s':''}.`
+             :`All ${d.positions||0} position${d.positions===1?'':'s'} already have a resting stop${d.broker_verified?' on Zerodha':' recorded'}.`;
+      }
+      if(d.broker_verified===false)msg+=`\n\n⚠️ Could not verify against Zerodha's live GTT list:\n${d.warning||''}`;
       alert(msg);
       if(n)loadSwing();
     }else alert('⚠️ '+(d.error||JSON.stringify(d)));
