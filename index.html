@@ -809,7 +809,8 @@ document.getElementById('pinInput').addEventListener('keydown',e=>{if(e.key==='E
     <div class="stat-c"><div class="stat-lbl">FII 10-Day</div><div class="stat-val" id="ind-fii">—</div><div class="stat-sub">Rolling net flow</div></div>
     <div class="stat-c"><div class="stat-lbl">Universe</div><div class="stat-val">500</div><div class="stat-sub">Nifty 500 screened</div></div>
   </div>
-  <div class="sec"><span class="sec-lbl">Stock Picks</span><span class="sec-line"></span></div>
+  <div class="sec"><span class="sec-lbl">Stock Picks</span><span class="sec-line"></span><button class="refresh-btn" id="ind-armBtn" style="padding:5px 10px;font-size:10px" onclick="armIndiaStops()">🛡 Arm stops</button></div>
+  <div style="padding:0 20px 8px;font-size:11px;color:var(--text3)" id="indStopStatus"></div>
   <div class="bkt-wrap" id="indStocks"><div class="spin-wrap"><div class="spinner"></div></div></div>
   <div class="sec sec-toggle" onclick="toggleClosed('indPerfWrap','indPerfCaret')"><span class="sec-lbl">Performance vs Benchmark</span><span class="sec-caret" id="indPerfCaret">▸</span><span class="sec-line"></span></div>
   <div id="indPerfWrap" style="display:none"><div class="perf-card">
@@ -1205,7 +1206,7 @@ async function loadIndia(){
   renderIndStats();renderLiveFlat(indPortfolio,'indStocks','₹');
   renderIndMacro();renderIndVerdict();renderFiiDii();
   renderAdvisory(adv);
-  loadPerf('IND');loadClosed('ind');
+  loadPerf('IND');loadClosed('ind');loadIndiaStopStatus();
   await fetchIndPrices();
 }
 
@@ -3602,6 +3603,52 @@ async function recordSwingExit(ticker,which){
       alert('ℹ️ '+(d.message||'This exit is already recorded — nothing added.'));
     }else alert('⚠️ '+(d.error||JSON.stringify(d)));
   }catch(e){_hideSpinner();alert('⚠️ Error: '+e.message);}
+}
+
+/* ── Monthly (India) stop-loss arming ───────────────────────
+   Monthly holds run behind a trailing ATR stop with no fixed target, so
+   these are single-leg triggers — but verified against Zerodha's live
+   GTT list the same way the swing side is. */
+async function armIndiaStops(){
+  const btn=document.getElementById('ind-armBtn');
+  if(btn){btn.disabled=true;btn.textContent='⏳ Arming…';}
+  try{
+    const r=await fetch(`${API}/india/ensure-gtts`,{method:'POST',headers:_postHeaders()});
+    const d=await r.json();
+    if(d.status==='ok'){
+      const n=d.gtts_placed||0,bad=(d.unprotected||[]);
+      let msg;
+      if(bad.length){
+        msg=`🚨 UNPROTECTED: ${bad.join(', ')}\n\nSee Telegram for the exact reason — place these stops manually on Kite NOW.`;
+        if(n)msg=`🛡 Placed ${n} missing stop GTT${n>1?'s':''}, but:\n\n`+msg;
+      }else{
+        msg=n?`🛡 Placed ${n} missing stop GTT${n>1?'s':''}.`
+             :`All ${d.positions||0} monthly holding${d.positions===1?'':'s'} already have a resting stop${d.broker_verified?' on Zerodha':' recorded'}.`;
+        if(d.resting_gtts&&d.resting_gtts.length)
+          msg+=`\n\nConfirmed resting on Zerodha (Orders → GTT):\n`+
+            d.resting_gtts.map(g=>`  • ${g.symbol} — ₹${(g.trigger_values||[]).join('/')} × ${g.quantity||'?'}`).join('\n');
+      }
+      if(d.gtts_retired)msg+=`\n♻️ Retired ${d.gtts_retired} superseded stop${d.gtts_retired>1?'s':''}.`;
+      if(d.broker_verified===false)msg+=`\n\n⚠️ Could not verify against Zerodha's live GTT list:\n${d.warning||''}`;
+      alert(msg);
+      loadIndiaStopStatus();
+    }else alert('⚠️ '+(d.error||JSON.stringify(d)));
+  }catch(e){alert('⚠️ Error: '+e.message);}
+  if(btn){btn.disabled=false;btn.textContent='🛡 Arm stops';}
+}
+
+/* Passive read-out under the Stock Picks header: how many monthly
+   holdings currently have a stop resting, without placing anything. */
+async function loadIndiaStopStatus(){
+  const el=document.getElementById('indStopStatus');
+  if(!el)return;
+  const d=await fd('/india/stop-status');
+  if(!d||d.error){el.textContent='';return;}
+  const t=d.total||0,p=d.protected||0;
+  if(!t){el.textContent='';return;}
+  if(p===t){el.innerHTML=`<span style="color:var(--green)">🛡 All ${t} holding${t>1?'s':''} have a stop resting on Zerodha</span>`;}
+  else{el.innerHTML=`<span style="color:var(--red)">🚨 ${t-p} of ${t} holding${t>1?'s':''} have NO stop — tap “Arm stops”</span>`
+      +(d.unprotected?.length?`<br><span style="color:var(--text3)">${d.unprotected.join(', ')}</span>`:'');}
 }
 
 /* ── Arm missing stop-loss GTTs on demand ───────────────────

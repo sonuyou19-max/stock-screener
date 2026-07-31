@@ -112,12 +112,35 @@ def update_india_queue(updates: list):
     _post(f"{RAILWAY_URL}/india/queue/update", updates, RAILWAY_HEADERS)
 
 
-def process_queue(entries: list, queue_type: str, update_fn) -> list:
-    """
-    For each filled entry with trail_atr set, check if live price is a new
-    high and update the stop GTT accordingly. Returns list of adjustment messages.
+def api_trail(kind: str, ticker: str, new_stop: float, last_price: float) -> dict:
+    """Ask the API to ratchet this position's stop. The API MODIFIES the
+    resting trigger (keeping an OCO's target leg) instead of cancelling
+    and re-placing, so the position is never momentarily unprotected."""
+    ep = "/swing/trail-stop" if kind == "swing" else "/india/trail-stop"
+    try:
+        return _post(f"{RAILWAY_URL}{ep}",
+                     {"ticker": ticker, "new_stop": new_stop,
+                      "last_price": last_price}, RAILWAY_HEADERS) or {}
+    except urllib.error.HTTPError as e:
+        try:
+            return json.loads(e.read())
+        except Exception:
+            return {"error": f"HTTP {e.code}"}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def process_queue(entries: list, queue_type: str, update_fn=None) -> list:
+    """For each filled entry with trail_atr set, raise the stop when the
+    price makes a new high.
+
+    This used to cancel the old GTT and place a new one itself — which
+    left a window with no protection at all, and (since exits became
+    OCO triggers) would have thrown away the target leg. It now delegates
+    to the API, which modifies the resting trigger in place.
     """
     msgs = []
+    kind = "swing" if queue_type.lower().startswith("swing") else "india"
 
     for entry in entries:
         trail_atr = entry.get("trail_atr")
@@ -130,8 +153,8 @@ def process_queue(entries: list, queue_type: str, update_fn) -> list:
         atr_dist  = float(trail_atr)
 
         trail_high = float(entry.get("trail_high") or entry.get("fill_price") or 0)
-        stop_qty   = int(entry.get("stop_qty") or entry.get("fill_qty") or entry.get("quantity") or 0)
-        gtt_id     = entry.get("gtt_id")
+        stop_qty   = int(entry.get("stop_qty") or entry.get("fill_qty")
+                         or entry.get("quantity") or 0)
 
         if trail_high <= 0 or stop_qty <= 0:
             continue
@@ -143,38 +166,40 @@ def process_queue(entries: list, queue_type: str, update_fn) -> list:
             msgs.append(f"❌ {symbol}: price fetch failed — {e}")
             continue
 
-        print(f"[{queue_type}] {symbol}: live ₹{live:.2f} | trail_high ₹{trail_high:.2f} | ATR dist ₹{atr_dist:.2f}")
+        print(f"[{queue_type}] {symbol}: live ₹{live:.2f} | trail_high ₹{trail_high:.2f} "
+              f"| ATR dist ₹{atr_dist:.2f}")
 
         if live <= trail_high:
-            print(f"  → no new high, stop unchanged")
+            print("  → no new high, stop unchanged")
             continue
 
         new_stop = round(live - atr_dist, 2)
         old_stop = entry.get("tsl_stop") or entry.get("stop_loss", "?")
+        print(f"  → new high! stop ₹{old_stop} → ₹{new_stop} "
+              f"(₹{live:.2f} − ₹{atr_dist:.2f} ATR)")
 
-        print(f"  → new high! stop ₹{old_stop} → ₹{new_stop} (₹{live:.2f} − ₹{atr_dist:.2f} ATR)")
+        res = api_trail(kind, ticker, new_stop, live)
+        status = res.get("status")
 
-        cancel_gtt(gtt_id)
-        new_gtt_id = place_gtt(symbol, new_stop, stop_qty, live)
-
-        update_fn([{
-            "ticker":     ticker,
-            "trail_high": live,
-            "tsl_stop":   new_stop,
-            "gtt_id":     new_gtt_id,
-        }])
-
-        if new_gtt_id:
+        if status == "ok":
+            how = res.get("action", "updated")
+            print(f"  → GTT {how} ✅")
             msgs.append(
                 f"📈 <b>{name}</b> ({symbol})\n"
-                f"   New high ₹{live:.2f} → stop raised to ₹{new_stop:.2f} (−₹{atr_dist:.2f} ATR)\n"
-                f"   GTT updated ✅"
+                f"   New high ₹{live:.2f} → stop raised to ₹{new_stop:.2f} "
+                f"(−₹{atr_dist:.2f} ATR)\n"
+                f"   Stop GTT {how} automatically ✅"
             )
+        elif status == "unchanged":
+            print(f"  → already at/above ₹{new_stop} — nothing to do")
         else:
+            err = res.get("error") or res.get("message") or "unknown error"
+            print(f"  🚨 Trail failed: {err}")
             msgs.append(
-                f"⚠️ <b>{name}</b> ({symbol})\n"
-                f"   New high ₹{live:.2f} — stop raised to ₹{new_stop:.2f} but GTT placement failed!\n"
-                f"   Manually place stop for {stop_qty} shares at ₹{new_stop}"
+                f"🚨 <b>{name}</b> ({symbol})\n"
+                f"   New high ₹{live:.2f} — stop should be ₹{new_stop:.2f} but the "
+                f"GTT could NOT be updated ({err}).\n"
+                f"   ⚠️ Update the stop for {stop_qty} shares manually on Kite."
             )
 
         time.sleep(0.5)
@@ -200,6 +225,19 @@ def main():
     except Exception as e:
         print(f"⚠️  Could not fetch India queue: {e}")
         ind_entries = []
+
+    # Make sure everything that SHOULD have a resting stop actually does,
+    # before trailing any of them. A holding whose GTT never got placed
+    # would otherwise be trailed on paper while unprotected at the broker.
+    for kind, ep in (("swing", "/swing/ensure-gtts"), ("monthly", "/india/ensure-gtts")):
+        try:
+            res = _post(f"{RAILWAY_URL}{ep}", {}, RAILWAY_HEADERS) or {}
+            if res.get("gtts_placed"):
+                print(f"  🛡 Armed {res['gtts_placed']} missing {kind} stop(s)")
+            if res.get("unprotected"):
+                print(f"  🚨 {kind} STILL UNPROTECTED: {', '.join(res['unprotected'])}")
+        except Exception as e:
+            print(f"  ⚠️  {kind} ensure-gtts failed (non-fatal): {e}")
 
     tsl_sw  = [e for e in sw_entries  if e.get("trail_atr")]
     tsl_ind = [e for e in ind_entries if e.get("trail_atr")]

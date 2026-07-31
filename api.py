@@ -2959,9 +2959,20 @@ def _oco_plan(pos: dict) -> list:
     appearing. Scale-out is expressed as two OCOs sharing one stop:
     half exits at T1, half at T2, and the stop covers both halves."""
     qty = int(pos.get("stop_qty") or pos.get("shares")
-              or pos.get("approx_shares") or 0)
+              or pos.get("approx_shares") or pos.get("fill_qty")
+              or pos.get("quantity") or 0)
     stop = (pos.get("tsl_stop") or pos.get("live_stop")
             or pos.get("stop_loss") or pos.get("stop_loss_price"))
+    if not stop and pos.get("trail_atr"):
+        # Monthly holds carry an ATR trailing distance rather than a fixed
+        # stop level — derive the level from the high-water mark.
+        base = (pos.get("trail_high") or pos.get("fill_price")
+                or pos.get("buy_price") or pos.get("price"))
+        if base:
+            try:
+                stop = round(float(base) - float(pos["trail_atr"]), 2)
+            except (TypeError, ValueError):
+                stop = None
     if qty <= 0 or not stop:
         return []
     stop = float(stop)
@@ -3741,6 +3752,314 @@ def india_queue_remove():
         _write_india_queue(q)
         print(f"✅ India queue: removed {ticker}")
         return jsonify({"status": "ok", "removed": removed, "count": len(q)})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+def _india_protect_positions() -> list:
+    """Monthly holdings that should have a resting stop, as position-like
+    dicts the shared GTT reconciler understands.
+
+    Monthly protection state lives in the INDIA QUEUE (trail_atr, tsl_stop,
+    gtt ids) while the shares themselves live in the live portfolio, so
+    this joins the two: a filled BUY queue entry supplies the stop level,
+    the live portfolio confirms the quantity still held."""
+    held = {}
+    for bucket in (_read_live_ind() or {}).values():
+        if not isinstance(bucket, dict):
+            continue
+        for s in bucket.get("stocks", []):
+            t = s.get("ticker")
+            if t:
+                held[t] = int(s.get("approx_shares") or 0)
+
+    out = []
+    for entry in (_read_india_queue() or {}).values():
+        if entry.get("status") != "filled" or entry.get("action") not in ("BUY", None):
+            continue
+        ticker = entry.get("ticker")
+        if not ticker:
+            continue
+        qty = held.get(ticker)
+        if qty is None:
+            continue          # sold / no longer held — nothing to protect
+        if qty <= 0:
+            continue
+        pos = dict(entry)
+        pos["ticker"]   = ticker
+        pos["stop_qty"] = qty          # broker truth beats the queue's copy
+        pos.setdefault("current_price", entry.get("fill_price"))
+        out.append(pos)
+    return out
+
+
+@app.route("/india/ensure-gtts", methods=["POST", "OPTIONS"])
+def india_ensure_gtts():
+    """Guarantee every monthly holding has its trailing stop resting on
+    Zerodha, verified against the broker's live GTT list.
+
+    Same machinery as the swing side — plan, place what's missing, confirm
+    it is really there — but monthly holds run behind a trailing ATR stop
+    with no fixed target, so the triggers are single-leg. Idempotent."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    auth_err = _require_upload_token()
+    if auth_err:
+        return auth_err
+    try:
+        gtt_data, gstatus = _vps_get("/get-gtts")
+        broker_listed = isinstance(gtt_data, dict) and "gtts" in gtt_data
+        degraded_note = None
+        by_symbol = {}
+        if broker_listed:
+            for g in (gtt_data.get("gtts") or []):
+                if str(g.get("status", "")).lower() != "active":
+                    continue
+                if str(g.get("transaction_type", "")).upper() not in ("SELL", ""):
+                    continue
+                by_symbol.setdefault(str(g.get("symbol", "")).upper(), []).append(g)
+        else:
+            degraded_note = ((gtt_data or {}).get("error")
+                             or f"could not list GTTs from the broker (HTTP {gstatus})")
+            print(f"⚠️  india ensure-gtts degraded: {degraded_note}")
+
+        positions = _india_protect_positions()
+        report, failures, updates = [], [], []
+
+        for pos in positions:
+            ticker = pos["ticker"]
+            symbol = (pos.get("nse_symbol")
+                      or ticker.replace(".NS", "").replace(".BO", "")).upper()
+            if not _oco_plan(pos):
+                # Held, but we have no stop level to protect it with —
+                # say so instead of silently reporting it fine.
+                report.append({"ticker": ticker, "symbol": symbol,
+                               "protected": False, "planned": 0,
+                               "placed": [], "retired": [], "cancelled": [],
+                               "failed": [{"error": "no stop level (no trail_atr "
+                                                    "or tsl_stop) — set one manually"}]})
+                failures.append(f"{symbol} — no stop level recorded; set a stop manually on Kite")
+                continue
+            existing = by_symbol.get(symbol, []) if broker_listed else None
+            rep = _reconcile_position_gtts(pos, existing)
+            for f in rep["failed"]:
+                failures.append(f"{symbol} stop ₹{f['stop']} × {f['qty']} — {f['error']}")
+                print(f"🚨 india ensure-gtts: {symbol} FAILED — {f['error']}")
+            if rep["placed"] or rep["retired"]:
+                updates.append({"ticker": ticker,
+                                "gtt_ids": pos.get("gtt_ids") or [],
+                                "gtt_id": pos.get("gtt_id"),
+                                "stop_qty": pos.get("stop_qty")})
+            report.append(rep)
+
+        if updates:
+            q = _read_india_queue()
+            for u in updates:
+                if u["ticker"] in q:
+                    q[u["ticker"]].update({k: v for k, v in u.items() if k != "ticker"})
+            _write_india_queue(q)
+
+        # Confirm new triggers really exist at the broker (a returned id is
+        # not proof the trigger is resting).
+        placed_ids = [str(p["gtt_id"]) for r in report for p in r.get("placed", [])]
+        resting = None
+        if placed_ids and broker_listed:
+            recheck, _ = _vps_get("/get-gtts")
+            if isinstance(recheck, dict) and "gtts" in recheck:
+                active = [g for g in (recheck.get("gtts") or [])
+                          if str(g.get("status", "")).lower() == "active"]
+                live_ids = {str(g.get("gtt_id")) for g in active}
+                resting = [{"symbol": g.get("symbol"), "gtt_id": g.get("gtt_id"),
+                            "trigger_values": g.get("trigger_values"),
+                            "quantity": g.get("quantity")} for g in active]
+                for r in report:
+                    ghosts = [p for p in r.get("placed", [])
+                              if str(p["gtt_id"]) not in live_ids]
+                    if ghosts:
+                        r["protected"] = False
+                        failures.append(f"{r['symbol']} — broker accepted GTT "
+                                        f"{ghosts[0]['gtt_id']} but it is not active")
+
+        unprotected = [r for r in report if not r.get("protected")]
+        placed_any  = sum(len(r.get("placed", [])) for r in report)
+        retired     = [x for r in report for x in r.get("retired", [])]
+        if failures:
+            _tg("🚨 <b>Unprotected monthly holding(s)</b>\n"
+                + "\n".join(f"  • {f}" for f in failures)
+                + "\n\n⚠️ Place these stop-losses manually on Kite NOW.")
+        return jsonify({"status": "ok", "positions": len(report),
+                        "gtts_placed": placed_any,
+                        "gtts_retired": len(retired), "retired": retired,
+                        "unprotected": [r["symbol"] for r in unprotected],
+                        "broker_verified": broker_listed,
+                        "warning": degraded_note,
+                        "resting_gtts": resting,
+                        "report": report})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/india/stop-status", methods=["GET", "OPTIONS"])
+def india_stop_status():
+    """Read-only: how many monthly holdings currently have a stop resting
+    at the broker. Deliberately places nothing — the dashboard shows this
+    on load, and loading a page must never send orders."""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    try:
+        gtt_data, gstatus = _vps_get("/get-gtts")
+        if not (isinstance(gtt_data, dict) and "gtts" in gtt_data):
+            return jsonify({"error": (gtt_data or {}).get("error",
+                                      f"could not list GTTs (HTTP {gstatus})")}), 200
+        by_symbol = {}
+        for g in (gtt_data.get("gtts") or []):
+            if str(g.get("status", "")).lower() != "active":
+                continue
+            by_symbol.setdefault(str(g.get("symbol", "")).upper(), []).append(g)
+
+        total, protected, unprotected = 0, 0, []
+        for pos in _india_protect_positions():
+            total += 1
+            symbol = (pos.get("nse_symbol")
+                      or pos["ticker"].replace(".NS", "").replace(".BO", "")).upper()
+            plan = _oco_plan(pos)
+            if not plan:
+                unprotected.append(symbol)
+                continue
+            stop = float(plan[0][0])
+            covered = any(
+                abs(float(t) - stop) / stop <= 0.005
+                for g in by_symbol.get(symbol, [])
+                for t in (g.get("trigger_values") or []))
+            if covered:
+                protected += 1
+            else:
+                unprotected.append(symbol)
+        return jsonify({"total": total, "protected": protected,
+                        "unprotected": unprotected})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 200
+
+
+@app.route("/india/trail-stop", methods=["POST", "OPTIONS"])
+def india_trail_stop():
+    """Ratchet a monthly holding's trailing stop UP on Zerodha.
+
+    MODIFIES the resting trigger rather than cancel-then-place, so the
+    holding is never momentarily unprotected — the old trailing_stop cron
+    cancelled first and left a gap on every new high. Refuses to lower.
+
+    Body: {ticker, new_stop, [last_price]}"""
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+    auth_err = _require_upload_token()
+    if auth_err:
+        return auth_err
+    try:
+        data   = request.get_json(force=True) or {}
+        ticker = str(data.get("ticker") or "").strip()
+        if ticker and not ticker.endswith((".NS", ".BO")):
+            ticker = f"{ticker}.NS"
+        symbol = ticker.replace(".NS", "").replace(".BO", "").upper()
+        try:
+            new_stop = float(data.get("new_stop") or 0)
+        except (TypeError, ValueError):
+            new_stop = 0
+        if not symbol or new_stop <= 0:
+            return jsonify({"error": "ticker and new_stop required"}), 400
+
+        q = _read_india_queue()
+        key = next((k for k in (ticker, symbol) if k in q), None)
+        if not key:
+            return jsonify({"error": f"no monthly queue entry for {symbol}"}), 404
+        entry = q[key]
+
+        current_stop = max(float(entry.get("tsl_stop") or 0),
+                           float(entry.get("stop_loss") or 0))
+        if new_stop <= current_stop:
+            return jsonify({"status": "unchanged",
+                            "message": f"new stop ₹{new_stop} is not above the "
+                                       f"current ₹{current_stop} — stops only ratchet up",
+                            "current_stop": current_stop})
+
+        qty = int(entry.get("stop_qty") or entry.get("fill_qty")
+                  or entry.get("quantity") or 0)
+        if qty <= 0:
+            return jsonify({"error": "no quantity recorded for this holding"}), 400
+
+        last_px = data.get("last_price") or entry.get("fill_price")
+        if not last_px:
+            quote, _ = _vps_get(f"/get-quote?symbol={symbol}")
+            last_px = ((quote or {}).get(symbol) or {}).get("last_price")
+        if not last_px:
+            return jsonify({"error": "no last_price available"}), 502
+
+        gtt_data, _ = _vps_get("/get-gtts")
+        mine = []
+        if isinstance(gtt_data, dict) and "gtts" in gtt_data:
+            mine = [g for g in (gtt_data.get("gtts") or [])
+                    if str(g.get("symbol", "")).upper() == symbol
+                    and str(g.get("status", "")).lower() == "active"]
+
+        moved, errors = [], []
+        for g in mine:
+            trg = sorted(float(t) for t in (g.get("trigger_values") or []))
+            if not trg:
+                continue
+            two_leg = len(trg) == 2
+            target  = trg[-1] if two_leg else None
+            if two_leg and new_stop >= target:
+                errors.append(f"GTT {g.get('gtt_id')}: new stop ₹{new_stop} is at or "
+                              f"above its target ₹{target} — left alone")
+                continue
+            leg_qty = max(1, int(g.get("quantity") or qty) // (2 if two_leg else 1))
+            triggers = [new_stop]
+            legs = [{"transaction_type": "SELL", "quantity": leg_qty,
+                     "product": "CNC", "order_type": "LIMIT",
+                     "price": round(new_stop * 0.995, 2)}]
+            if two_leg:
+                triggers.append(target)
+                legs.append({"transaction_type": "SELL", "quantity": leg_qty,
+                             "product": "CNC", "order_type": "LIMIT",
+                             "price": round(target * 0.995, 2)})
+            result, _st = _vps_post("/modify-gtt", {
+                "gtt_id": g.get("gtt_id"), "symbol": symbol,
+                "trigger_type": "two-leg" if two_leg else "single",
+                "trigger_values": triggers, "last_price": float(last_px),
+                "orders": legs,
+            })
+            if (result or {}).get("error"):
+                errors.append(f"GTT {g.get('gtt_id')}: {result['error']}")
+            else:
+                moved.append(g.get("gtt_id"))
+
+        action = "modified"
+        if not moved:
+            # Nothing to modify — place fresh protection at the new level
+            # so the ratchet still happens rather than silently failing.
+            pos = dict(entry)
+            pos.update({"ticker": ticker, "stop_qty": qty, "tsl_stop": new_stop,
+                        "current_price": last_px})
+            rep = _reconcile_position_gtts(pos, mine or None)
+            if not rep.get("protected"):
+                return jsonify({"error": "could not move stop: "
+                                         + "; ".join(errors or ["no GTT to modify"]),
+                                "detail": rep}), 502
+            moved  = rep.get("gtt_ids") or []
+            action = "replaced"
+
+        entry.update({"tsl_stop": new_stop, "trail_high": max(
+            float(entry.get("trail_high") or 0), float(last_px)),
+            "gtt_ids": moved, "gtt_id": moved[0] if moved else None,
+            "stop_qty": qty})
+        q[key] = entry
+        _write_india_queue(q)
+
+        print(f"📈 Monthly trail stop {action}: {symbol} ₹{current_stop} → ₹{new_stop}")
+        return jsonify({"status": "ok", "action": action, "gtt_ids": moved,
+                        "gtt_id": moved[0] if moved else None,
+                        "old_stop": current_stop, "new_stop": new_stop,
+                        "errors": errors})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
