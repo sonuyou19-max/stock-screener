@@ -586,21 +586,41 @@ def _learn_tick(symbol: str, tick: float):
                 sym, tick, _tick_cache.get(sym))
 
 
-_TICK_ERR_RE = re.compile(
-    r"tick\s*size\s*for\s*this\s*script\s*is\s*([0-9]*\.?[0-9]+)", re.I)
+# Zerodha words this differently depending on WHICH price it rejected, so
+# match on the phrase "tick size" plus the nearest number rather than on
+# one exact sentence. Known real messages:
+#   orders : "Tick size for this script is 0.50. Kindly enter price in the
+#             multiple of tick size for this script"
+#   GTTs   : "Trigger price should be a multiple of tick size 0.50."
+# The number can sit on either side of the phrase, so try both.
+_TICK_ERR_RES = (
+    re.compile(r"tick\s*size[^0-9]{0,40}([0-9]*\.[0-9]+|[0-9]+)", re.I),
+    re.compile(r"([0-9]*\.[0-9]+|[0-9]+)[^0-9]{0,20}tick\s*size", re.I),
+)
 
 
 def _tick_from_error(err) -> float:
-    """Pull the real tick size out of a Zerodha rejection message like
-    'Tick size for this script is 0.50. Kindly enter price in the
-    multiple of tick size for this script'. Returns 0 if not that error."""
-    m = _TICK_ERR_RE.search(str(err or ""))
-    if not m:
+    """Pull the real tick size out of a Zerodha tick-size rejection.
+    Returns 0.0 when the error isn't about tick size at all (so the
+    caller re-raises instead of retrying), or when the parsed value
+    isn't a plausible tick."""
+    text = str(err or "")
+    if "tick size" not in text.lower():
         return 0.0
-    try:
-        return float(m.group(1))
-    except (TypeError, ValueError):
-        return 0.0
+    for rx in _TICK_ERR_RES:
+        m = rx.search(text)
+        if not m:
+            continue
+        try:
+            tick = float(m.group(1))
+        except (TypeError, ValueError):
+            continue
+        # Sanity-bound it: a tick is a small positive price step. Parsing
+        # some unrelated number out of the message and then rounding real
+        # orders to it would be far worse than not retrying.
+        if 0 < tick <= 100:
+            return tick
+    return 0.0
 
 
 def _with_tick_retry(symbol: str, raw_prices: dict, submit):
