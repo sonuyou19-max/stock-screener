@@ -3629,6 +3629,7 @@ async function armIndiaStops(){
             d.resting_gtts.map(g=>`  • ${g.symbol} — ₹${(g.trigger_values||[]).join('/')} × ${g.quantity||'?'}`).join('\n');
       }
       if(d.gtts_retired)msg+=`\n♻️ Retired ${d.gtts_retired} superseded stop${d.gtts_retired>1?'s':''}.`;
+      if((d.audit||[]).length)msg=`🚨 PROTECTION AUDIT FAILED\n\n${d.audit.join('\n')}\n\nWhat's resting on Kite does NOT match what the app expects — check Orders → GTT.\n\n`+msg;
       if(d.broker_verified===false)msg+=`\n\n⚠️ Could not verify against Zerodha's live GTT list:\n${d.warning||''}`;
       alert(msg);
       loadIndiaStopStatus();
@@ -3676,7 +3677,8 @@ async function armSwingStops(){
       }else{
         msg=n?`🛡 Placed ${n} missing OCO GTT${n>1?'s':''} (stop + target in one trigger).`
              :`All ${d.positions||0} position${d.positions===1?'':'s'} already have a resting stop${d.broker_verified?' on Zerodha':' recorded'}.`;
-        if(d.gtts_retired)msg+=`\n♻️ Retired ${d.gtts_retired} superseded single-leg stop${d.gtts_retired>1?'s':''} (${(d.retired||[]).map(x=>'₹'+x.trigger).join(', ')}) — the OCO covers those now.`;
+        if(d.gtts_retired)msg+=`\n♻️ Retired ${d.gtts_retired} superseded stop${d.gtts_retired>1?'s':''} (${(d.retired||[]).map(x=>'₹'+x.trigger).join(', ')}).`;
+      if((d.audit||[]).length)msg=`🚨 PROTECTION AUDIT FAILED\n\n${d.audit.join('\n')}\n\nWhat's resting on Kite does NOT match what the app expects — check Orders → GTT.\n\n`+msg;
         /* Show what Zerodha actually holds, so "armed" is never just our
            word for it — if this list is empty the GTT isn't really there. */
         if(d.resting_gtts&&d.resting_gtts.length){

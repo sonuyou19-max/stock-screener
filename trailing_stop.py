@@ -234,6 +234,8 @@ def main():
             res = _post(f"{RAILWAY_URL}{ep}", {}, RAILWAY_HEADERS) or {}
             if res.get("gtts_placed"):
                 print(f"  🛡 Armed {res['gtts_placed']} missing {kind} stop(s)")
+            for a in (res.get("audit") or []):
+                print(f"  🚨 {kind} PROTECTION AUDIT: {a}")
             if res.get("unprotected"):
                 print(f"  🚨 {kind} STILL UNPROTECTED: {', '.join(res['unprotected'])}")
         except Exception as e:

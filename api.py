@@ -1774,6 +1774,74 @@ def _cancel_gtt_id(gid):
         print(f"⚠️  GTT cancel failed ({gid}): {e}")
 
 
+def _audit_protection(pos: dict, resting: list) -> list:
+    """Check the invariants a protected position must satisfy, against what
+    is ACTUALLY resting at the broker. Returns a list of violations.
+
+    These are the properties that, when silently broken, cost real money:
+
+      1. ONE stop level. Two tranches resting on different stops means the
+         higher one fires first and sells on a pullback that never reached
+         a target — exactly the premature sell that prompted this audit.
+      2. Coverage EQUALS shares held. More than held → Zerodha rejects the
+         sell at trigger time (an unprotected position that looks armed).
+         Less than held → some shares have no stop at all.
+      3. No stop at or above its own target — an inverted trigger that can
+         never behave sensibly.
+
+    Verification is against the broker's list, not our records, because a
+    disagreement between the two is itself the failure being hunted."""
+    ticker = str(pos.get("ticker") or "")
+    symbol = ticker.replace(".NS", "").replace(".BO", "").upper()
+    held = int(pos.get("stop_qty") or pos.get("shares")
+               or pos.get("approx_shares") or 0)
+    if held <= 0:
+        return []
+
+    mine = [g for g in (resting or [])
+            if str(g.get("symbol", "")).upper() == symbol
+            and str(g.get("status", "")).lower() == "active"
+            and str(g.get("transaction_type", "")).upper() in ("SELL", "")]
+    if not mine:
+        return [f"{symbol}: {held} share(s) held with NO stop resting at the broker"]
+
+    _targets = [float(pos[k]) for k in ("target1", "target2")
+                if pos.get(k)]
+    issues = []
+    stops, coverage = [], 0
+    for g in mine:
+        trg = sorted(float(t) for t in (g.get("trigger_values") or []))
+        if not trg:
+            continue
+        stops.append(round(trg[0], 2))
+        # /get-gtts sums both legs of an OCO, so a two-leg trigger of N
+        # per leg reports 2N — the STOP side covers half of that.
+        total = int(g.get("quantity") or 0)
+        coverage += (total // 2) if len(trg) == 2 else total
+        # Kite always stores triggers ascending, so trg[0] IS the stop. The
+        # meaningful check is whether that stop has drifted at or above one
+        # of the position's own targets — the state that let one tranche
+        # sit higher than the other and fire early.
+        if _targets and trg[0] >= min(_targets):
+            issues.append(f"{symbol}: GTT {g.get('gtt_id')} has its stop ₹{trg[0]} at or "
+                          f"above the position's target ₹{min(_targets)} — it would sell "
+                          f"before that target is reached")
+
+    distinct = sorted(set(stops))
+    if len(distinct) > 1:
+        issues.append(
+            f"{symbol}: {len(distinct)} DIFFERENT stop levels resting "
+            f"({', '.join('₹%.2f' % s for s in distinct)}) — the highest fires "
+            f"first and sells before any target is reached")
+    if coverage > held:
+        issues.append(f"{symbol}: stops cover {coverage} share(s) but only {held} held — "
+                      f"Zerodha will REJECT the sell at trigger time, leaving it unprotected")
+    elif coverage < held:
+        issues.append(f"{symbol}: stops cover only {coverage} of {held} share(s) — "
+                      f"{held - coverage} share(s) have no stop")
+    return issues
+
+
 def _reconcile_position_gtts(pos: dict, existing: list = None,
                              cancel_strays: bool = False) -> dict:
     """Bring one position's broker GTTs in line with _oco_plan(pos).
@@ -2052,14 +2120,36 @@ def swing_ensure_gtts():
                         print(f"🚨 ensure-gtts: {r['symbol']} GTT "
                               f"{ghosts[0]['gtt_id']} vanished after placement")
 
+        # ── Invariant audit against what is REALLY resting ───────────
+        # Reconciling is not the same as being correct: this re-reads the
+        # broker and checks the properties that cost money when silently
+        # broken (one stop level, coverage == held, no inverted trigger).
+        audit = []
+        if broker_listed:
+            fresh, _ = _vps_get("/get-gtts")
+            live_list = (fresh or {}).get("gtts") if isinstance(fresh, dict) else None
+            if live_list is None:
+                live_list = [g for gs in by_symbol.values() for g in gs]
+            for pos in positions:
+                audit += _audit_protection(pos, live_list)
+        if audit:
+            for a in audit:
+                print(f"🚨 PROTECTION AUDIT: {a}")
+            failures += audit
+
         unprotected = [r for r in report if not r["protected"]]
         placed_any = sum(len(r["placed"]) for r in report)
         if failures:
-            _tg("🚨 <b>Unprotected swing position(s)</b>\n"
+            _tg(("🚨 <b>Swing protection PROBLEM</b>\n" if audit else
+                 "🚨 <b>Unprotected swing position(s)</b>\n")
                 + "\n".join(f"  • {f}" for f in failures)
-                + "\n\n⚠️ Place these stop-losses manually on Kite NOW.")
+                + ("\n\n⚠️ Check Orders → GTT on Kite and fix these NOW — "
+                   "the position is not protected the way the app thinks."
+                   if audit else
+                   "\n\n⚠️ Place these stop-losses manually on Kite NOW."))
         retired = [x for r in report for x in r.get("retired", [])]
         return jsonify({"status": "ok", "positions": len(report),
+                        "audit": audit,
                         "gtts_placed": placed_any,
                         "gtts_retired": len(retired),
                         "retired": retired,
@@ -3931,14 +4021,32 @@ def india_ensure_gtts():
                         failures.append(f"{r['symbol']} — broker accepted GTT "
                                         f"{ghosts[0]['gtt_id']} but it is not active")
 
+        audit = []
+        if broker_listed:
+            fresh, _ = _vps_get("/get-gtts")
+            live_list = (fresh or {}).get("gtts") if isinstance(fresh, dict) else None
+            if live_list is None:
+                live_list = [g for gs in by_symbol.values() for g in gs]
+            for pos in positions:
+                audit += _audit_protection(pos, live_list)
+        if audit:
+            for a in audit:
+                print(f"🚨 PROTECTION AUDIT: {a}")
+            failures += audit
+
         unprotected = [r for r in report if not r.get("protected")]
         placed_any  = sum(len(r.get("placed", [])) for r in report)
         retired     = [x for r in report for x in r.get("retired", [])]
         if failures:
-            _tg("🚨 <b>Unprotected monthly holding(s)</b>\n"
+            _tg(("🚨 <b>Monthly protection PROBLEM</b>\n" if audit else
+                 "🚨 <b>Unprotected monthly holding(s)</b>\n")
                 + "\n".join(f"  • {f}" for f in failures)
-                + "\n\n⚠️ Place these stop-losses manually on Kite NOW.")
+                + ("\n\n⚠️ Check Orders → GTT on Kite and fix these NOW — "
+                   "the holding is not protected the way the app thinks."
+                   if audit else
+                   "\n\n⚠️ Place these stop-losses manually on Kite NOW."))
         return jsonify({"status": "ok", "positions": len(report),
+                        "audit": audit,
                         "gtts_placed": placed_any,
                         "gtts_retired": len(retired), "retired": retired,
                         "unprotected": [r["symbol"] for r in unprotected],

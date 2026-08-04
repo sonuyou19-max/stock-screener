@@ -485,10 +485,16 @@ def run_swing_alerter(force: bool = False, test: bool = False):
         ens = _post_json("/swing/ensure-gtts", {})
         if ens and ens.get("gtts_placed"):
             print(f"  🛡 Armed {ens['gtts_placed']} missing stop GTT(s)")
+        if ens and ens.get("audit"):
+            # Invariant breach: what rests at the broker disagrees with what
+            # the app believes. This is how a position gets sold early.
+            for a in ens["audit"]:
+                print(f"  🚨 PROTECTION AUDIT: {a}")
         if ens and ens.get("unprotected"):
             print(f"  🚨 STILL UNPROTECTED: {', '.join(ens['unprotected'])}")
-        elif ens:
-            print(f"  ✅ All {ens.get('positions', 0)} position(s) have a resting stop")
+        elif ens and not ens.get("audit"):
+            print(f"  ✅ All {ens.get('positions', 0)} position(s) protected "
+                  f"(one stop, full coverage, verified at the broker)")
 
     # ── Load open swing positions ─────────────────────────────
     positions = _fetch("/swing/live")
