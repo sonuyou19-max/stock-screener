@@ -1894,6 +1894,28 @@ def _reconcile_position_gtts(pos: dict, existing: list = None,
     if (existing is not None and not rep["failed"]
             and any(t is not None for _, t, _ in plan)):
         plan_stop = float(plan[0][0])
+        # ── Retire STALE versions of our own tranches ────────────────
+        # A leftover two-leg trigger whose target is one WE planned is a
+        # stale copy of that tranche (its stop or quantity no longer
+        # matches, which is why it wasn't matched above). Leaving it
+        # resting meant the position carried TWO different stops — and
+        # the higher one fires first, selling while the real stop is
+        # still far below. That is exactly how a position got sold on a
+        # pullback that never touched T1.
+        planned_targets = {round(float(t), 2) for _, t, _ in plan if t}
+        for g in list(known):
+            trg = sorted(float(t) for t in (g.get("trigger_values") or []))
+            if len(trg) != 2:
+                continue
+            if round(trg[1], 2) in planned_targets:
+                gid = g.get("gtt_id")
+                _cancel_gtt_id(gid)
+                rep["retired"].append({"gtt_id": gid, "trigger": trg[0],
+                                       "reason": "stale tranche (conflicting stop)"})
+                known.remove(g)
+                print(f"♻️  Retired stale tranche {gid} for {symbol} "
+                      f"(stop ₹{trg[0]} vs planned ₹{plan_stop}) — "
+                      f"two different stops would have fired the higher one first")
         for g in list(known):
             trg = [float(t) for t in (g.get("trigger_values") or [])]
             if len(trg) != 1:
@@ -2114,6 +2136,25 @@ def swing_trail_stop():
             mine = [g for g in (gtt_data.get("gtts") or [])
                     if str(g.get("symbol", "")).upper() == symbol.upper()
                     and str(g.get("status", "")).lower() == "active"]
+
+        # Every tranche MUST end up on the same stop. Skipping one (because
+        # the new stop sat above ITS target) left the position carrying two
+        # different stops, and the higher one then fired on a pullback that
+        # never reached any target. Clamp instead: keep the raise just below
+        # the nearest target so it can be applied to every tranche.
+        _targets = [sorted(float(t) for t in (g.get("trigger_values") or []))[-1]
+                    for g in mine if len(g.get("trigger_values") or []) == 2]
+        if _targets:
+            _ceiling = round(min(_targets) - 0.05, 2)
+            if new_stop >= _ceiling:
+                print(f"↧ Trail for {symbol} clamped ₹{new_stop} → ₹{_ceiling} "
+                      f"(must stay below the nearest target ₹{min(_targets)})")
+                new_stop = _ceiling
+                if new_stop <= current_stop:
+                    return jsonify({"status": "unchanged",
+                                    "message": f"stop is already at its ceiling just "
+                                               f"below the nearest target ₹{min(_targets)}",
+                                    "current_stop": current_stop})
 
         moved, errors = [], []
         for g in mine:
@@ -2984,6 +3025,16 @@ def _oco_plan(pos: dict) -> list:
         # No targets recorded — the stop still MUST rest. Returning an
         # empty plan here would have reported the position "protected"
         # while placing nothing at all.
+        return [(stop, None, qty)]
+    # A stop at or above a tranche's own target is nonsensical — the
+    # target should have taken that exit. Pair the stop only with targets
+    # still ABOVE it; a tranche whose target the stop has passed becomes
+    # stop-only, so an inverted OCO can never be created.
+    if t1 and stop >= t1:
+        t1 = None
+    if t2 and stop >= t2:
+        t2 = None
+    if not t1 and not t2:
         return [(stop, None, qty)]
     # After T1 is booked the remainder runs to T2 behind the (break-even)
     # stop; a single share can't be halved, so it books at the first target.
@@ -4000,6 +4051,25 @@ def india_trail_stop():
             mine = [g for g in (gtt_data.get("gtts") or [])
                     if str(g.get("symbol", "")).upper() == symbol
                     and str(g.get("status", "")).lower() == "active"]
+
+        # Every tranche MUST end up on the same stop. Skipping one (because
+        # the new stop sat above ITS target) left the position carrying two
+        # different stops, and the higher one then fired on a pullback that
+        # never reached any target. Clamp instead: keep the raise just below
+        # the nearest target so it can be applied to every tranche.
+        _targets = [sorted(float(t) for t in (g.get("trigger_values") or []))[-1]
+                    for g in mine if len(g.get("trigger_values") or []) == 2]
+        if _targets:
+            _ceiling = round(min(_targets) - 0.05, 2)
+            if new_stop >= _ceiling:
+                print(f"↧ Trail for {symbol} clamped ₹{new_stop} → ₹{_ceiling} "
+                      f"(must stay below the nearest target ₹{min(_targets)})")
+                new_stop = _ceiling
+                if new_stop <= current_stop:
+                    return jsonify({"status": "unchanged",
+                                    "message": f"stop is already at its ceiling just "
+                                               f"below the nearest target ₹{min(_targets)}",
+                                    "current_stop": current_stop})
 
         moved, errors = [], []
         for g in mine:
