@@ -230,6 +230,16 @@ _NSE_HEADERS = {
 }
 
 
+def _drop_placeholders(df: pd.DataFrame) -> pd.DataFrame:
+    """NSE seeds these CSVs with DUMMY* placeholder rows. They exist on no
+    data source, so each one burns a rate-limited fetch and logs a 404.
+    Applied on cache reads too, so a cache written by an older build heals
+    itself instead of carrying them for the full 7-day TTL."""
+    if "symbol" not in df.columns:
+        return df
+    return df[~df["symbol"].astype(str).str.upper().str.startswith("DUMMY")]
+
+
 def _fetch_index_csv(slice_name: str, url: str) -> pd.DataFrame:
     """One index constituent CSV → the standard universe frame.
     Falls back to this slice's own cache so a single failed download
@@ -239,7 +249,7 @@ def _fetch_index_csv(slice_name: str, url: str) -> pd.DataFrame:
 
     if os.path.exists(cache) and (time.time() - os.path.getmtime(cache)) / 86400 < CACHE_MAX_AGE:
         try:
-            df = pd.read_csv(cache)
+            df = _drop_placeholders(pd.read_csv(cache))
             print(f"  📋 {slice_name}: {len(df)} stocks from cache")
             return df
         except Exception:
@@ -264,11 +274,7 @@ def _fetch_index_csv(slice_name: str, url: str) -> pd.DataFrame:
         df["industry"]   = df["industry"].str.strip()
         if "company_name" not in df.columns:
             df["company_name"] = df["symbol"]
-        df = df[cols].dropna(subset=["symbol", "industry"])
-        # NSE seeds these CSVs with DUMMY* placeholder rows. They exist on
-        # no data source, so each one wastes a rate-limited fetch and logs
-        # a scary 404.
-        df = df[~df["symbol"].str.upper().str.startswith("DUMMY")]
+        df = _drop_placeholders(df[cols].dropna(subset=["symbol", "industry"]))
         print(f"  ✅ {slice_name}: fetched {len(df)} stocks")
         try:
             df.to_csv(cache, index=False)
@@ -279,7 +285,7 @@ def _fetch_index_csv(slice_name: str, url: str) -> pd.DataFrame:
         print(f"  ⚠️  {slice_name}: fetch failed ({e})")
         if os.path.exists(cache):
             try:
-                df = pd.read_csv(cache)
+                df = _drop_placeholders(pd.read_csv(cache))
                 print(f"  ✅ {slice_name}: {len(df)} stocks from stale cache")
                 return df
             except Exception:
