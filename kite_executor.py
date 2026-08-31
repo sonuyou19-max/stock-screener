@@ -74,7 +74,7 @@ def _get_kite() -> KiteConnect:
 # stale process can be identified instead of guessed at. `git pull`
 # without restarting the service leaves the OLD code serving requests,
 # which looked identical to a code bug from the dashboard's side.
-EXECUTOR_VERSION = "2026.07.31-gtt-tick"
+EXECUTOR_VERSION = "2026.09.01-quote-full"
 
 
 @app.route("/health")
@@ -319,8 +319,34 @@ def get_quote():
         keys = []
         for s in symbols:
             keys.append(s if ":" in s else f"NSE:{s}")
-        data = kite.ltp(keys)
+        # ?full=1 → kite.quote() instead of ltp(), which also carries the
+        # previous close. Callers that compare a live price against levels
+        # (the alerter's stop/target checks) need the day change, and LTP
+        # alone cannot give it.
         result = {}
+        if request.args.get("full"):
+            data = kite.quote(keys)
+            for key, val in data.items():
+                exchange, sym = key.split(":", 1)
+                ohlc = val.get("ohlc") or {}
+                last = val.get("last_price")
+                prev = ohlc.get("close")
+                try:
+                    chg = round((float(last) - float(prev)) / float(prev) * 100, 2) \
+                          if last and prev else 0.0
+                except (TypeError, ValueError, ZeroDivisionError):
+                    chg = 0.0
+                result[sym] = {
+                    "last_price": last,
+                    "prev_close": prev,
+                    "change_pct": chg,
+                    "open": ohlc.get("open"), "high": ohlc.get("high"),
+                    "low":  ohlc.get("low"),
+                    "exchange": exchange,
+                }
+            return jsonify(result)
+
+        data = kite.ltp(keys)
         for key, val in data.items():
             exchange, sym = key.split(":", 1)
             result[sym] = {

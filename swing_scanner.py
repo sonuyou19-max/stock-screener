@@ -81,6 +81,7 @@ import os
 import time
 import argparse
 import urllib.request as _urllib
+from urllib.parse import quote as _urlquote
 import urllib.error as _urlerr
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
@@ -637,6 +638,33 @@ def calc_fii_signal(fii_data: list) -> dict:
     }
 
 
+def _nifty_closes():
+    """Nifty 50 daily closes from Zerodha, or None to fall back to yfinance.
+
+    The regime sets the score floor and candidate cap for the ENTIRE scan,
+    so it should come from the same feed as the stock data it gates —
+    but it must never be able to abort the run, hence the quiet None.
+    Kite lists indices in the NSE instrument dump under a spaced trading
+    symbol; try the known spellings rather than assume one."""
+    if not VPS_URL:
+        return None
+    for sym in ("NIFTY 50", "NIFTY50"):
+        try:
+            req = _urllib.Request(
+                f"{VPS_URL}/get-historical?symbol={_urlquote(sym)}&days=200",
+                headers={"X-Executor-Secret": VPS_SECRET},
+            )
+            with _urllib.urlopen(req, timeout=15) as r:
+                rows = json.loads(r.read().decode()).get("rows", [])
+            if len(rows) >= 50:
+                s = pd.Series([float(x["close"]) for x in rows])
+                return s
+        except Exception:
+            continue
+    print("  ↩  Nifty index not available from Zerodha — using yfinance for regime")
+    return None
+
+
 def fetch_market_regime() -> dict:
     """
     Nifty 50 vs its 50-DMA. Breakout/momentum entries have a much lower
@@ -644,16 +672,25 @@ def fetch_market_regime() -> dict:
     bar and cuts the candidate count instead of buying every bounce in a
     falling market.
     """
+    closes, source = _nifty_closes(), "zerodha"
+    if closes is None:
+        source = "yfinance"
     try:
-        hist = yf.Ticker("^NSEI").history(period="6mo")
-        if hist.empty or len(hist) < 50:
+        if closes is None:
+            hist = yf.Ticker("^NSEI").history(period="6mo")
+            if hist.empty or len(hist) < 50:
+                raise ValueError("insufficient index history")
+            closes = hist["Close"]
+        if len(closes) < 50:
             raise ValueError("insufficient index history")
-        close = float(hist["Close"].iloc[-1])
-        dma50 = float(hist["Close"].rolling(50).mean().iloc[-1])
+        close = float(closes.iloc[-1])
+        dma50 = float(closes.rolling(50).mean().iloc[-1])
+        print(f"  📐 Regime source: {source}")
         return {
             "nifty_close": round(close, 1),
             "dma_50":      round(dma50, 1),
             "bullish":     close > dma50,
+            "source":      source,
         }
     except Exception as e:
         return {"nifty_close": None, "dma_50": None, "bullish": True,

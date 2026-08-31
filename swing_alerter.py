@@ -36,6 +36,7 @@ import os
 import time
 import argparse
 import urllib.request as _urllib
+from urllib.parse import quote as _quote
 import urllib.error   as _urlerr
 import math
 from datetime import datetime, date, timedelta
@@ -51,6 +52,15 @@ import yfinance as yf
 IST     = ZoneInfo("Asia/Kolkata")
 API_URL = os.getenv("API_URL", "https://web-production-50eee.up.railway.app")
 DATA_DIR= os.getenv("DATA_DIR", "/data")
+
+# Zerodha (via the local executor) is the price source for exit checks.
+# The stop/target levels these are compared against were computed from
+# Zerodha OHLCV, so the live price must come from the same feed —
+# comparing a Yahoo quote against a Zerodha-derived stop is how a level
+# appears breached (or not) on one feed and not the other. yfinance stays
+# as the fallback so a VPS problem never blinds the alerter.
+VPS_URL    = os.getenv("ORACLE_VPS_URL", "http://localhost:5001")
+VPS_SECRET = os.getenv("EXECUTOR_SECRET", "")
 
 # Dedup file — separate from long-term alerter's dedup
 SWING_DEDUP_FILE = os.path.join(DATA_DIR, "swing_alerts_sent_today.json")
@@ -176,11 +186,57 @@ def _post_json(endpoint: str, payload: dict):
 # PRICE FETCHER
 # ─────────────────────────────────────────────
 
+# Circuit breaker: if the executor is down or its token expired it fails
+# for EVERY position. Give up after a short streak and use yfinance for
+# the rest of the run instead of hammering it once per holding.
+_KITE_PX_DISABLED = False
+_KITE_PX_FAILS    = 0
+_KITE_PX_THRESHOLD = 3
+
+
+def _price_from_kite(ticker: str) -> Optional[dict]:
+    """Live price + previous close from Zerodha via the local executor."""
+    global _KITE_PX_DISABLED, _KITE_PX_FAILS
+    if _KITE_PX_DISABLED or not VPS_URL:
+        return None
+    symbol = ticker.replace(".NS", "").replace(".BO", "")
+    try:
+        req = _urllib.Request(
+            f"{VPS_URL}/get-quote?symbol={_quote(symbol)}&full=1",
+            headers={"X-Executor-Secret": VPS_SECRET, "Accept": "application/json"},
+        )
+        with _urllib.urlopen(req, timeout=8) as r:
+            data = json.loads(r.read().decode())
+        q = (data or {}).get(symbol) or {}
+        price = q.get("last_price")
+        if not price:
+            raise ValueError("no last_price in response")
+        prev = q.get("prev_close") or price
+        _KITE_PX_FAILS = 0
+        return {
+            "price":      round(float(price), 2),
+            "prev_close": round(float(prev), 2),
+            "change_pct": round(float(q.get("change_pct") or 0), 2),
+            "source":     "zerodha",
+        }
+    except Exception as e:
+        _KITE_PX_FAILS += 1
+        if _KITE_PX_FAILS >= _KITE_PX_THRESHOLD:
+            _KITE_PX_DISABLED = True
+            print(f"  ⛔ Zerodha quotes unavailable after {_KITE_PX_FAILS} tries "
+                  f"({e}) — using yfinance for the rest of this run")
+        return None
+
+
 def get_price(ticker: str) -> Optional[dict]:
     """
     Fetch current price, previous close, change %.
-    Returns None if price unavailable.
+    Zerodha first (same feed the stop/target levels came from), yfinance
+    as the fallback. Returns None if neither has a price.
     """
+    kite_px = _price_from_kite(ticker)
+    if kite_px:
+        return kite_px
     try:
         fi = yf.Ticker(ticker).fast_info
         price = getattr(fi, "last_price", None)
@@ -202,6 +258,7 @@ def get_price(ticker: str) -> Optional[dict]:
             "price":      round(price, 2),
             "prev_close": round(prev, 2),
             "change_pct": chg,
+            "source":     "yfinance",
         }
     except Exception:
         return None
