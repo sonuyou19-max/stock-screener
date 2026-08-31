@@ -195,6 +195,126 @@ def fetch_nifty500() -> pd.DataFrame:
 
 
 # ─────────────────────────────────────────────
+# WIDER SWING UNIVERSE (Total Market 750 + Microcap 250)
+# ─────────────────────────────────────────────
+# The monthly screener stays on the Nifty 500 — it buys and holds, so
+# breadth matters less than quality. The SWING scanner competes setups
+# for 10 slots, so a wider net mostly improves the quality of the top 10.
+#
+# These are index-constituent CSVs (not a raw instrument dump) because
+# they carry the Industry column. Sector sentiment is 15% of the swing
+# composite score; a symbol list without industries would hand every new
+# stock a flat neutral 50 on that signal.
+#
+# Each row is tagged with the slice it came from, because microcaps need
+# tighter liquidity gates than the rest (see swing_scanner.py) — thin
+# names sit in 5%/10% circuit bands where a stop-loss GTT can trigger and
+# still not fill, which is protection that exists only on paper.
+
+INDEX_URLS = {
+    "core":  "https://www.niftyindices.com/IndexConstituent/ind_niftytotalmarket_list.csv",
+    "micro": "https://www.niftyindices.com/IndexConstituent/ind_niftymicrocap250_list.csv",
+}
+_SLICE_CACHE = "/tmp/nse_universe_{slice}.csv"
+
+_NSE_HEADERS = {
+    "User-Agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                   "AppleWebKit/537.36 (KHTML, like Gecko) "
+                   "Chrome/120.0.0.0 Safari/537.36"),
+    "Accept": "text/csv,application/csv,*/*",
+    "Referer": "https://www.niftyindices.com/",
+}
+
+
+def _fetch_index_csv(slice_name: str, url: str) -> pd.DataFrame:
+    """One index constituent CSV → the standard universe frame.
+    Falls back to this slice's own cache so a single failed download
+    never empties the whole universe."""
+    cache = _SLICE_CACHE.format(slice=slice_name)
+    cols  = ["company_name", "industry", "symbol", "nse_ticker"]
+
+    if os.path.exists(cache) and (time.time() - os.path.getmtime(cache)) / 86400 < CACHE_MAX_AGE:
+        try:
+            df = pd.read_csv(cache)
+            print(f"  📋 {slice_name}: {len(df)} stocks from cache")
+            return df
+        except Exception:
+            pass
+
+    try:
+        from io import StringIO
+        resp = requests.get(url, headers=_NSE_HEADERS, timeout=25)
+        resp.raise_for_status()
+        df = pd.read_csv(StringIO(resp.text))
+        df.columns = [c.strip() for c in df.columns]
+        df = df.rename(columns={
+            "Company Name": "company_name", "Industry": "industry",
+            "Symbol": "symbol", "Series": "series", "ISIN Code": "isin",
+        })
+        if "series" in df.columns:
+            df = df[df["series"] == "EQ"].copy()
+        missing = [c for c in ("symbol", "industry") if c not in df.columns]
+        if missing:
+            raise ValueError(f"CSV missing {missing} — columns were {list(df.columns)}")
+        df["nse_ticker"] = df["symbol"].str.strip() + ".NS"
+        df["industry"]   = df["industry"].str.strip()
+        if "company_name" not in df.columns:
+            df["company_name"] = df["symbol"]
+        df = df[cols].dropna(subset=["symbol", "industry"])
+        print(f"  ✅ {slice_name}: fetched {len(df)} stocks")
+        try:
+            df.to_csv(cache, index=False)
+        except Exception:
+            pass
+        return df
+    except Exception as e:
+        print(f"  ⚠️  {slice_name}: fetch failed ({e})")
+        if os.path.exists(cache):
+            try:
+                df = pd.read_csv(cache)
+                print(f"  ✅ {slice_name}: {len(df)} stocks from stale cache")
+                return df
+            except Exception:
+                pass
+        return pd.DataFrame(columns=cols)
+
+
+def fetch_swing_universe() -> pd.DataFrame:
+    """Total Market 750 + Microcap 250, de-duplicated, each row tagged
+    with `slice` ('core' | 'micro').
+
+    Never returns empty while the Nifty 500 is reachable: if both index
+    downloads fail the scan falls back to the 500 rather than skipping a
+    night, and says so loudly."""
+    frames = []
+    for name, url in INDEX_URLS.items():
+        df = _fetch_index_csv(name, url)
+        if not df.empty:
+            df = df.copy()
+            df["slice"] = name
+            frames.append(df)
+
+    if not frames:
+        print("  🚨 Both index downloads failed — falling back to Nifty 500")
+        fallback = fetch_nifty500()
+        if not fallback.empty:
+            fallback = fallback.copy()
+            fallback["slice"] = "core"
+        return fallback
+
+    uni = pd.concat(frames, ignore_index=True)
+    # A symbol in both lists is the SAME stock; keep the first occurrence
+    # so 'core' wins over 'micro' and it gets the normal liquidity gates.
+    before = len(uni)
+    uni = uni.drop_duplicates(subset=["symbol"], keep="first").reset_index(drop=True)
+    n_core  = int((uni["slice"] == "core").sum())
+    n_micro = int((uni["slice"] == "micro").sum())
+    print(f"  🌐 Swing universe: {len(uni)} stocks "
+          f"({n_core} core + {n_micro} microcap; {before - len(uni)} duplicates dropped)")
+    return uni
+
+
+# ─────────────────────────────────────────────
 # SECTOR MAPPER
 # ─────────────────────────────────────────────
 

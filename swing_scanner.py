@@ -86,7 +86,7 @@ from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from typing import Optional
 
-from nse_universe import fetch_nifty500, NSE_SECTOR_MAP
+from nse_universe import fetch_nifty500, fetch_swing_universe, NSE_SECTOR_MAP
 
 # ─────────────────────────────────────────────
 # CONFIG
@@ -174,6 +174,17 @@ SWING_MAX_DAYS   = 10     # force exit after 10 trading days
 # Liquidity — swing needs more liquidity than long-term
 SWING_MIN_ADV    = 300_000   # 3 lakh shares/day minimum
 SWING_MIN_ADTV   = 5.0       # ₹5 crore/day minimum
+
+# ── Microcap slice: tighter gates ─────────────────────────────
+# The universe now includes Nifty Microcap 250. Those names commonly sit
+# in 5%/10% circuit bands, where a stop-loss GTT can trigger and still
+# not fill because the stock is locked with no buyers — protection that
+# exists only on paper. Demanding real depth and a higher price is what
+# keeps the stop meaningful, so the microcap slice must clear roughly
+# double the liquidity and twice the price floor of the core universe.
+MICRO_MIN_ADV    = 500_000   # 5 lakh shares/day
+MICRO_MIN_ADTV   = 10.0      # ₹10 crore/day
+MICRO_MIN_PRICE  = 100.0     # avoid the thin, wide-spread tail
 
 # ── Sector → Bucket mapping (from nse_universe.py) ───────────
 # ── Sector → Bucket mapping ───────────────────────────────────
@@ -702,18 +713,26 @@ def calc_atr(hist: pd.DataFrame, period: int = SWING_ATR_PERIOD) -> Optional[flo
 # LIQUIDITY CHECK
 # ─────────────────────────────────────────────
 
-def passes_liquidity(hist: pd.DataFrame, ticker: str) -> tuple[bool, str]:
-    """Swing trading needs higher liquidity than long-term investing."""
+def passes_liquidity(hist: pd.DataFrame, ticker: str,
+                     slice_name: str = "core") -> tuple[bool, str]:
+    """Swing trading needs higher liquidity than long-term investing —
+    and the microcap slice needs materially more than the core universe
+    (see MICRO_MIN_* for why: a stop is worthless in a locked circuit)."""
+    micro  = slice_name == "micro"
+    min_adv  = MICRO_MIN_ADV  if micro else SWING_MIN_ADV
+    min_adtv = MICRO_MIN_ADTV if micro else SWING_MIN_ADTV
     vol    = hist["Volume"]
     closes = hist["Close"]
     adv    = float(vol.iloc[-30:].mean())
     curr   = float(closes.iloc[-1])
     adtv   = round(adv * curr / 1e7, 2)  # in ₹ crore
 
-    if adv < SWING_MIN_ADV:
-        return False, f"ADV {adv/1e5:.1f}L < min {SWING_MIN_ADV/1e5:.1f}L shares/day"
-    if adtv < SWING_MIN_ADTV:
-        return False, f"ADTV ₹{adtv:.1f}Cr < min ₹{SWING_MIN_ADTV}Cr/day"
+    if micro and curr < MICRO_MIN_PRICE:
+        return False, f"microcap ₹{curr:.0f} < ₹{MICRO_MIN_PRICE:.0f} floor"
+    if adv < min_adv:
+        return False, f"ADV {adv/1e5:.1f}L < min {min_adv/1e5:.1f}L shares/day"
+    if adtv < min_adtv:
+        return False, f"ADTV ₹{adtv:.1f}Cr < min ₹{min_adtv}Cr/day"
     return True, ""
 
 
@@ -780,7 +799,7 @@ def compute_swing_levels(hist: pd.DataFrame, buy_price: float) -> dict:
 
 def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
                   min_composite: float = MIN_COMPOSITE_SCORE,
-                  nse_sector: str = None) -> Optional[dict]:
+                  nse_sector: str = None, slice_name: str = "core") -> Optional[dict]:
     """
     Run all signals on a single stock.
     Returns candidate dict if the weighted composite score (0-100) ≥
@@ -792,7 +811,7 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
         return None
 
     # Liquidity gate first
-    liquid, liq_reason = passes_liquidity(hist, ticker)
+    liquid, liq_reason = passes_liquidity(hist, ticker, slice_name)
     if not liquid:
         return None
 
@@ -1025,6 +1044,7 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
         "ticker":        ticker,
         "name":          name,
         "sector":        sector_raw,
+        "universe":      slice_name,
         "scanned_at":    datetime.now(IST).strftime("%Y-%m-%d %H:%M IST"),
         "current_price": round(curr, 2),
         "score":         round(score, 1),
@@ -1251,21 +1271,33 @@ def _run_scan_impl(test_mode: bool = False, single_ticker: str = None) -> list:
     # NSE_SECTOR_MAP). Passed into analyse_stock so the sentiment lookup
     # uses the real NSE sector instead of guessing from yfinance's GICS
     # labels (which left most stocks "unmapped → neutral").
-    sector_map = {}
+    sector_map, slice_map = {}, {}
     if single_ticker:
         tickers = [single_ticker if single_ticker.endswith(".NS")
                    else single_ticker + ".NS"]
         print(f"  Single ticker mode: {tickers[0]}")
     else:
-        print("  Fetching Nifty 500 universe...")
-        nifty_df = fetch_nifty500()
-        tickers  = nifty_df["nse_ticker"].tolist() if not nifty_df.empty else []
-        if not nifty_df.empty:
+        print("  Fetching swing universe (Total Market 750 + Microcap 250)...")
+        uni_df   = fetch_swing_universe()
+        tickers  = uni_df["nse_ticker"].tolist() if not uni_df.empty else []
+        if not uni_df.empty:
             sector_map = {
                 row["nse_ticker"]: NSE_SECTOR_MAP.get(row["industry"])
-                for _, row in nifty_df.iterrows()
+                for _, row in uni_df.iterrows()
             }
-        print(f"  Universe: {len(tickers)} stocks")
+            slice_map = {
+                row["nse_ticker"]: row.get("slice", "core")
+                for _, row in uni_df.iterrows()
+            }
+        n_micro = sum(1 for s in slice_map.values() if s == "micro")
+        print(f"  Universe: {len(tickers)} stocks "
+              f"({len(tickers) - n_micro} core + {n_micro} microcap)")
+        # Zerodha's history API is ~3 req/sec, so a wider net costs real
+        # wall-clock time. Say so up front rather than letting the 11 PM
+        # cron look hung.
+        est_min = len(tickers) * (0.4 if VPS_URL else 0.3) / 60
+        print(f"  Estimated scan time: ~{est_min:.0f} min "
+              f"(rate-limited fetches, not a hang)")
 
     # ── Step 2: Fetch FII data once ───────────────────────────
     print("  Fetching FII/DII data...")
@@ -1293,7 +1325,8 @@ def _run_scan_impl(test_mode: bool = False, single_ticker: str = None) -> list:
     for ticker in tickers:
         try:
             result = analyse_stock(ticker, fii_data, sentiment_signals,
-                                   min_composite, sector_map.get(ticker))
+                                   min_composite, sector_map.get(ticker),
+                                   slice_map.get(ticker, "core"))
             scanned += 1
 
             if result is None:
@@ -1303,7 +1336,8 @@ def _run_scan_impl(test_mode: bool = False, single_ticker: str = None) -> list:
                 conv = result["conviction"]
                 emoji = "🔥" if conv == "HIGH" else "⚡" if conv == "MEDIUM" else "✳️"
                 sent_icon = {"positive":"🟢","mild_positive":"🟡","neutral":"⬜","cautious":"🟠","negative":"🔴"}.get(result.get("sentiment_val","neutral"),"⬜")
-                print(f"  {emoji} {ticker:<20} Score:{result['score']:.1f}/100  "
+                micro_tag = " µ" if result.get("universe") == "micro" else ""
+                print(f"  {emoji} {ticker:<20}{micro_tag} Score:{result['score']:.1f}/100  "
                       f"RSI:{result['rsi']:.0f}  "
                       f"Vol:{result['vol_ratio']:.1f}×  "
                       f"Sent:{sent_icon}{result.get('sentiment_val','—')[:4]}  "
