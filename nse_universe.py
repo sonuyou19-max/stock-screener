@@ -201,6 +201,10 @@ def fetch_nifty500() -> pd.DataFrame:
 # breadth matters less than quality. The SWING scanner competes setups
 # for 10 slots, so a wider net mostly improves the quality of the top 10.
 #
+# Nifty Total Market (750) = Nifty 500 + Nifty Microcap 250, so the two
+# lists OVERLAP by design; the microcap list is fetched to identify which
+# of those 750 are microcaps, not to add new names.
+#
 # These are index-constituent CSVs (not a raw instrument dump) because
 # they carry the Industry column. Sector sentiment is 15% of the swing
 # composite score; a symbol list without industries would hand every new
@@ -261,6 +265,10 @@ def _fetch_index_csv(slice_name: str, url: str) -> pd.DataFrame:
         if "company_name" not in df.columns:
             df["company_name"] = df["symbol"]
         df = df[cols].dropna(subset=["symbol", "industry"])
+        # NSE seeds these CSVs with DUMMY* placeholder rows. They exist on
+        # no data source, so each one wastes a rate-limited fetch and logs
+        # a scary 404.
+        df = df[~df["symbol"].str.upper().str.startswith("DUMMY")]
         print(f"  ✅ {slice_name}: fetched {len(df)} stocks")
         try:
             df.to_csv(cache, index=False)
@@ -303,14 +311,22 @@ def fetch_swing_universe() -> pd.DataFrame:
         return fallback
 
     uni = pd.concat(frames, ignore_index=True)
-    # A symbol in both lists is the SAME stock; keep the first occurrence
-    # so 'core' wins over 'micro' and it gets the normal liquidity gates.
+    # Nifty Total Market is a SUPERSET: it is the Nifty 500 plus the
+    # Microcap 250, so every microcap also appears in the core list.
+    # Membership of the Microcap 250 is therefore the authoritative
+    # signal — a symbol in both must keep the TIGHTER microcap gates
+    # rather than inherit core's looser ones. Deciding this by list order
+    # instead silently gave ~250 thin, circuit-band names the liquidity
+    # thresholds meant for large caps.
+    micro_syms = set(uni.loc[uni["slice"] == "micro", "symbol"])
     before = len(uni)
     uni = uni.drop_duplicates(subset=["symbol"], keep="first").reset_index(drop=True)
+    uni["slice"] = uni["symbol"].map(
+        lambda s: "micro" if s in micro_syms else "core")
     n_core  = int((uni["slice"] == "core").sum())
     n_micro = int((uni["slice"] == "micro").sum())
     print(f"  🌐 Swing universe: {len(uni)} stocks "
-          f"({n_core} core + {n_micro} microcap; {before - len(uni)} duplicates dropped)")
+          f"({n_core} core + {n_micro} microcap; {before - len(uni)} overlaps merged)")
     return uni
 
 
