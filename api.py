@@ -1873,6 +1873,86 @@ def _reconcile_position_gtts(pos: dict, existing: list = None,
                             + [pos.get(k) for k in
                                ("gtt_id", "gtt_t1_id", "gtt_t2_id")]) if g]
 
+    # ── Coverage guard: never ADD protection to a position that already
+    # has enough, and trim any excess. ────────────────────────────────
+    # Matching can fail for reasons that do NOT mean "unprotected" — a
+    # level nudged by a trail, a quantity that changed, an id we lost
+    # track of. Placing on every 30-minute sweep then STACKS duplicate
+    # triggers. On 2026-09-15 BEL accumulated ~26 GTTs that way; when the
+    # stop hit, all of them fired, the first sold the shares and every
+    # other one was rejected for insufficient holdings — ~20 rejection
+    # emails for a position that had already exited correctly.
+    #
+    # What decides whether more protection is needed is COVERAGE AT THE
+    # BROKER, not whether the broker's triggers match our records.
+    suppress_place = False
+    covering_ids = []
+    if existing is not None and plan:
+        planned_qty = sum(q for _, _, q in plan)
+
+        def _cov(g):
+            # /get-gtts sums both legs, so a two-leg OCO of N per leg
+            # reports 2N — its STOP side covers half of that.
+            n = len(g.get("trigger_values") or [])
+            t = int(g.get("quantity") or 0)
+            return (t // 2) if n == 2 else t
+
+        def _rank(g):
+            # Keep triggers that match the plan; drop the strays first.
+            for i, (s, t, q) in enumerate(plan):
+                if t is not None and _gtt_matches(g, s, t, q):
+                    return (0, i)
+            return (1, 0)
+
+        # Keep ONE trigger per plan tranche first, then top up with
+        # unmatched ones only if still short. Filling by coverage alone
+        # could keep two copies of the SAME tranche, which the retire
+        # step below then cancels as a stale duplicate — leaving the
+        # position under-covered.
+        keep, covered = [], 0
+        remaining = sorted(known, key=_rank)
+        for _s, _t, _q in plan:
+            if _t is None:
+                continue
+            m = next((g for g in remaining if _gtt_matches(g, _s, _t, _q)), None)
+            if m is not None:
+                keep.append(m)
+                remaining.remove(m)
+                covered += _cov(m)
+        # Top-up must ignore STALE tranches — a two-leg trigger carrying a
+        # target we planned but a stop we did not. The retire step below
+        # cancels those, so counting them as coverage would suppress the
+        # replacement and leave the position half-naked.
+        _planned_tgts = {round(float(t), 2) for _, t, _ in plan if t}
+
+        def _is_stale_tranche(g):
+            trg = sorted(float(t) for t in (g.get("trigger_values") or []))
+            return len(trg) == 2 and round(trg[1], 2) in _planned_tgts
+
+        for g in list(remaining):
+            if covered >= planned_qty:
+                break
+            if _is_stale_tranche(g):
+                continue          # destined for retirement, not protection
+            keep.append(g)
+            remaining.remove(g)
+            covered += _cov(g)
+        excess = [g for g in remaining if g not in keep and not _is_stale_tranche(g)]
+        # stale tranches stay in `known` so the retire step can cancel them
+        known_stale = [g for g in remaining if _is_stale_tranche(g)]
+        for g in excess:
+            gid = g.get("gtt_id")
+            _cancel_gtt_id(gid)
+            rep["retired"].append({"gtt_id": gid,
+                                   "trigger": (g.get("trigger_values") or [None])[0],
+                                   "reason": "duplicate — position already fully covered"})
+            print(f"♻️  Trimmed duplicate GTT {gid} for {symbol} — "
+                  f"coverage already {covered}/{planned_qty}")
+        known = keep + known_stale
+        if covered >= planned_qty:
+            suppress_place = True
+            covering_ids = [g.get("gtt_id") for g in keep if g.get("gtt_id")]
+
     for stop, target, qty in plan:
         if target is None:
             # Stop-only tranche (no targets on the position): a single-leg
@@ -1889,6 +1969,8 @@ def _reconcile_position_gtts(pos: dict, existing: list = None,
             if existing is None and recorded and not cancel_strays:
                 kept_ids.extend(recorded)
                 break
+            if suppress_place:
+                continue      # already covered by a trigger we could not match
             sgid, serr = _place_sell_gtt(symbol, stop, qty, last_px)
             if sgid:
                 new_ids.append(sgid)
@@ -1912,6 +1994,8 @@ def _reconcile_position_gtts(pos: dict, existing: list = None,
             # so the recorded ids are exactly what must be replaced.
             kept_ids.extend(recorded)
             break
+        if suppress_place:
+            continue          # already covered by a trigger we could not match
         gid, err = _place_oco_gtt(symbol, stop, target, qty, last_px)
         if gid:
             new_ids.append(gid)
@@ -1963,6 +2047,12 @@ def _reconcile_position_gtts(pos: dict, existing: list = None,
             and any(t is not None for _, t, _ in plan)):
         plan_stop = float(plan[0][0])
         # ── Retire STALE versions of our own tranches ────────────────
+        # Guard first: retiring is only safe when something else is
+        # already protecting the position. If nothing matched the plan
+        # AND nothing was placed, every leftover here IS the protection —
+        # cancelling it would leave the shares naked.
+        if not (kept_ids or new_ids):
+            known = []
         # A leftover two-leg trigger whose target is one WE planned is a
         # stale copy of that tranche (its stop or quantity no longer
         # matches, which is why it wasn't matched above). Leaving it
@@ -1998,6 +2088,9 @@ def _reconcile_position_gtts(pos: dict, existing: list = None,
                       f"(₹{trg[0]}) for {symbol} — OCO now covers it")
 
     ids = [i for i in (kept_ids + new_ids) if i]
+    if suppress_place and not ids:
+        ids = list(covering_ids)
+        rep["covered_by_unmatched"] = True
     if ids:
         pos["gtt_ids"] = ids
         pos["gtt_id"]  = ids[0]          # legacy field / dashboard badge
@@ -2070,6 +2163,20 @@ def swing_ensure_gtts():
             print(f"⚠️  ensure-gtts degraded: {degraded_note}")
 
         report, failures = [], []
+        # Symbols whose SELL triggers have already FIRED. A held position
+        # in this state means the exit happened and our records are stale
+        # — re-arming it is exactly wrong. Because a fired trigger is no
+        # longer "active" it drops out of by_symbol, so the sweep saw the
+        # position as unprotected and placed a fresh pair every 30
+        # minutes; each new pair fired instantly (price already through
+        # the stop) and was rejected for insufficient holdings.
+        triggered_syms = set()
+        if broker_listed:
+            for g in (gtt_data.get("gtts") or []):
+                if str(g.get("status", "")).lower() == "triggered" and \
+                        str(g.get("transaction_type", "")).upper() in ("SELL", ""):
+                    triggered_syms.add(str(g.get("symbol", "")).upper())
+
         positions = list(_read_swing_live())
         changed = False
 
@@ -2078,6 +2185,19 @@ def swing_ensure_gtts():
                 continue
             symbol = str(pos["ticker"]).replace(".NS", "").replace(".BO", "").upper()
             existing = by_symbol.get(symbol, []) if broker_listed else None
+            if broker_listed and symbol in triggered_syms and not existing:
+                msg = (f"{symbol} — its stop/target already TRIGGERED at Zerodha but "
+                       f"the app still shows the position open. Not re-arming (that "
+                       f"would stack triggers that fire instantly and get rejected). "
+                       f"Record the exit with 'Mark Exited' or the T1/T2 buttons.")
+                failures.append(msg)
+                print(f"🚨 ensure-gtts: {msg}")
+                report.append({"ticker": pos["ticker"], "symbol": symbol,
+                               "planned": 0, "placed": [], "failed": [],
+                               "cancelled": [], "retired": [],
+                               "protected": True,   # exit fired; nothing to protect
+                               "already_exited": True})
+                continue
             before = list(pos.get("gtt_ids") or [])
             rep = _reconcile_position_gtts(pos, existing)
             if rep["placed"] or list(pos.get("gtt_ids") or []) != before:
@@ -2341,10 +2461,17 @@ def swing_reconcile_sells():
     if auth_err:
         return auth_err
     try:
-        orders, err = _vps_get("/get-orders")
-        olist = (orders or {}).get("orders") or []
-        if not olist and err:
-            return jsonify({"error": f"could not fetch orders: {err}"}), 502
+        orders, ostatus = _vps_get("/get-orders")
+        # _vps_get returns (data, STATUS) — `ostatus` is 200 on success, so
+        # testing it for truthiness reported an empty order book as
+        # "could not fetch orders: 200" and made Sync exits fail on any day
+        # with no matching orders. Only a real transport/broker error counts.
+        if not isinstance(orders, dict) or (orders.get("error") and ostatus != 200):
+            return jsonify({"error": f"could not fetch orders: "
+                                     f"{(orders or {}).get('error', ostatus)}"}), 502
+        olist = orders.get("orders")
+        if olist is None:
+            olist = orders.get("result") if isinstance(orders.get("result"), list) else []
 
         q = _read_queue()
         watched = {k.replace(".NS", "").replace(".BO", "") for k, v in q.items()
