@@ -1971,6 +1971,13 @@ def _reconcile_position_gtts(pos: dict, existing: list = None,
                 break
             if suppress_place:
                 continue      # already covered by a trigger we could not match
+            if last_px and stop >= float(last_px):
+                rep["failed"].append({
+                    "stop": stop, "target": None, "qty": qty,
+                    "error": f"stop ₹{stop} is at or above the last price "
+                             f"₹{float(last_px):.2f} — already breached; exit "
+                             f"rather than re-arming an instant trigger"})
+                continue
             sgid, serr = _place_sell_gtt(symbol, stop, qty, last_px)
             if sgid:
                 new_ids.append(sgid)
@@ -2004,8 +2011,22 @@ def _reconcile_position_gtts(pos: dict, existing: list = None,
             print(f"🛡 OCO placed: {symbol} stop ₹{stop} / target ₹{target} "
                   f"× {qty} → GTT {gid}")
             continue
-        # OCO impossible (price already outside the band) — a stop still
-        # matters more than the target, so fall back to a single-leg stop.
+        # A stop at or above the current price is not protection — it
+        # fires the moment it is created. Re-creating one every sweep is
+        # what turned an already-exited BEL position into ~20 rejection
+        # emails. If the stop is breached the position needs EXITING, and
+        # the alerter already says so; placing here would just re-sell
+        # (or be rejected if the shares are gone).
+        if last_px and stop >= float(last_px):
+            rep["failed"].append({
+                "stop": stop, "target": target, "qty": qty,
+                "error": f"stop ₹{stop} is at or above the last price "
+                         f"₹{float(last_px):.2f} — already breached; exit the "
+                         f"position rather than re-arming a trigger that fires "
+                         f"instantly"})
+            continue
+        # OCO impossible (price outside the band but stop still below it) —
+        # a stop matters more than the target, so fall back to single-leg.
         sgid, serr = _place_sell_gtt(symbol, stop, qty, last_px)
         if sgid:
             new_ids.append(sgid)
