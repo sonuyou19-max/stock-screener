@@ -834,6 +834,25 @@ def compute_swing_levels(hist: pd.DataFrame, buy_price: float) -> dict:
 # SINGLE STOCK ANALYSER
 # ─────────────────────────────────────────────
 
+# ── Why a scan found nothing ─────────────────────────────────────
+# A zero-candidate night is ambiguous on its own: the market may
+# genuinely have no setups, the score floor may be out of reach, or a
+# gate may be silently rejecting everything. These record WHERE stocks
+# dropped out and how close the best ones came, so the answer is in the
+# log instead of needing a code read.
+_REJECTS: dict = {}
+_NEAR_MISSES: list = []
+
+
+def _reject(reason: str):
+    _REJECTS[reason] = _REJECTS.get(reason, 0) + 1
+
+
+def _reset_scan_diagnostics():
+    _REJECTS.clear()
+    _NEAR_MISSES.clear()
+
+
 def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
                   min_composite: float = MIN_COMPOSITE_SCORE,
                   nse_sector: str = None, slice_name: str = "core") -> Optional[dict]:
@@ -845,11 +864,13 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
     """
     hist = fetch_ohlcv(ticker)
     if hist is None:
+        _reject("no price data")
         return None
 
     # Liquidity gate first
     liquid, liq_reason = passes_liquidity(hist, ticker, slice_name)
     if not liquid:
+        _reject("liquidity")
         return None
 
     # Hard gates: own-trend, overextension, news-spike, price floor.
@@ -857,6 +878,9 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
     # a setup that fails any of these.
     gate_fail = check_hard_gates(hist)
     if gate_fail:
+        # The gate text starts with the rule that failed — keep just that
+        # so the tally shows WHICH gate is doing the filtering.
+        _reject("gate: " + gate_fail.split("(")[0].split("—")[0].strip()[:38])
         return None
 
     closes = hist["Close"]
@@ -999,6 +1023,7 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
 
     # Hard exclude — negative sentiment disqualifies regardless of technicals
     if excluded_by_sentiment:
+        _reject("negative sector sentiment")
         print(f"  🚫 {ticker} EXCLUDED — negative sentiment ({bucket_key})")
         return None
 
@@ -1009,11 +1034,14 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
         sig["contribution"] = round(sig["strength"] * sig["weight"], 1)
 
     if score < min_composite:
+        _reject(f"score below floor ({min_composite:.0f})")
+        _NEAR_MISSES.append((round(score, 1), ticker))
         return None
 
     # Earnings blackout — don't hold a 10-day swing through quarterly results
     earnings_date = earnings_within_blackout(ticker)
     if earnings_date:
+        _reject("earnings blackout")
         print(f"  📅 {ticker} skipped — earnings {earnings_date} inside "
               f"{EARNINGS_BLACKOUT_DAYS}-day blackout window")
         return None
@@ -1024,10 +1052,14 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
     # Structural stop too far away → setup isn't tight, skip the trade
     # (do NOT tighten the stop to force the trade — that was the old failure mode)
     if levels["stop_pct"] > MAX_STOP_PCT:
+        _reject(f"stop wider than {MAX_STOP_PCT:.0f}%")
+        _NEAR_MISSES.append((round(score, 1), ticker + " (stop too wide)"))
         return None
 
     # Filter poor R/R — blended reward must be 1.5× the structural risk
     if levels["rr_ratio"] < 1.5:
+        _reject("R/R below 1.5")
+        _NEAR_MISSES.append((round(score, 1), ticker + " (R/R too low)"))
         return None
 
     # ── Conviction (based on the composite 0-100 score) ─────────
@@ -1350,6 +1382,7 @@ def _run_scan_impl(test_mode: bool = False, single_ticker: str = None) -> list:
             print(f"    {bkt}: {sent}{excl}")
 
     # ── Step 3: Scan each stock ───────────────────────────────
+    _reset_scan_diagnostics()
     candidates  = []
     scanned     = 0
     liq_fail    = 0
@@ -1409,6 +1442,15 @@ def _run_scan_impl(test_mode: bool = False, single_ticker: str = None) -> list:
     print(f"\n{'='*58}")
     print(f"  SCAN COMPLETE")
     print(f"  Scanned: {scanned} | Candidates: {len(candidates)} | Showing: {len(top)}")
+    if _REJECTS:
+        print(f"  Where they dropped out:")
+        for reason, n in sorted(_REJECTS.items(), key=lambda x: -x[1])[:8]:
+            print(f"    {n:>4}  {reason}")
+    if _NEAR_MISSES:
+        best = sorted(_NEAR_MISSES, reverse=True)[:5]
+        print(f"  Closest misses (needed {min_composite:.0f}):")
+        for sc, tk in best:
+            print(f"    {sc:>5.1f}  {tk}")
     print(f"{'='*58}")
 
     for i, c in enumerate(top, 1):
@@ -1537,6 +1579,23 @@ def save_candidates(candidates: list, regime: dict = None):
 # TELEGRAM ALERT
 # ─────────────────────────────────────────────
 
+def _why_nothing_text() -> str:
+    """A short 'why' for the zero-candidate Telegram. Without it that
+    message is indistinguishable from a scan that crashed or never ran."""
+    if not _REJECTS and not _NEAR_MISSES:
+        return ""
+    parts = []
+    top = sorted(_REJECTS.items(), key=lambda x: -x[1])[:3]
+    if top:
+        parts.append("\n\n_Where they dropped out:_\n"
+                     + "\n".join(f"  {n} — {r}" for r, n in top))
+    if _NEAR_MISSES:
+        best = sorted(_NEAR_MISSES, reverse=True)[:3]
+        parts.append("\n_Closest misses:_\n"
+                     + "\n".join(f"  {sc:.1f} — {tk}" for sc, tk in best))
+    return "".join(parts)
+
+
 def send_telegram_alert(candidates: list):
     """Send daily swing scan summary to Telegram."""
     import urllib.request as _ur
@@ -1554,6 +1613,7 @@ def send_telegram_alert(candidates: list):
             f"📈 *Swing Scanner — {date.today().strftime('%d %b %Y')}*\n\n"
             f"No swing candidates found today.\n"
             f"Market conditions may not be favourable."
+            + _why_nothing_text()
         )
     else:
         lines = [f"📈 *Swing Candidates — {date.today().strftime('%d %b %Y')}*\n"]
@@ -1653,4 +1713,21 @@ if __name__ == "__main__":
     if args.status:
         show_status()
     else:
-        run_scan(test_mode=args.test, single_ticker=args.ticker)
+        try:
+            run_scan(test_mode=args.test, single_ticker=args.ticker)
+        except BaseException as e:
+            # BaseException so a SIGTERM/MemoryError kill is reported too —
+            # those leave no upload AND no alert, so the only symptom is
+            # silence for days.
+            print(f"🚨 Swing scan crashed: {type(e).__name__}: {e}")
+            try:
+                _scanner_tg(
+                    f"🚨 <b>Swing scan FAILED</b>\n"
+                    f"{type(e).__name__}: {e}\n\n"
+                    f"No candidates were produced tonight — the dashboard is "
+                    f"still showing the previous scan. Check swing_scan.log "
+                    f"on the VPS."
+                )
+            except Exception:
+                pass
+            raise
