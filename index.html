@@ -3714,6 +3714,17 @@ async function syncSwingExits(){
 
 /* ═══ SWING CANDIDATES ═══ */
 /* Pre-trade AI red-team badge — set by ai_redteam.py on each candidate */
+function _tpct(c, which){
+  // Targets are ATR-scaled per stock, so the label must come from the
+  // candidate. Older candidates predate target*_pct — derive it instead.
+  const p = which===1 ? c.target1_pct : c.target2_pct;
+  if (p !== undefined && p !== null && isFinite(p)) return (+p).toFixed(1);
+  const t = which===1 ? c.target1 : c.target2;
+  const b = c.current_price || c.buy_price || c.price;
+  if (t && b) return ((t/b - 1)*100).toFixed(1);
+  return '\u2014';
+}
+
 function _redteamBadge(rt){
   if(!rt||!rt.flag)return`<div class="sc-redteam" style="color:var(--text3)" title="AI red-team hasn't run on this scan yet — the verdict appears after the nightly AI check (or run ai_redteam.py).">⏳ AI: pending</div>`;
   const cfg={
@@ -3788,7 +3799,7 @@ function renderSwingCandidates(){
 
       <div class="sc-key-levels">
         <div class="sc-kl stop"><div class="sc-kl-lbl">Stop · −${c.stop_pct||0}%</div><div class="sc-kl-val">₹${(c.stop_loss||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</div></div>
-        <div class="sc-kl tgt"><div class="sc-kl-lbl">Target 1 · +7%</div><div class="sc-kl-val">₹${c.target1?c.target1.toLocaleString('en-IN',{maximumFractionDigits:0}):'—'}</div></div>
+        <div class="sc-kl tgt"><div class="sc-kl-lbl">Target 1 · +${_tpct(c,1)}%</div><div class="sc-kl-val">₹${c.target1?c.target1.toLocaleString('en-IN',{maximumFractionDigits:0}):'—'}</div></div>
       </div>
 
       <button class="sc-details-btn" onclick="toggleScDetails('det-swc-${key}',this)">Details <span class="sc-details-caret">▾</span></button>
@@ -3810,13 +3821,13 @@ function renderSwingCandidates(){
           ${c.target1?`<div class="sc-level-row t1-row">
             <div style="flex:1">
               <div class="sc-level-lbl">Target 1 — sell 50%</div>
-              <div class="sc-level-val t-val">₹${c.target1.toLocaleString('en-IN',{minimumFractionDigits:2})} <span class="sc-level-pct">+7%</span></div>
+              <div class="sc-level-val t-val">₹${c.target1.toLocaleString('en-IN',{minimumFractionDigits:2})} <span class="sc-level-pct">+${_tpct(c,1)}%</span></div>
             </div>
           </div>`:''}
           ${c.target2?`<div class="sc-level-row t2-row">
             <div style="flex:1">
               <div class="sc-level-lbl">Target 2 — sell 50%</div>
-              <div class="sc-level-val t-val">₹${c.target2.toLocaleString('en-IN',{minimumFractionDigits:2})} <span class="sc-level-pct">+12%</span></div>
+              <div class="sc-level-val t-val">₹${c.target2.toLocaleString('en-IN',{minimumFractionDigits:2})} <span class="sc-level-pct">+${_tpct(c,2)}%</span></div>
             </div>
           </div>`:''}
         </div>

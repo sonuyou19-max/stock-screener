@@ -156,8 +156,12 @@ TREND_DMA            = 50    # stock must close above its own 50-DMA
 EXT_MAX_ABOVE_20DMA  = 0.10  # skip if >10% above 20-DMA — overextended, mean-reverts
 MAX_DAY_GAIN         = 0.07  # skip if scan-day gain >7% — news spike, you'd be chasing
 MIN_PRICE            = 50.0  # skip penny-ish stocks — wide spreads, wild gaps
-MAX_STOP_PCT         = 6.0   # if the structural stop is >6% away, the setup isn't
-                             # tight enough — skip rather than tighten artificially
+MAX_STOP_PCT         = 10.0  # outer sanity limit only. Setup quality is judged by
+                             # R/R (below), which now means something because the
+                             # targets scale with the same ATR the stop does. At 6%
+                             # this gate reduced to "ATR must be under 3% of price"
+                             # and rejected the highest-scoring setups for being
+                             # volatile rather than for being bad.
 MAX_CHASE_PCT        = 0.02  # don't enter more than 2% above scan close (gap guard)
 
 # Swing-specific ATR stop
@@ -167,9 +171,35 @@ SWING_ATR_MULT   = 2.0
 SWING_ATR_PERIOD = 14
 SWING_TRAIL_MULT = 1.0     # tighter trail for swing
 
-# Profit targets
-SWING_TARGET_1   = 0.07   # +7%  → book 50%
-SWING_TARGET_2   = 0.12   # +12% → book remaining 50%
+# Profit targets — scaled to the stock's own volatility.
+#
+# Fixed percentage targets against an ATR-derived stop made the R/R gate a
+# volatility filter rather than a quality filter: risk grew with ATR while
+# reward stayed pinned at 7/12%, so R/R collapsed as volatility rose and
+# every stock with ATR above ~3% of price was rejected — which is exactly
+# the population the momentum and volume-surge signals score highest. It
+# was wrong at the calm end too: a 1.5%-ATR stock was asked to travel 8
+# ATRs to T2 inside a 10-day hold, so those setups passed and then timed
+# out.
+#
+# In ATR multiples both ends behave. Over a 10-day hold one sigma is about
+# sqrt(10) ≈ 3.2 ATR, so T1 at 2.5 ATR is a ~0.8-sigma move and T2 at
+# 5 ATR is ~1.6 sigma — ambitious for the second leg, which is why only
+# half the position rides to it.
+SWING_TARGET_1_ATR = 2.5   # book 50% here
+SWING_TARGET_2_ATR = 5.0   # book the remaining 50% here
+
+# Rails, as a percentage of entry. Without them a very quiet stock gets
+# targets inside transaction costs, and a very wild one gets targets no
+# 10-day hold will reach.
+SWING_T1_MIN_PCT = 4.0
+SWING_T1_MAX_PCT = 12.0
+SWING_T2_MIN_PCT = 7.0
+SWING_T2_MAX_PCT = 25.0
+
+# Used only when ATR is unavailable and the stop falls back to a flat 5%.
+SWING_TARGET_1   = 0.07
+SWING_TARGET_2   = 0.12
 SWING_MAX_DAYS   = 10     # force exit after 10 trading days
 
 # Liquidity — swing needs more liquidity than long-term
@@ -739,6 +769,10 @@ def earnings_within_blackout(ticker: str) -> Optional[str]:
     return None
 
 
+def _clamp(v: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, v))
+
+
 def calc_atr(hist: pd.DataFrame, period: int = SWING_ATR_PERIOD) -> Optional[float]:
     """ATR calculation — same as screener.py."""
     try:
@@ -801,9 +835,17 @@ def compute_swing_levels(hist: pd.DataFrame, buy_price: float) -> dict:
         isn't tight enough and the trade is skipped (in analyse_stock),
         instead of artificially tightening the stop.
 
-    R/R uses the blended exit (50% at T1, 50% at T2 = +9.5% expected
-    reward), not T1 alone, so a structurally-correct stop isn't
-    filtered out for being honest about risk.
+    Targets are ATR multiples too (see SWING_TARGET_1_ATR), clamped to
+    the rails. Because both sides of the ratio scale with the same ATR,
+    R/R no longer degrades as volatility rises: it lands near 1.9 for
+    any stock whose stop is the 2×ATR leg. When the 5-day swing low sits
+    materially below that, R/R drops — and that is the signal the gate
+    should act on, since it means structure, not volatility, is forcing
+    a wide stop.
+
+    R/R uses the blended exit (50% at T1, 50% at T2), not T1 alone, so a
+    structurally-correct stop isn't filtered out for being honest about
+    risk.
     """
     atr = calc_atr(hist)
     if atr and atr > 0:
@@ -819,10 +861,26 @@ def compute_swing_levels(hist: pd.DataFrame, buy_price: float) -> dict:
         src   = "FALLBACK"
 
     stop_pct   = round((buy_price - stop) / buy_price * 100, 2)
-    target1    = round(buy_price * (1 + SWING_TARGET_1), 2)
-    target2    = round(buy_price * (1 + SWING_TARGET_2), 2)
+
+    # Targets in ATR multiples, clamped to the rails, so the reward scales
+    # with the same volatility the stop does. Without ATR there is nothing
+    # to scale to, so the flat fallback percentages apply.
+    if atr:
+        t1_pct = _clamp(SWING_TARGET_1_ATR * atr / buy_price * 100,
+                        SWING_T1_MIN_PCT, SWING_T1_MAX_PCT)
+        t2_pct = _clamp(SWING_TARGET_2_ATR * atr / buy_price * 100,
+                        SWING_T2_MIN_PCT, SWING_T2_MAX_PCT)
+        # The rails are independent, so a stock clamped at one end could
+        # otherwise come out with T2 at or below T1.
+        t2_pct = max(t2_pct, t1_pct + 2.0)
+    else:
+        t1_pct = SWING_TARGET_1 * 100
+        t2_pct = SWING_TARGET_2 * 100
+
+    target1    = round(buy_price * (1 + t1_pct / 100), 2)
+    target2    = round(buy_price * (1 + t2_pct / 100), 2)
     # Blended reward: half booked at T1, half at T2
-    blended_reward = buy_price * (0.5 * SWING_TARGET_1 + 0.5 * SWING_TARGET_2)
+    blended_reward = buy_price * (0.5 * t1_pct + 0.5 * t2_pct) / 100
     rr_ratio   = round(blended_reward / (buy_price - stop), 2) if stop < buy_price else 0
 
     return {
@@ -833,6 +891,8 @@ def compute_swing_levels(hist: pd.DataFrame, buy_price: float) -> dict:
         "trailing":     trail,
         "target1":      target1,
         "target2":      target2,
+        "target1_pct":  round(t1_pct, 2),   # varies per stock now — the
+        "target2_pct":  round(t2_pct, 2),   # display layers must not assume 7/12
         "rr_ratio":     rr_ratio,  # blended reward / risk
         "max_days":     SWING_MAX_DAYS,
         "source":       src,
@@ -1341,7 +1401,7 @@ def _run_scan_impl(test_mode: bool = False, single_ticker: str = None) -> list:
     if regime.get("nifty_close"):
         print(f"  Nifty: {regime['nifty_close']:,.1f}  |  50-DMA: {regime['dma_50']:,.1f}")
     print(f"  Min composite score: {min_composite:.0f}/100  |  Max candidates: {max_candidates}")
-    print(f"  Holding: 1-2 weeks  |  Targets: +{SWING_TARGET_1*100:.0f}% / +{SWING_TARGET_2*100:.0f}%")
+    print(f"  Holding: 1-2 weeks  |  Targets: {SWING_TARGET_1_ATR:.1f}×ATR / {SWING_TARGET_2_ATR:.1f}×ATR (per stock)")
     print(f"{'='*58}\n")
 
     # ── Step 1: Get universe ──────────────────────────────────
@@ -1470,8 +1530,8 @@ def _run_scan_impl(test_mode: bool = False, single_ticker: str = None) -> list:
               f"Vol: {c['vol_ratio']:.1f}× avg  |  "
               f"RSI: {c['rsi']:.0f}")
         print(f"     Stop:  ₹{c['stop_loss']:,.2f}  ({c['stop_pct']:.1f}% below)")
-        print(f"     T1:    ₹{c['target1']:,.2f}  (+{SWING_TARGET_1*100:.0f}% — sell 50%)")
-        print(f"     T2:    ₹{c['target2']:,.2f}  (+{SWING_TARGET_2*100:.0f}% — sell 50%)")
+        print(f"     T1:    ₹{c['target1']:,.2f}  (+{c.get('target1_pct', 0):.1f}% — sell 50%)")
+        print(f"     T2:    ₹{c['target2']:,.2f}  (+{c.get('target2_pct', 0):.1f}% — sell 50%)")
         print(f"     R/R:   {c['rr_ratio']:.2f}×  |  Max hold: {c['max_days']} days")
         print(f"     Signals (strength × weight = contribution):")
         for sig_name, sig in c["signals"].items():
@@ -1639,8 +1699,8 @@ def send_telegram_alert(candidates: list):
                 f"  Price: ₹{c['current_price']:,.2f}"
                 + (f" | Enter ≤ ₹{limit:,.2f} (skip if gaps above)" if limit else "") + "\n"
                 f"  Stop:  ₹{c['stop_loss']:,.2f} ({c['stop_pct']:.1f}% below)\n"
-                f"  T1: ₹{c['target1']:,.2f} (+{SWING_TARGET_1*100:.0f}%) | "
-                f"T2: ₹{c['target2']:,.2f} (+{SWING_TARGET_2*100:.0f}%)\n"
+                f"  T1: ₹{c['target1']:,.2f} (+{c.get('target1_pct', 0):.1f}%) | "
+                f"T2: ₹{c['target2']:,.2f} (+{c.get('target2_pct', 0):.1f}%)\n"
                 f"  R/R: {c['rr_ratio']:.2f}× | Signals: {', '.join(sigs_passed)}\n"
             )
 
