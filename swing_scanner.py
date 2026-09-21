@@ -773,6 +773,23 @@ def _clamp(v: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, v))
 
 
+def _tgt_pct(c: dict, which: int) -> float:
+    """The percentage move to a candidate's target.
+
+    Derived from the candidate's own prices when the stored field is
+    missing — never from a constant, and never defaulted to zero. A
+    target printed as "+0.0%" next to a real rupee level looks like a
+    number rather than like missing data, which is the worst way for
+    this to fail.
+    """
+    v = c.get(f"target{which}_pct")
+    if v is not None:
+        return float(v)
+    tgt  = c.get(f"target{which}") or 0
+    base = c.get("current_price") or c.get("buy_price") or c.get("price") or 0
+    return ((tgt / base - 1) * 100) if (tgt and base) else 0.0
+
+
 def calc_atr(hist: pd.DataFrame, period: int = SWING_ATR_PERIOD) -> Optional[float]:
     """ATR calculation — same as screener.py."""
     try:
@@ -1217,6 +1234,10 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
         "trailing_stop": levels["trailing"],
         "target1":       levels["target1"],
         "target2":       levels["target2"],
+        # Carried through explicitly — every display layer reads these
+        # rather than a constant, because targets vary per stock.
+        "target1_pct":   levels["target1_pct"],
+        "target2_pct":   levels["target2_pct"],
         "rr_ratio":      levels["rr_ratio"],
         "max_days":      SWING_MAX_DAYS,
         "atr":           levels["atr"],
@@ -1530,8 +1551,8 @@ def _run_scan_impl(test_mode: bool = False, single_ticker: str = None) -> list:
               f"Vol: {c['vol_ratio']:.1f}× avg  |  "
               f"RSI: {c['rsi']:.0f}")
         print(f"     Stop:  ₹{c['stop_loss']:,.2f}  ({c['stop_pct']:.1f}% below)")
-        print(f"     T1:    ₹{c['target1']:,.2f}  (+{c.get('target1_pct', 0):.1f}% — sell 50%)")
-        print(f"     T2:    ₹{c['target2']:,.2f}  (+{c.get('target2_pct', 0):.1f}% — sell 50%)")
+        print(f"     T1:    ₹{c['target1']:,.2f}  (+{_tgt_pct(c, 1):.1f}% — sell 50%)")
+        print(f"     T2:    ₹{c['target2']:,.2f}  (+{_tgt_pct(c, 2):.1f}% — sell 50%)")
         print(f"     R/R:   {c['rr_ratio']:.2f}×  |  Max hold: {c['max_days']} days")
         print(f"     Signals (strength × weight = contribution):")
         for sig_name, sig in c["signals"].items():
@@ -1699,8 +1720,8 @@ def send_telegram_alert(candidates: list):
                 f"  Price: ₹{c['current_price']:,.2f}"
                 + (f" | Enter ≤ ₹{limit:,.2f} (skip if gaps above)" if limit else "") + "\n"
                 f"  Stop:  ₹{c['stop_loss']:,.2f} ({c['stop_pct']:.1f}% below)\n"
-                f"  T1: ₹{c['target1']:,.2f} (+{c.get('target1_pct', 0):.1f}%) | "
-                f"T2: ₹{c['target2']:,.2f} (+{c.get('target2_pct', 0):.1f}%)\n"
+                f"  T1: ₹{c['target1']:,.2f} (+{_tgt_pct(c, 1):.1f}%) | "
+                f"T2: ₹{c['target2']:,.2f} (+{_tgt_pct(c, 2):.1f}%)\n"
                 f"  R/R: {c['rr_ratio']:.2f}× | Signals: {', '.join(sigs_passed)}\n"
             )
 
