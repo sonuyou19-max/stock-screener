@@ -290,11 +290,20 @@ def _fetch_ohlcv_kite(symbol: str) -> Optional[pd.DataFrame]:
     global _KITE_LAST_ERR
     try:
         req = _urllib.Request(
-            f"{VPS_URL}/get-historical?symbol={symbol}&days=400",
+            f"{VPS_URL}/get-historical?symbol={_urlquote(symbol, safe='')}&days=400",
             headers={"X-Executor-Secret": VPS_SECRET},
         )
         with _urllib.urlopen(req, timeout=15) as r:
             data = json.loads(r.read().decode())
+        # The executor echoes back the symbol it actually resolved. If that
+        # is not the one we asked for, the response describes a DIFFERENT
+        # company — silently scoring it as this one is how a truncated
+        # symbol turns into a real-money trade on the wrong stock.
+        got = str(data.get("symbol", "")).upper()
+        if got and got != symbol.upper():
+            _KITE_LAST_ERR = f"asked for {symbol}, got {got}"
+            print(f"  ⚠️  Kite OHLCV symbol mismatch: {_KITE_LAST_ERR}")
+            return None
         rows = data.get("rows", [])
         if len(rows) < 60:
             return None

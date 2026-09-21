@@ -19,8 +19,22 @@ import subprocess
 import sys
 import threading
 import time
+from urllib.parse import quote as _urlquote
 
 app = Flask(__name__)
+
+
+def _q(symbol: str) -> str:
+    """URL-encode a trading symbol for use in a query string.
+
+    NSE symbols contain ampersands — M&M, M&MFIN, J&KBANK, ARE&M, GVT&D.
+    Interpolated raw, the '&' terminates the parameter and the symbol is
+    silently truncated to its first fragment: '?symbol=M&M' is read as
+    symbol='M'. The lookup then 404s, or — worse — resolves to whatever
+    instrument that fragment happens to name. Every quote, historical and
+    exit-price call must go through this.
+    """
+    return _urlquote(str(symbol or ""), safe="")
 
 # ── Write protection ─────────────────────────────────────────────
 # Every /upload endpoint is reachable from the public internet and the
@@ -2354,7 +2368,7 @@ def swing_trail_stop():
         last_px = (data.get("last_price") or pos.get("current_price")
                    or pos.get("price") or pos.get("buy_price"))
         if not last_px:
-            quote, _ = _vps_get(f"/get-quote?symbol={symbol}")
+            quote, _ = _vps_get(f"/get-quote?symbol={_q(symbol)}")
             last_px = ((quote or {}).get(symbol) or {}).get("last_price")
         if not last_px:
             return jsonify({"error": "no last_price available"}), 502
@@ -2938,7 +2952,7 @@ def kite_quote():
     symbol = request.args.get("symbol", "").strip().upper()
     if not symbol:
         return jsonify({"error": "symbol required"}), 400
-    result, status = _vps_get(f"/get-quote?symbol={symbol}")
+    result, status = _vps_get(f"/get-quote?symbol={_q(symbol)}")
     return jsonify(result), status
 
 
@@ -2951,7 +2965,7 @@ def kite_historical():
     days   = request.args.get("days", "400")
     if not symbol:
         return jsonify({"error": "symbol required"}), 400
-    result, status = _vps_get(f"/get-historical?symbol={symbol}&days={days}")
+    result, status = _vps_get(f"/get-historical?symbol={_q(symbol)}&days={days}")
     return jsonify(result), status
 
 
@@ -2973,7 +2987,7 @@ def kite_place_order():
         symbol = (data.get("symbol") or "").strip().upper()
         side   = (data.get("side") or "BUY").upper()
         if symbol:
-            q, qstatus = _vps_get(f"/get-quote?symbol={symbol}")
+            q, qstatus = _vps_get(f"/get-quote?symbol={_q(symbol)}")
             ltp = (q or {}).get(symbol, {}).get("last_price")
             if ltp:
                 buffer    = 1.005 if side == "BUY" else 0.995
@@ -3139,7 +3153,7 @@ def _place_sell_gtt(symbol: str, trigger_price, qty: int, last_price=None):
     try:
         trigger = round(float(trigger_price), 2)
         if not last_price:
-            quote, _ = _vps_get(f"/get-quote?symbol={symbol}")
+            quote, _ = _vps_get(f"/get-quote?symbol={_q(symbol)}")
             last_price = ((quote or {}).get(symbol) or {}).get("last_price")
         if not last_price:
             return None, "no last_price available for GTT"
@@ -3197,7 +3211,7 @@ def _place_oco_gtt(symbol: str, stop, target, qty: int, last_price=None):
         if qty <= 0:
             return None, "quantity must be > 0"
         if not last_price:
-            quote, _ = _vps_get(f"/get-quote?symbol={symbol}")
+            quote, _ = _vps_get(f"/get-quote?symbol={_q(symbol)}")
             last_price = ((quote or {}).get(symbol) or {}).get("last_price")
         if not last_price:
             return None, "no last_price available for GTT"
@@ -4296,7 +4310,7 @@ def india_trail_stop():
 
         last_px = data.get("last_price") or entry.get("fill_price")
         if not last_px:
-            quote, _ = _vps_get(f"/get-quote?symbol={symbol}")
+            quote, _ = _vps_get(f"/get-quote?symbol={_q(symbol)}")
             last_px = ((quote or {}).get(symbol) or {}).get("last_price")
         if not last_px:
             return jsonify({"error": "no last_price available"}), 502

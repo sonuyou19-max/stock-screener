@@ -17,6 +17,7 @@ import json
 import time
 import urllib.request as _req
 import urllib.error
+from urllib.parse import quote as _urlquote
 
 RAILWAY_URL     = os.environ["API_URL"]
 UPLOAD_TOKEN    = os.environ["UPLOAD_TOKEN"]
@@ -69,7 +70,7 @@ def get_queue():
 
 
 def get_live_price(symbol: str) -> float:
-    data = _get(f"{VPS_URL}/get-quote?symbol={symbol}", VPS_HEADERS)
+    data = _get(f"{VPS_URL}/get-quote?symbol={_urlquote(symbol, safe='')}", VPS_HEADERS)
     prices = data.get("prices", data)
     for v in prices.values():
         if isinstance(v, dict):
