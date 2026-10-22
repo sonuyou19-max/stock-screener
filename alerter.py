@@ -1,29 +1,29 @@
 """
-Alert System — Email Notifications
+Alert System — Telegram Notifications
 =====================================
-Sends email alerts when:
+Sends alerts when:
   - A stock hits its ATR stop-loss price     → 🔴 URGENT
   - A stock reaches a profit target stage    → 🟡/🟢 ACTION
   - Portfolio beta exceeds overheated level  → ⚠️  WARNING
 
-Email sent via Gmail SMTP using App Password.
-Only sends email when there's something actionable — no noise.
+Delivered over the Telegram Bot API. Email was the original transport,
+but Railway blocks outbound SMTP, so nothing has gone out by mail for a
+long time — the SMTP import, the ALERT_EMAIL_* config and the old
+function name all outlived the code that used them and have been
+removed.
+
+Only alerts when there's something actionable — no noise.
 
 Setup (one-time):
-  1. Enable 2FA on your Gmail account
-  2. Go to: Google Account → Security → App Passwords
-  3. Generate a password for "Mail"
-  4. Create a .env file with:
-       ALERT_EMAIL_FROM=your@gmail.com
-       ALERT_EMAIL_PASSWORD=your_app_password_here
-       ALERT_EMAIL_TO=your@gmail.com
+  1. Message @BotFather on Telegram → /newbot → copy the token
+  2. Message your new bot once so it has a chat to reply in
+  3. Visit https://api.telegram.org/bot<TOKEN>/getUpdates → copy "id"
+  4. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
 
 Usage:
   python alerter.py --portfolio portfolio_202504.json
   python alerter.py --portfolio portfolio_202504.json --test
 """
-
-import smtplib
 
 # Sent with every API POST; uploads are rejected when the server has
 # UPLOAD_TOKEN set and this env var is missing or wrong.
@@ -199,27 +199,6 @@ def mark_alerts_sent(alerts: dict):
 
     _save_dedup(sent_keys)
     print(f"  💾 Dedup: {len(sent_keys)} key(s) saved to volume.")
-
-# ─────────────────────────────────────────────
-# CONFIG — loaded from environment variables
-# ─────────────────────────────────────────────
-
-def _get_config() -> dict:
-    """Load email config from environment variables or .env file."""
-    # Try loading .env file if python-dotenv is available
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass  # dotenv optional — env vars can be set directly
-
-    return {
-        "from_email":   os.getenv("ALERT_EMAIL_FROM", ""),
-        "password":     os.getenv("ALERT_EMAIL_PASSWORD", ""),
-        "to_email":     os.getenv("ALERT_EMAIL_TO", ""),
-        "smtp_host":    "smtp.gmail.com",
-        "smtp_port":    587,
-    }
 
 
 # Profit target stages
@@ -539,7 +518,7 @@ def detect_alerts(portfolio: dict) -> dict:
 # EMAIL FORMATTER
 # ─────────────────────────────────────────────
 
-def format_email_body(alerts: dict) -> tuple[str, str]:
+def format_alert_body(alerts: dict) -> tuple[str, str]:
     """
     Build plain text and HTML email body from alerts dict.
     Returns (subject, html_body).
@@ -678,10 +657,14 @@ def _build_ok_rows(stocks: list) -> str:
 # EMAIL SENDER
 # ─────────────────────────────────────────────
 
-def send_email_alert(subject: str, html_body: str) -> bool:
+def send_alert(subject: str, html_body: str) -> bool:
     """
-    Send alert via Telegram Bot API (HTTPS — works on Railway, zero setup).
-    Railway blocks outbound SMTP. Telegram uses port 443 which is always open.
+    Send an alert via the Telegram Bot API (HTTPS, port 443).
+
+    This was send_email_alert() until the name was the only part of it
+    still about email: Railway blocks outbound SMTP, so the body was
+    switched to Telegram and the signature never caught up. Anything
+    looking for the mail path will not find one.
 
     Required env vars:
       TELEGRAM_BOT_TOKEN  → get from @BotFather on Telegram
@@ -691,7 +674,7 @@ def send_email_alert(subject: str, html_body: str) -> bool:
       1. Message @BotFather on Telegram → /newbot → follow prompts → copy token
       2. Message your new bot once (say "hi")
       3. Visit https://api.telegram.org/bot<TOKEN>/getUpdates → copy "id" from result
-      4. Add TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID to Railway env vars
+      4. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID
     """
     import urllib.request as _ur
     import urllib.error   as _ure
@@ -1012,13 +995,13 @@ def check_and_alert(
     should_send = send_email and (new_alerts["any_alerts"] or test_mode)
 
     if should_send:
-        subject, html_body = format_email_body(new_alerts)
-        print(f"\n  📧 Sending alert email...")
-        sent_ok = send_email_alert(subject, html_body)
+        subject, html_body = format_alert_body(new_alerts)
+        print(f"\n  📨 Sending alert...")
+        sent_ok = send_alert(subject, html_body)
         if sent_ok and not test_mode:
             mark_alerts_sent(new_alerts)
     elif send_email and not new_alerts["any_alerts"]:
-        print(f"\n  📧 No new alerts — email suppressed.")
+        print(f"\n  📨 No new alerts — nothing sent.")
 
     return new_alerts
 
