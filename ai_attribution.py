@@ -33,7 +33,7 @@ import argparse
 import urllib.request as _req
 
 from ai_common import call_claude_json, MODEL_REASONING, AI_ENABLED
-from swing_attribution import build_report, format_report
+from swing_attribution import build_report, format_report, aggregate_fills
 
 API_URL      = os.getenv("API_URL", "https://web-production-50eee.up.railway.app").rstrip("/")
 UPLOAD_TOKEN = os.getenv("UPLOAD_TOKEN", "")
@@ -43,12 +43,35 @@ TELEGRAM_CHAT= os.getenv("TELEGRAM_CHAT_ID", "")
 MIN_TRADES     = 15    # below this, don't ask the model to conclude
 MAX_WEIGHT_MOVE = 0.05 # cap any single proposed weight change (informational)
 
-# Current scanner weights — kept in sync with swing_scanner.SIGNAL_WEIGHTS.
-# Passed to the model as the baseline it is critiquing.
-CURRENT_WEIGHTS = {
-    "momentum": 0.20, "volume": 0.20, "macd": 0.15, "sentiment": 0.15,
-    "rsi": 0.10, "bollinger": 0.10, "fii": 0.10,
-}
+# The scanner's live configuration, read from the scanner itself rather
+# than copied. A hardcoded duplicate drifts the moment the strategy
+# changes, and the model then critiques a strategy that is not running —
+# as happened when targets moved from a flat 7/12% to ATR multiples and
+# this file went on describing the old ones.
+try:
+    import swing_scanner as _scanner
+    CURRENT_WEIGHTS = dict(_scanner.SIGNAL_WEIGHTS)
+    EXIT_RULES = (
+        f"Target1 {_scanner.SWING_TARGET_1_ATR:.1f}×ATR (sell half), "
+        f"Target2 {_scanner.SWING_TARGET_2_ATR:.1f}×ATR (sell rest) — both "
+        f"scaled to each stock's own volatility and clamped to "
+        f"{_scanner.SWING_T1_MIN_PCT:.0f}-{_scanner.SWING_T1_MAX_PCT:.0f}% and "
+        f"{_scanner.SWING_T2_MIN_PCT:.0f}-{_scanner.SWING_T2_MAX_PCT:.0f}% of "
+        f"entry; stop is the wider of {_scanner.SWING_ATR_MULT:.1f}×ATR and "
+        f"the 5-day swing low, capped at {_scanner.MAX_STOP_PCT:.0f}%; "
+        f"time exit after {_scanner.SWING_MAX_DAYS} trading days"
+    )
+    SCORE_FLOORS = (f"{_scanner.MIN_COMPOSITE_SCORE:.0f} bullish regime / "
+                    f"{_scanner.MIN_COMPOSITE_SCORE + _scanner.BEARISH_SCORE_BUMP:.0f} bearish")
+except Exception as _e:                       # scanner not importable here
+    print(f"  ⚠️  Could not read live scanner config ({_e}) — using fallback.")
+    CURRENT_WEIGHTS = {
+        "momentum": 0.20, "volume": 0.20, "macd": 0.15, "sentiment": 0.15,
+        "rsi": 0.10, "bollinger": 0.10, "fii": 0.10,
+    }
+    EXIT_RULES = ("Target1 and Target2 scaled to each stock's ATR; "
+                  "ATR/structure stop; 10-trading-day time exit")
+    SCORE_FLOORS = "62 bullish regime / 72 bearish"
 
 SYSTEM = (
     "You are a quantitative trading analyst reviewing a swing-trading "
@@ -116,9 +139,18 @@ STRATEGY DESIGN
 The scanner scores each candidate 0-100 as a weighted blend of signals.
 Current signal weights:
 {json.dumps(CURRENT_WEIGHTS, indent=2)}
-A candidate must clear a composite floor (62 bullish regime / 72 bearish)
-to qualify. Exits: Target1 +7% (sell half), Target2 +12% (sell rest),
-ATR/structure stop, 10-trading-day time exit.
+A candidate must clear a composite floor ({SCORE_FLOORS}) to qualify.
+Exits: {EXIT_RULES}.
+
+UNITS: all monetary values are INDIAN RUPEES (INR). Never write them as
+dollars. Percentages are percent of entry price; R is profit or loss per
+unit of planned risk, so an exit at the stop is about -1R by definition
+and is not in itself evidence of anything.
+
+COUNTING: each row is one POSITION, not one exit fill — a stop that
+filled in two tranches has already been collapsed into a single row, and
+"fills" records how many it took. "SCALED_OUT" means the position left
+in stages at different levels.
 
 AGGREGATE RESULTS (buckets under 3 trades are hidden; ignore tiny cells):
 {json.dumps(report, indent=2, default=str)}
@@ -179,7 +211,11 @@ def main(dry_run: bool = False):
         return None
 
     data = _get(f"{API_URL}/swing/history")
-    all_trades = data.get("trades", [])
+    raw = data.get("trades", [])
+    # Fills, not decisions: a stop filling in two tranches is one trade.
+    all_trades = aggregate_fills(raw)
+    if len(raw) != len(all_trades):
+        print(f"  Collapsed {len(raw)} exit fills into {len(all_trades)} positions")
     report = build_report(all_trades)
     print(format_report(report))
 

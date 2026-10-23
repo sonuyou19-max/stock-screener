@@ -69,6 +69,83 @@ def _tg(msg: str):
 # REPORT BUILDING (pure functions — unit-testable)
 # ─────────────────────────────────────────────
 
+def aggregate_fills(trades: list) -> list:
+    """Collapse exit fills into the positions they belong to.
+
+    A position does not always leave in one piece. A stop GTT on 20
+    shares can fill as 10 + 10, and a scale-out exits at T1 on one day
+    and T2 on another. Each fill is stored as its own history record,
+    so counting records counts fills, not decisions.
+
+    That distorts everything built on it. A position stopped out in two
+    fills contributes two losses to the win rate, and the sample looks
+    larger than the number of independent bets actually taken — which
+    matters most when the sample is already small enough that the
+    analysis is caveated for it.
+
+    Positions are keyed by ticker and entry date, so the same stock
+    bought again later is a separate position. The exit price is
+    share-weighted, P&L is summed, and the exit date is the last fill's,
+    since that is when the position actually closed.
+    """
+    groups: dict = {}
+    for t in trades:
+        key = (t.get("ticker"), t.get("entry_date") or t.get("buy_date") or "")
+        groups.setdefault(key, []).append(t)
+
+    out = []
+    for (ticker, entry_date), fills in groups.items():
+        if len(fills) == 1:
+            out.append(dict(fills[0], fills=1))
+            continue
+
+        fills = sorted(fills, key=lambda f: str(f.get("exit_date") or ""))
+        base  = dict(fills[0])            # entry snapshot is identical across fills
+        qty   = [int(f.get("shares") or 0) for f in fills]
+        total = sum(qty)
+
+        def _w(field):
+            """Share-weighted mean, or a plain mean when sizes are unknown."""
+            vals = [(f.get(field), q) for f, q in zip(fills, qty)
+                    if f.get(field) is not None]
+            vals = [(float(v), q) for v, q in vals]
+            if not vals:
+                return None
+            if total:
+                return sum(v * q for v, q in vals) / total
+            return sum(v for v, _ in vals) / len(vals)
+
+        pnl = sum(f.get("realised_pnl_inr") or 0 for f in fills)
+        buy = _w("buy_price") or base.get("buy_price")
+        sell = _w("sell_price")
+
+        reasons = [f.get("exit_reason") for f in fills if f.get("exit_reason")]
+        uniq    = list(dict.fromkeys(reasons))
+
+        base.update({
+            "shares":       total or None,
+            "buy_price":    round(buy, 2) if buy else base.get("buy_price"),
+            "sell_price":   round(sell, 2) if sell else base.get("sell_price"),
+            "exit_date":    fills[-1].get("exit_date"),
+            "realised_pnl_inr": round(pnl, 2),
+            # A position that left in stages is its own category. Calling a
+            # partial stop-out a STOP_LOSS overstates how often stops fire.
+            "exit_reason":  uniq[0] if len(uniq) == 1 else "SCALED_OUT",
+            "exit_reasons": uniq,
+            "fills":        len(fills),
+        })
+        if buy and total:
+            base["realised_pnl_pct"] = round(pnl / (buy * total) * 100, 2)
+        stop = base.get("planned_stop")
+        if buy and stop and sell and float(stop) < float(buy):
+            risk = float(buy) - float(stop)
+            base["r_multiple"] = round((float(sell) - float(buy)) / risk, 2)
+        out.append(base)
+
+    out.sort(key=lambda r: str(r.get("exit_date") or ""), reverse=True)
+    return out
+
+
 def _stats(trades: list) -> dict:
     """Aggregate stats for a set of trades."""
     n = len(trades)
@@ -229,8 +306,11 @@ def format_telegram(rep: dict) -> str:
 def main(dry_run: bool = False):
     print("=== Swing Attribution ===")
     data = _get(f"{API_URL}/swing/history")
-    trades = data.get("trades", [])
-    print(f"  Closed trades: {len(trades)}")
+    raw = data.get("trades", [])
+    trades = aggregate_fills(raw)
+    extra = len(raw) - len(trades)
+    print(f"  Closed positions: {len(trades)}"
+          + (f"  (from {len(raw)} exit fills)" if extra else ""))
 
     rep = build_report(trades)
     print(format_report(rep))
