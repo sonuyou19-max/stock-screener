@@ -929,6 +929,22 @@ def compute_swing_levels(hist: pd.DataFrame, buy_price: float) -> dict:
 _REJECTS: dict = {}
 _NEAR_MISSES: list = []
 
+# Gate messages carry the value that failed — "price ₹30 < ₹50 floor",
+# "12.1% above 20-DMA". Counting the raw string makes one bucket per
+# price and per percentage, so the tally fragments into singletons and
+# genuine categories drop out of the top of the summary. Collapsing the
+# values keeps "50-DMA" and "20-DMA" distinct, which carry meaning,
+# while merging the amounts, which do not.
+_GATE_VALUE = __import__("re").compile(
+    r"₹\s?[\d,]*\.?\d+|[-+]?[\d,]*\.?\d+\s?%")
+
+
+def _reason_key(text: str) -> str:
+    head = text.split("(")[0].split("—")[0].strip()
+    merged = _GATE_VALUE.sub(
+        lambda m: "₹N" if "₹" in m.group(0) else "N%", head)
+    return merged[:48]
+
 
 def _reject(reason: str):
     _REJECTS[reason] = _REJECTS.get(reason, 0) + 1
@@ -966,7 +982,7 @@ def analyse_stock(ticker: str, fii_data: list, sentiment_signals: dict,
     if gate_fail:
         # The gate text starts with the rule that failed — keep just that
         # so the tally shows WHICH gate is doing the filtering.
-        _reject("gate: " + gate_fail.split("(")[0].split("—")[0].strip()[:38])
+        _reject("gate: " + _reason_key(gate_fail))
         return None
 
     closes = hist["Close"]
@@ -1533,9 +1549,17 @@ def _run_scan_impl(test_mode: bool = False, single_ticker: str = None) -> list:
     print(f"  SCAN COMPLETE")
     print(f"  Scanned: {scanned} | Candidates: {len(candidates)} | Showing: {len(top)}")
     if _REJECTS:
+        ranked = sorted(_REJECTS.items(), key=lambda x: -x[1])
         print(f"  Where they dropped out:")
-        for reason, n in sorted(_REJECTS.items(), key=lambda x: -x[1])[:8]:
+        for reason, n in ranked[:8]:
             print(f"    {n:>4}  {reason}")
+        # Always make the figures add up — a summary that silently omits
+        # the tail is how a real category goes unnoticed.
+        rest = sum(n for _, n in ranked[8:])
+        if rest:
+            print(f"    {rest:>4}  other ({len(ranked) - 8} more reasons)")
+        print(f"    {'─' * 34}")
+        print(f"    {sum(_REJECTS.values()):>4}  rejected of {scanned} scanned")
     if _NEAR_MISSES:
         best = sorted(_NEAR_MISSES, reverse=True)[:5]
         print(f"  Closest misses (needed {min_composite:.0f}):")
