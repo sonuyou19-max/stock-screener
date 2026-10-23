@@ -15,10 +15,13 @@ import time
 import urllib.request as _req
 import urllib.error
 
-RAILWAY_URL     = os.environ["API_URL"]
-UPLOAD_TOKEN    = os.environ["UPLOAD_TOKEN"]
+from env_guard import require_env
+
+# Reported, not raised: a missing name here used to kill the script at
+# import with a KeyError that only ever reached a cron log.
+RAILWAY_URL, UPLOAD_TOKEN, EXECUTOR_SECRET = require_env(
+    "API_URL", "UPLOAD_TOKEN", "EXECUTOR_SECRET")
 VPS_URL         = os.environ.get("ORACLE_VPS_URL", "http://localhost:5001")
-EXECUTOR_SECRET = os.environ["EXECUTOR_SECRET"]
 TELEGRAM_BOT    = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT   = os.environ.get("TELEGRAM_CHAT_ID", "")
 
