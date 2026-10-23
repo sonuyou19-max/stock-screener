@@ -35,6 +35,8 @@ import json
 import argparse
 import urllib.request as _req
 
+from tg import send as tg_send
+
 from ai_common import call_claude_json, MODEL_FAST, AI_ENABLED
 
 API_URL      = os.getenv("API_URL", "https://web-production-50eee.up.railway.app").rstrip("/")
@@ -73,13 +75,9 @@ def _post(url, payload, headers=None):
 
 
 def _tg(msg: str):
-    if not TELEGRAM_BOT or not TELEGRAM_CHAT:
-        return
-    try:
-        _post(f"https://api.telegram.org/bot{TELEGRAM_BOT}/sendMessage",
-              {"chat_id": TELEGRAM_CHAT, "text": msg, "parse_mode": "HTML"})
-    except Exception as e:
-        print(f"  ⚠️  Telegram failed: {e}")
+    # Shared sender: on a Telegram parse error it resends as plain
+    # text, so a stray '<' or an '&' in a ticker cannot lose an alert.
+    tg_send(msg, TELEGRAM_BOT, TELEGRAM_CHAT)
 
 
 def _search_terms(name: str, ticker: str) -> list:

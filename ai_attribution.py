@@ -34,6 +34,7 @@ import urllib.request as _req
 
 from ai_common import call_claude_json, MODEL_REASONING, AI_ENABLED
 from swing_attribution import build_report, format_report, aggregate_fills
+from tg import esc, send as tg_send
 
 API_URL      = os.getenv("API_URL", "https://web-production-50eee.up.railway.app").rstrip("/")
 UPLOAD_TOKEN = os.getenv("UPLOAD_TOKEN", "")
@@ -98,14 +99,7 @@ def _post(url, payload, headers=None):
 
 
 def _tg(msg: str):
-    if not TELEGRAM_BOT or not TELEGRAM_CHAT:
-        print("  ⚠️  Telegram not configured — skipping alert.")
-        return
-    try:
-        _post(f"https://api.telegram.org/bot{TELEGRAM_BOT}/sendMessage",
-              {"chat_id": TELEGRAM_CHAT, "text": msg, "parse_mode": "HTML"})
-    except Exception as e:
-        print(f"  ⚠️  Telegram failed: {e}")
+    tg_send(msg, TELEGRAM_BOT, TELEGRAM_CHAT)
 
 
 def _compact_trades(trades: list) -> list:
@@ -184,21 +178,24 @@ Rules:
 
 
 def format_telegram(analysis: dict, n: int) -> str:
-    lines = [f"🧠 <b>AI Attribution Analyst</b> ({n} closed trades)",
-             f"<i>{analysis.get('headline', '')}</i>",
-             f"Confidence: <b>{analysis.get('confidence', '?')}</b> — "
-             f"{analysis.get('sample_caveat', '')}"]
+    """Build the alert. Every model-written value goes through esc():
+    the analyst writes things like "the <65 score band", and an
+    unescaped "<6" makes Telegram reject the whole message."""
+    lines = [f"🧠 <b>AI Attribution Analyst</b> ({n} closed positions)",
+             f"<i>{esc(analysis.get('headline', ''))}</i>",
+             f"Confidence: <b>{esc(analysis.get('confidence', '?'))}</b> — "
+             f"{esc(analysis.get('sample_caveat', ''))}"]
     kf = analysis.get("key_findings") or []
     if kf:
         lines.append("\n<b>Findings:</b>")
-        lines += [f"  • {f}" for f in kf[:5]]
+        lines += [f"  • {esc(f)}" for f in kf[:5]]
     props = analysis.get("weight_proposals") or []
     if props:
         lines.append("\n<b>Weight proposals (advisory — apply by hand):</b>")
         for p in props:
             arrow = "▲" if p.get("direction") == "increase" else "▼"
-            lines.append(f"  {arrow} {p.get('signal')} "
-                         f"{p.get('suggested_delta')} — {p.get('rationale')}")
+            lines.append(f"  {arrow} {esc(p.get('signal'))} "
+                         f"{esc(p.get('suggested_delta'))} — {esc(p.get('rationale'))}")
     else:
         lines.append("\n<b>Weight proposals:</b> none — evidence insufficient to change weights.")
     return "\n".join(lines)
