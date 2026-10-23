@@ -157,6 +157,65 @@ def _load_json(path: str):
         return None
 
 
+def _close_key(rec: dict) -> tuple:
+    """Identity of a closed-trade record, for duplicate detection.
+
+    Exit date is taken from whichever field the market uses — swing and
+    US records carry exit_date, the India monthly book carries sell_date.
+    """
+    return (
+        str(rec.get("ticker") or "").upper(),
+        str(rec.get("exit_date") or rec.get("sell_date") or ""),
+    )
+
+
+def _is_duplicate_close(history: list, rec: dict) -> bool:
+    """True when this closed trade is already recorded.
+
+    The dashboard's Mark Exited posts straight to the history endpoints,
+    which appended blind. A double-tap, a retry after a slow response, or
+    a browser resend therefore wrote the same sale twice, inflating the
+    trade count and skewing every statistic built on it — win rate,
+    average return, the attribution analysis.
+
+    Matching is deliberately tight: same ticker, same exit date, and
+    prices within 0.5%. A genuine second sale of the same stock on the
+    same day is a different tranche at a different price (T1 and T2 are
+    far apart by construction), so it survives. A resend is byte-for-byte
+    identical and is always caught. Share count must match too when both
+    records carry one.
+    """
+    key = _close_key(rec)
+    if not key[0] or not key[1]:
+        return False          # no date to compare — let it through
+
+    def _close_enough(a, b) -> bool:
+        try:
+            a, b = float(a), float(b)
+        except (TypeError, ValueError):
+            return False
+        if a == b:
+            return True
+        return b and abs(a - b) / abs(b) <= 0.005
+
+    for t in history or []:
+        if _close_key(t) != key:
+            continue
+        if not _close_enough(rec.get("sell_price"), t.get("sell_price")):
+            continue
+        if not _close_enough(rec.get("buy_price"), t.get("buy_price")):
+            continue
+        rs, ts = rec.get("shares"), t.get("shares")
+        if rs is not None and ts is not None:
+            try:
+                if int(rs) != int(ts):
+                    continue
+            except (TypeError, ValueError):
+                pass
+        return True
+    return False
+
+
 def _sanitise(obj):
     """Recursively replace NaN/Infinity with None so JSON is valid for browsers."""
     import math
@@ -913,6 +972,11 @@ def portfolio_history_upload():
             loaded = _load_json(HISTORY_FILE)
             _history_cache = loaded if isinstance(loaded, list) else []
 
+        if _is_duplicate_close(_history_cache, rec):
+            return jsonify({"ok": True, "duplicate": True,
+                            "total": len(_history_cache),
+                            "note": "already recorded — not appended"})
+
         _history_cache.append(rec)
         _history_cache.sort(key=lambda r: r.get("sell_date", ""), reverse=True)
         _save_json(HISTORY_FILE, _history_cache)
@@ -1289,6 +1353,11 @@ def us_portfolio_history_upload():
         if not _us_history_cache:
             loaded = _load_json(US_HISTORY_FILE)
             _us_history_cache = loaded if isinstance(loaded, list) else []
+        if _is_duplicate_close(_us_history_cache, rec):
+            return jsonify({"ok": True, "duplicate": True,
+                            "total": len(_us_history_cache),
+                            "note": "already recorded — not appended"})
+
         _us_history_cache.append(rec)
         _us_history_cache.sort(key=lambda r: r.get("sell_date", ""), reverse=True)
         _save_json(US_HISTORY_FILE, _us_history_cache)
@@ -2657,6 +2726,11 @@ def swing_history_upload():
             loaded = _load_json(SWING_HISTORY_FILE)
             _swing_history_cache = loaded if isinstance(loaded, list) else []
 
+        if _is_duplicate_close(_swing_history_cache, data):
+            return jsonify({"ok": True, "duplicate": True,
+                            "total": len(_swing_history_cache),
+                            "note": "already recorded — not appended"})
+
         _swing_history_cache.append(data)
         _swing_history_cache.sort(
             key=lambda r: r.get("exit_date", ""), reverse=True
@@ -2665,6 +2739,80 @@ def swing_history_upload():
         return jsonify({"ok": True, "total": len(_swing_history_cache)})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ── Closed-trade duplicate report / cleanup ─────────────────────
+@app.route("/history/duplicates", methods=["GET", "POST", "OPTIONS"])
+def history_duplicates():
+    """Find — and optionally remove — closed trades recorded twice.
+
+    The history endpoints appended without a duplicate check until now,
+    so a double-tap on Mark Exited or a retried request wrote the same
+    sale twice. Every statistic built on that book is then wrong: trade
+    count, win rate, average return, and the attribution analysis.
+
+    GET, or POST without apply=true, only reports. Removal keeps the
+    FIRST record of each group and drops the rest, so the surviving copy
+    is the one originally written.
+
+    ?book=swing (default) | india | us
+    """
+    global _swing_history_cache, _history_cache, _us_history_cache
+    if request.method == "OPTIONS":
+        return jsonify({}), 200
+
+    book = (request.args.get("book") or "swing").lower()
+    books = {
+        "swing": (SWING_HISTORY_FILE, "_swing_history_cache"),
+        "india": (HISTORY_FILE, "_history_cache"),
+        "us":    (US_HISTORY_FILE, "_us_history_cache"),
+    }
+    if book not in books:
+        return jsonify({"error": f"book must be one of {sorted(books)}"}), 400
+    path, cache_name = books[book]
+
+    records = _load_json(path)
+    records = records if isinstance(records, list) else []
+
+    keep, groups = [], []
+    for rec in records:
+        if _is_duplicate_close(keep, rec):
+            for g in groups:
+                if _close_key(g["kept"]) == _close_key(rec):
+                    g["extra"] += 1
+                    break
+            continue
+        keep.append(rec)
+        groups.append({"kept": rec, "extra": 0})
+
+    dupes = [{
+        "ticker":     g["kept"].get("ticker"),
+        "exit_date":  g["kept"].get("exit_date") or g["kept"].get("sell_date"),
+        "sell_price": g["kept"].get("sell_price"),
+        "copies":     g["extra"] + 1,
+    } for g in groups if g["extra"]]
+
+    payload = {
+        "book": book,
+        "total": len(records),
+        "unique": len(keep),
+        "duplicates": sum(d["copies"] - 1 for d in dupes),
+        "groups": dupes,
+    }
+
+    apply_it = request.method == "POST" and \
+        (request.get_json(force=True, silent=True) or {}).get("apply") is True
+    if not apply_it:
+        payload["applied"] = False
+        payload["note"] = ("report only — POST {\"apply\": true} to remove "
+                           "the extra copies")
+        return jsonify(payload)
+
+    _save_json(path, keep)
+    globals()[cache_name] = keep
+    payload["applied"] = True
+    payload["note"] = f"removed {payload['duplicates']} duplicate record(s)"
+    return jsonify(payload)
 
 
 # ── SWING QUEUE — automated 9AM entry ───────────────────────────
