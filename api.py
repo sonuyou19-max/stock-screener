@@ -212,6 +212,17 @@ def _is_duplicate_close(history: list, rec: dict) -> bool:
                     continue
             except (TypeError, ValueError):
                 pass
+        # Two DISTINCT broker order ids are two real fills, even when the
+        # price and size match — a stop GTT can fill in equal tranches at
+        # one price. _has_equivalent_manual_exit draws the same line, and
+        # merging them would destroy a genuine trade rather than a copy.
+        # An identical id is the same fill redelivered, which is a copy.
+        rid, tid = str(rec.get("order_id") or ""), str(t.get("order_id") or "")
+        if rid and tid and rid != tid:
+            rec_manual = rid.startswith("MANUAL-")
+            t_manual   = tid.startswith("MANUAL-")
+            if not (rec_manual or t_manual):
+                continue
         return True
     return False
 
